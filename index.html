@@ -181,6 +181,8 @@ textarea{resize:vertical;min-height:60px}
     <button class="sb-btn" onclick="nav('suppliers',this)"><span class="ic">🏭</span><span>Suppliers</span></button>
     <div class="sb-label">Finance</div>
     <button class="sb-btn" onclick="nav('profits',this)"><span class="ic">📈</span><span>Profit Tracker</span></button>
+    <div class="sb-label" id="admin-sidebar-label" style="display:none">Admin</div>
+    <button class="sb-btn" id="users-sidebar-btn" onclick="nav('users',this)" style="display:none"><span class="ic">👤</span><span>Users</span></button>
   </div>
   <div class="sb-footer">v3.0 · Live · Gibraltar</div>
 </aside>
@@ -191,6 +193,11 @@ textarea{resize:vertical;min-height:60px}
   <div class="topbar-right">
     <span class="sync-pill sync-busy" id="sync-status">⏳ Syncing...</span>
     <span class="date-pill" id="cur-date"></span>
+    <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;background:rgba(0,180,216,0.08);border:1px solid rgba(0,180,216,0.2);border-radius:20px">
+      <span style="font-size:11px;color:var(--reef);font-weight:600" id="current-user-name"></span>
+      <span id="current-user-role" style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:2px 6px;border-radius:10px;background:rgba(0,180,216,0.15);color:var(--reef)"></span>
+    </div>
+    <button onclick="signOut()" style="padding:5px 12px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:none;color:var(--text3);font-size:11px;cursor:pointer">Sign Out</button>
   </div>
 </div>
 <div class="content">
@@ -373,6 +380,19 @@ textarea{resize:vertical;min-height:60px}
 </div>
 
 <!-- PROFITS -->
+<div id="page-users" class="page">
+  <div class="section-hd">
+    <div class="section-title">User Management</div>
+    <button class="btn btn-primary" onclick="openModal('modal-add-user')">+ Add User</button>
+  </div>
+  <div class="card"><div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Last Login</th><th>Actions</th></tr></thead>
+      <tbody id="users-body"><tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>Loading users...</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
 <div id="page-profits" class="page">
   <div class="section-hd"><div class="section-title">Profit by Order</div></div>
   <div class="card"><div class="tbl-wrap">
@@ -457,6 +477,30 @@ textarea{resize:vertical;min-height:60px}
     <div class="modal-foot">
       <button class="btn btn-sec" onclick="closeModal('modal-cust-line')">Cancel</button>
       <button class="btn btn-primary" onclick="saveCustLine()">Add Customer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-ov" id="modal-add-user">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title" id="user-modal-title">Add User</div><button class="mc-btn" onclick="closeModal('modal-add-user')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg"><label>Display Name</label><input type="text" id="u-name" placeholder="e.g. Ryan Castle"></div>
+        <div class="fg"><label>Username</label><input type="text" id="u-username" placeholder="e.g. RCASTLE" style="text-transform:uppercase"></div>
+        <div class="fg"><label>Password</label><input type="password" id="u-password" placeholder="Enter password"></div>
+        <div class="fg"><label>Role</label>
+          <select id="u-role">
+            <option value="viewer">Viewer (read only)</option>
+            <option value="admin">Admin (full access)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-add-user')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUser()">Save User</button>
     </div>
   </div>
 </div>
@@ -747,6 +791,130 @@ const BUILTIN = [
 ];
 
 // ===== LOAD ALL DATA =====
+// ===== SIGN OUT =====
+function signOut(){
+  localStorage.removeItem('sa_session');
+  window.location.href='login.html';
+}
+
+// ===== INIT USER SESSION =====
+function initUserSession(){
+  const sess=window._session;
+  if(!sess)return;
+  // Show user in topbar
+  const nameEl=document.getElementById('current-user-name');
+  const roleEl=document.getElementById('current-user-role');
+  if(nameEl)nameEl.textContent=sess.displayName||sess.username;
+  if(roleEl)roleEl.textContent=sess.role==='admin'?'Admin':'Viewer';
+  // Show/hide admin features
+  if(sess.role==='admin'){
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const adminBtn=document.getElementById('users-sidebar-btn');
+    if(adminLabel)adminLabel.style.display='block';
+    if(adminBtn)adminBtn.style.display='flex';
+  }
+  // If viewer, hide all edit/add/delete buttons
+  if(sess.role==='viewer'){
+    applyViewerMode();
+  }
+}
+
+function applyViewerMode(){
+  // Hide add/edit/delete buttons for viewers - applied after render
+  const style=document.createElement('style');
+  style.textContent=`
+    .btn-primary:not(.viewer-ok), .btn-reef, .btn-danger,
+    #page-new-order .btn-primary,
+    button[onclick*="startNewOrder"],
+    button[onclick*="openAdd"],
+    button[onclick*="openEdit"],
+    button[onclick*="deleteOrder"],
+    button[onclick*="openModal("],
+    button[onclick*="addSARow"],
+    button[onclick*="addItemRow"],
+    button[onclick*="addPaymentRow"],
+    button[onclick*="addSupplier"],
+    button[onclick*="addVar"],
+    button[onclick*="saveOrder"],
+    button[onclick*="saveCustomer"],
+    button[onclick*="saveCredit"],
+    button[onclick*="savePrice"],
+    button[onclick*="seedProducts"],
+    .sb-btn[onclick*="new-order"] { display:none !important; }
+    .viewer-notice { display:block !important; }
+  `;
+  document.head.appendChild(style);
+  // Hide new order from sidebar
+  const newOrderBtn=document.querySelector('.sb-btn[onclick*="new-order"]');
+  if(newOrderBtn)newOrderBtn.style.display='none';
+}
+
+// ===== USERS =====
+async function renderUsers(){
+  const tbody=document.getElementById('users-body');
+  if(!tbody)return;
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/users?order=created.asc',{headers:H});
+    const users=await r.json();
+    if(!users.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No users</p></div></td></tr>';return;}
+    const currId=window._session?.id;
+    tbody.innerHTML=users.map(u=>`<tr>
+      <td class="font-bold">${u.display_name||u.username}</td>
+      <td><span style="font-family:monospace;font-size:12px;color:var(--text2)">${u.username}</span></td>
+      <td><span class="badge ${u.role==='admin'?'b-blue':'b-grey'}">${u.role==='admin'?'Admin':'Viewer'}</span></td>
+      <td class="text-sm text-muted">${u.last_login||'Never'}</td>
+      <td><div style="display:flex;gap:6px">
+        <button class="btn btn-sec btn-xs" onclick="toggleUserRole('${u.id}','${u.role}')">${u.role==='admin'?'Make Viewer':'Make Admin'}</button>
+        ${u.id!==currId?`<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${u.display_name||u.username}')">Delete</button>`:'<span class="text-xs text-muted">(you)</span>'}
+      </div></td>
+    </tr>`).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users</p></div></td></tr>';}
+}
+
+async function sha256(message){
+  const buf=new TextEncoder().encode(message);
+  const hashBuf=await crypto.subtle.digest('SHA-256',buf);
+  return Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function uid8(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+
+async function saveUser(){
+  const name=document.getElementById('u-name').value.trim();
+  const username=document.getElementById('u-username').value.trim().toUpperCase();
+  const password=document.getElementById('u-password').value;
+  const role=document.getElementById('u-role').value;
+  if(!name||!username||!password){toast('Fill in all fields',false);return;}
+  // Hash password
+  const salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
+  const hash=await sha256(salt+password);
+  const password_hash=salt+':'+hash;
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role,created:new Date().toISOString().split('T')[0]})});
+    if(!r.ok)throw new Error(await r.text());
+    closeModal('modal-add-user');
+    ['u-name','u-username','u-password'].forEach(id=>document.getElementById(id).value='');
+    renderUsers();toast('User created ✓');
+  }catch(e){toast('Error: '+e.message,false);}
+}
+
+async function toggleUserRole(id,currentRole){
+  const newRole=currentRole==='admin'?'viewer':'admin';
+  if(!confirm('Change this user to '+newRole+'?'))return;
+  try{
+    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'PATCH',headers:H,body:JSON.stringify({role:newRole})});
+    renderUsers();toast('Role updated');
+  }catch(e){toast('Error',false);}
+}
+
+async function deleteUser(id,name){
+  if(!confirm('Delete user "'+name+'"? They will be signed out immediately.'))return;
+  try{
+    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'DELETE',headers:H});
+    renderUsers();toast('User deleted');
+  }catch(e){toast('Error',false);}
+}
+
 async function loadAll(){
   try {
     setSyncStatus('sync-busy','⏳ Loading...');
@@ -804,7 +972,7 @@ function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop
 function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}
 
 // ===== NAV =====
-const TITLES={overview:'Dashboard Overview',orders:'Order Manager','new-order':'New Order',customers:'Customers',credits:'Credits & Amounts Owed',prices:'Species Price List',suppliers:'Suppliers',profits:'Profit Tracker'};
+const TITLES={overview:'Dashboard Overview',orders:'Order Manager','new-order':'New Order',customers:'Customers',credits:'Credits & Amounts Owed',prices:'Species Price List',suppliers:'Suppliers',profits:'Profit Tracker',users:'User Management'};
 function nav(id,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
@@ -812,7 +980,7 @@ function nav(id,btn){
   document.getElementById('page-title').textContent=TITLES[id]||id;
   if(btn)btn.classList.add('active');
   else{const f=document.querySelector(`.sb-btn[onclick*="'${id}'"]`);if(f)f.classList.add('active');}
-  const map={overview:renderOverview,orders:renderOrders,customers:renderCustomers,credits:renderCredits,prices:renderPrices,suppliers:renderSuppliers,profits:renderProfits,'new-order':initNewOrder};
+  const map={overview:renderOverview,orders:renderOrders,customers:renderCustomers,credits:renderCredits,prices:renderPrices,suppliers:renderSuppliers,profits:renderProfits,'new-order':initNewOrder,users:renderUsers};
   if(map[id])map[id]();
 }
 
@@ -1376,6 +1544,17 @@ function renderProfits(){
   }).join('');
 }
 
+// ===== SESSION CHECK =====
+(function(){
+  const s=localStorage.getItem('sa_session');
+  if(!s){window.location.href='login.html';return;}
+  try{
+    const sess=JSON.parse(s);
+    if(!sess.expires||sess.expires<Date.now()){localStorage.removeItem('sa_session');window.location.href='login.html';return;}
+    window._session=sess;
+  }catch(e){localStorage.removeItem('sa_session');window.location.href='login.html';}
+})();
+
 // ===== INIT =====
 function updateClock(){
   const now=new Date();
@@ -1386,6 +1565,7 @@ function updateClock(){
 }
 updateClock();
 setInterval(updateClock,1000);
+initUserSession();
 loadAll();
 </script>
 </body>
