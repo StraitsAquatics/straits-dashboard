@@ -207,7 +207,7 @@ textarea{resize:vertical;min-height:60px}
   <div class="metrics">
     <div class="metric"><div class="metric-lbl">Total Revenue Quoted</div><div class="metric-val" id="ov-rev">€0</div><div class="metric-sub">All orders</div></div>
     <div class="metric"><div class="metric-lbl">Total Profit</div><div class="metric-val mv-green" id="ov-profit">€0</div><div class="metric-sub">Quoted − actual cost</div></div>
-    <div class="metric"><div class="metric-lbl">Orders</div><div class="metric-val mv-blue" id="ov-orders">0</div><div class="metric-sub">Recorded</div></div>
+    <div class="metric"><div class="metric-lbl">Active Orders</div><div class="metric-val mv-blue" id="ov-orders">0</div><div class="metric-sub"><span id="ov-completed" style="color:var(--green)">0</span> completed</div></div>
     <div class="metric"><div class="metric-lbl">Customers</div><div class="metric-val" id="ov-custs">0</div><div class="metric-sub">In database</div></div>
     <div class="metric"><div class="metric-lbl">Credits Outstanding</div><div class="metric-val mv-amber" id="ov-credits">0</div><div class="metric-sub">Customers with balance</div></div>
     <div class="metric"><div class="metric-lbl">Pending Payments</div><div class="metric-val mv-amber" id="ov-pending">€0</div><div class="metric-sub">Owed to us by customers</div></div>
@@ -240,20 +240,32 @@ textarea{resize:vertical;min-height:60px}
 <!-- ORDERS LIST -->
 <div id="page-orders" class="page">
   <div class="section-hd">
-    <div class="section-title">All Orders</div>
+    <div class="section-title">Order Manager</div>
     <div class="flex gap-8 items-c">
-      <input type="text" placeholder="Search..." oninput="filterOrders(this.value)" style="max-width:200px">
+      <input type="text" id="orders-search" placeholder="Search..." oninput="filterOrders(this.value)" style="max-width:200px">
       <button class="btn btn-primary" onclick="startNewOrder()">+ New Order</button>
     </div>
   </div>
+  <!-- Order tabs -->
+  <div class="flex gap-0 mb-14" style="border-bottom:2px solid var(--border)">
+    <button class="order-tab active" id="tab-active" onclick="setOrderTab('active',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--reef);border-bottom:2px solid var(--reef);margin-bottom:-2px;transition:all 0.15s">
+      🔴 Active <span id="tab-count-active" class="badge b-red" style="margin-left:5px">0</span>
+    </button>
+    <button class="order-tab" id="tab-completed" onclick="setOrderTab('completed',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.15s">
+      ✅ Completed <span id="tab-count-completed" class="badge b-green" style="margin-left:5px">0</span>
+    </button>
+    <button class="order-tab" id="tab-all" onclick="setOrderTab('all',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.15s">
+      📋 All Orders <span id="tab-count-all" class="badge b-grey" style="margin-left:5px">0</span>
+    </button>
+  </div>
   <div class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
-    <span style="font-size:11px;color:var(--text3)">Customer initial colour:</span>
+    <span style="font-size:11px;color:var(--text3)">Customer colour:</span>
     <span class="badge dl-local">🟢 Local Pick-up</span>
     <span class="badge dl-post">🔵 Postage</span>
     <span class="badge dl-drop">🔴 Drop Ship</span>
   </div>
   <div class="card"><div class="tbl-wrap">
-    <table><thead><tr><th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>DOAs</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody id="orders-body"><tr><td colspan="9"><div class="empty"><div class="ei">📦</div><p>No orders yet</p></div></td></tr></tbody>
     </table>
   </div></div>
@@ -925,11 +937,12 @@ async function loadAll(){
       sbGet('prices','order=name.asc')
     ]);
     db.orders = orders.map(o=>({
-      id:o.id, num:o.num, date:o.date, suppliers:o.suppliers||[],
+      id:o.id, num:o.num, orderType:o.order_type||'weekly', date:o.date, suppliers:o.suppliers||[],
       shipping:o.shipping||0, otherCosts:o.other_costs||0, notes:o.notes||'',
       custLines:o.cust_lines||[], saLines:o.sa_lines||[],
       totalQuoted:o.total_quoted||0, totalActual:o.total_actual||0,
-      profit:o.profit||0, doaTotal:o.doa_total||0, created:o.created||''
+      profit:o.profit||0, doaTotal:o.doa_total||0, totalPending:o.total_pending||0,
+      manualComplete:o.manual_complete||false, created:o.created||''
     }));
     db.customers = customers.map(c=>({id:c.id,name:c.name,location:c.location||'',phone:c.phone||'',email:c.email||'',notes:c.notes||'',created:c.created||''}));
     db.credits = credits.map(c=>({id:c.id,customer:c.customer,type:c.type,amount:c.amount,reason:c.reason||'',order:c.order_num||'',date:c.date||''}));
@@ -1015,7 +1028,11 @@ function renderOverview(){
   },0);
   document.getElementById('ov-rev').textContent=fmt(tQ);
   document.getElementById('ov-profit').textContent=fmt(tP);
-  document.getElementById('ov-orders').textContent=db.orders.length;
+  const activeCount=db.orders.filter(o=>!isOrderComplete(o)).length;
+  const completedCount=db.orders.filter(o=>isOrderComplete(o)).length;
+  document.getElementById('ov-orders').textContent=activeCount;
+  const compEl=document.getElementById('ov-completed');
+  if(compEl)compEl.textContent=completedCount+' completed';
   document.getElementById('ov-custs').textContent=db.customers.length;
   const tPending=db.orders.reduce((a,o)=>{
     const linePending=(o.custLines||[]).reduce((b,cl)=>{
@@ -1362,16 +1379,86 @@ async function saveOrder(){
 }
 
 // ===== ORDERS LIST =====
+// ===== ORDER STATUS HELPERS =====
+let currentOrderTab = 'active';
+
+function isOrderComplete(o){
+  // Complete = every customer fully paid AND delivered/paid status, no unresolved DOAs, no pending
+  const custLines = o.custLines || [];
+  if(!custLines.length) return false; // empty order not complete
+  const allPaid = custLines.every(cl => {
+    const paid = (cl.payments||[]).reduce((a,p)=>a+(p.amount||0),0);
+    const remaining = Math.max(0,(cl.quoted||0)-paid);
+    const statusOk = cl.status==='PAID' || cl.status==='PAID - CREDIT' || cl.status==='DELIVERED' || cl.status==='FREE' || cl.status==='SORTEO';
+    return remaining<=0.01 && statusOk;
+  });
+  const noUnresolvedDOA = custLines.every(cl=>
+    (cl.items||[]).every(it=>!it.doa||it.doaResolved)
+  );
+  return allPaid && noUnresolvedDOA || o.manualComplete===true;
+}
+
+function setOrderTab(tab, btn){
+  currentOrderTab = tab;
+  document.querySelectorAll('.order-tab').forEach(b=>{
+    b.style.color='var(--text3)';
+    b.style.borderBottomColor='transparent';
+  });
+  if(btn){
+    btn.style.color='var(--reef)';
+    btn.style.borderBottomColor='var(--reef)';
+  }
+  renderOrders(document.getElementById('orders-search')?.value||'');
+}
+
+async function toggleOrderComplete(id){
+  const o = db.orders.find(x=>x.id===id);
+  if(!o)return;
+  o.manualComplete = !o.manualComplete;
+  try{
+    await sbUpdate('orders', id, {manual_complete: o.manualComplete});
+    renderOrders(document.getElementById('orders-search')?.value||'');
+    renderOverview();
+    toast(o.manualComplete ? 'Order marked complete ✓' : 'Order moved back to active');
+  }catch(e){ o.manualComplete=!o.manualComplete; toast('Save failed',false); }
+}
+
 function renderOrders(filter=''){
-  const rows=db.orders.filter(o=>!filter||o.num.includes(filter)||(o.suppliers||[]).join(',').toLowerCase().includes(filter.toLowerCase())||(o.custLines||[]).some(c=>c.name.toLowerCase().includes(filter.toLowerCase())));
+  // Apply tab filter
+  const allFiltered=db.orders.filter(o=>!filter||o.num.includes(filter)||(o.suppliers||[]).join(',').toLowerCase().includes(filter.toLowerCase())||(o.custLines||[]).some(c=>c.name.toLowerCase().includes(filter.toLowerCase())));
+  const active=allFiltered.filter(o=>!isOrderComplete(o));
+  const completed=allFiltered.filter(o=>isOrderComplete(o));
+  // Update tab counts
+  document.getElementById('tab-count-active').textContent=active.length;
+  document.getElementById('tab-count-completed').textContent=completed.length;
+  document.getElementById('tab-count-all').textContent=allFiltered.length;
+  const rows=currentOrderTab==='active'?active:currentOrderTab==='completed'?completed:allFiltered;
   const tbody=document.getElementById('orders-body');
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}
+  if(!rows.length){
+    const emptyMsg=currentOrderTab==='active'?'No active orders — everything is completed!':currentOrderTab==='completed'?'No completed orders yet':'No orders found';
+    const emptyIcon=currentOrderTab==='completed'?'✅':'📦';
+    tbody.innerHTML=`<tr><td colspan="9"><div class="empty"><div class="ei">${emptyIcon}</div><p>${emptyMsg}</p></div></td></tr>`;
+    return;
+  }
   tbody.innerHTML=[...rows].reverse().map(o=>{
     const pClass=o.profit>=0?'text-green':'text-red';
     const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'—';
     const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
-    const pendBadge=(o.totalPending||0)>0?`<span class="badge b-amber" title="Payment pending">€${(o.totalPending||0).toFixed(0)} pending</span>`:'';
-    return`<tr><td><div class="flex gap-6 items-c"><span class="badge b-blue">#${o.num}</span>${o.orderType==='adhoc'?'<span class="badge" style="background:#fef3c7;color:#b45309">⚡ Ad Hoc</span>':''}</div></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'—'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td><div class="flex gap-6" style="flex-wrap:wrap">${o.doaTotal>0?`<span class="badge b-red">€${o.doaTotal.toFixed(0)} DOA</span>`:''}${pendBadge}</div></td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
+    const complete=isOrderComplete(o);
+    // Pending payments
+    const pendingAmt=((o.custLines||[])).reduce((a,cl)=>{const paid=(cl.payments||[]).reduce((b,p)=>b+(p.amount||0),0);return a+Math.max(0,(cl.quoted||0)-paid);},0);
+    const unresolvedDOA=(o.custLines||[]).reduce((a,cl)=>(cl.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+(it.actual||0),a),0);
+    const statusCell=complete
+      ? '<span class="badge b-green">✅ Complete</span>'
+      : `<div class="flex gap-4" style="flex-wrap:wrap">
+          ${pendingAmt>0.01?`<span class="badge b-red">€${pendingAmt.toFixed(0)} unpaid</span>`:''}
+          ${unresolvedDOA>0?`<span class="badge b-amber">💀 DOA €${unresolvedDOA.toFixed(0)}</span>`:''}
+          ${pendingAmt<=0.01&&unresolvedDOA<=0?'<span class="badge b-amber">In progress</span>':''}
+        </div>`;
+    const completeBtn=complete
+      ? `<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')" title="Move back to active">↩ Reopen</button>`
+      : `<button class="btn btn-green btn-xs" onclick="toggleOrderComplete('${o.id}')" title="Mark as complete">✓ Complete</button>`;
+    return`<tr style="${complete?'opacity:0.75':''}"><td><div class="flex gap-6 items-c"><span class="badge b-blue">#${o.num}</span>${o.orderType==='adhoc'?'<span class="badge" style="background:#fef3c7;color:#b45309">⚡ Ad Hoc</span>':''}</div></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'—'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${statusCell}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${completeBtn}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
   }).join('');
 }
 function filterOrders(v){renderOrders(v);}
