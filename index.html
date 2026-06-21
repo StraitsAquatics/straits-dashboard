@@ -1267,6 +1267,18 @@ async function loadAll(){
   }
 }
 
+// ===== INIT =====
+function updateClock(){
+  const now=new Date();
+  const pad=n=>String(n).padStart(2,'0');
+  const d=pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear();
+  const t=pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+  const el=document.getElementById('cur-date');
+  if(el)el.textContent=d+' '+t;
+}
+updateClock();
+setInterval(updateClock,1000);
+loadAll();
 </script>
 </body>
 </html>
