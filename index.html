@@ -1958,6 +1958,239 @@ async function saveOrder(silent=false){
   }
 }
 
+
+
+/* ===== FINAL REPAIR PATCH 2026-06-22: modal item/payment editing + order save stability ===== */
+function escAttr(v){
+  return String(v ?? '')
+    .replace(/&/g,'&amp;')
+    .replace(/"/g,'&quot;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;');
+}
+
+function toggleFreeShipping(){
+  const cb=document.getElementById('cl-free-ship');
+  const row=document.getElementById('free-ship-actual-row');
+  if(row) row.style.display = cb && cb.checked ? 'block' : 'none';
+  calcCustLine();
+}
+
+function addPaymentRow(amount='',date='',method='',note=''){
+  rowCount++;
+  const rid='pay'+rowCount;
+  const d=document.createElement('div');
+  d.id=rid;
+  d.className='flex items-c gap-6 mb-8';
+  d.style.flexWrap='wrap';
+  const methods=['','Cash','Revolut','Bank Transfer','PayPal','Card','Stripe'];
+  d.innerHTML=`<input type="number" step="0.01" min="0" placeholder="Amount €" value="${escAttr(amount)}" class="pay-amt" style="width:110px" oninput="calcPayments()"><input type="date" value="${escAttr(date || today())}" class="pay-date" style="width:145px"><select class="pay-method" style="width:150px">${methods.map(m=>`<option value="${escAttr(m)}" ${m===method?'selected':''}>${m||'Not specified'}</option>`).join('')}</select><input type="text" placeholder="Note" value="${escAttr(note)}" class="pay-note" style="flex:1;min-width:120px"><button type="button" class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcPayments()">✕</button>`;
+  const list=document.getElementById('cl-payments-list');
+  if(list) list.appendChild(d);
+  calcPayments();
+}
+
+function calcPayments(){
+  const quoted=nval(document.getElementById('cl-quoted')?.value);
+  let paid=0;
+  document.querySelectorAll('#cl-payments-list .pay-amt').forEach(i=>paid+=nval(i.value));
+  const remaining=Math.max(0,quoted-paid);
+  const paidEl=document.getElementById('cl-paid-total');
+  const remEl=document.getElementById('cl-remaining');
+  if(paidEl) paidEl.textContent=fmt(paid);
+  if(remEl){
+    remEl.textContent=fmt(remaining);
+    remEl.className='font-bold '+(remaining>0.01?'text-red':'text-green');
+  }
+}
+
+function calcCustLine(){
+  const q=nval(document.getElementById('cl-quoted')?.value);
+  const a=nval(document.getElementById('cl-actual')?.value);
+  const profit=q-a;
+  const margin=q>0?((profit/q)*100).toFixed(1):'—';
+  const el=document.getElementById('cl-margin');
+  if(el) el.textContent=`Profit: ${fmt(profit)} (${margin}% margin)`;
+  calcPayments();
+}
+
+function calcItemTotals(){
+  let q=0,a=0;
+  document.querySelectorAll('#cl-items-list .ir-q').forEach(i=>q+=nval(i.value));
+  document.querySelectorAll('#cl-items-list .ir-a').forEach(i=>a+=nval(i.value));
+  const qEl=document.getElementById('cl-quoted');
+  const aEl=document.getElementById('cl-actual');
+  if(qEl) qEl.value=q.toFixed(2);
+  if(aEl) aEl.value=a.toFixed(2);
+  calcCustLine();
+}
+
+function addItemRow(item='',quoted='',actual='',status='TO BE PAID',doa=false,delivered=false,doaResolved=false){
+  rowCount++;
+  const rid='ir'+rowCount;
+  const d=document.createElement('div');
+  d.id=rid;
+  d.className='flex items-c gap-6 mb-8';
+  d.style.flexWrap='wrap';
+  const statuses=['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'];
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(item)}" style="flex:2;min-width:150px" class="ir-name"><input type="number" step="0.01" placeholder="Quoted €" value="${escAttr(quoted)}" style="width:95px" class="ir-q" oninput="calcItemTotals()"><input type="number" step="0.01" placeholder="Actual €" value="${escAttr(actual)}" style="width:95px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${statuses.map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-delivered" ${delivered?'checked':''}> Delivered</label><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><input type="hidden" class="ir-doa-resolved" value="${doaResolved?'1':'0'}"><button type="button" class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button>`;
+  const list=document.getElementById('cl-items-list');
+  if(list) list.appendChild(d);
+  calcItemTotals();
+}
+
+async function saveCustLine(){
+  const name=document.getElementById('cl-name')?.value.trim() || '';
+  if(!name){toast('Enter customer name',false);return;}
+  const delivery=document.getElementById('cl-delivery')?.value || '';
+  const items=[];
+  let doaTotal=0;
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{
+    const isDOA=row.querySelector('.ir-doa')?.checked || false;
+    const actual=nval(row.querySelector('.ir-a')?.value);
+    if(isDOA) doaTotal+=actual;
+    const itemName=row.querySelector('.ir-name')?.value || '';
+    if(itemName.trim()){
+      items.push({
+        name:itemName,
+        quoted:nval(row.querySelector('.ir-q')?.value),
+        actual,
+        status:row.querySelector('.ir-s')?.value || 'TO BE PAID',
+        delivered:row.querySelector('.ir-delivered')?.checked || false,
+        doa:isDOA,
+        doaResolved:row.querySelector('.ir-doa-resolved')?.value === '1'
+      });
+    }
+  });
+  if(!items.length){toast('Add at least one item',false);return;}
+
+  const payments=[];
+  document.querySelectorAll('#cl-payments-list > div').forEach(row=>{
+    const amount=nval(row.querySelector('.pay-amt')?.value);
+    if(amount>0){
+      payments.push({
+        amount,
+        date:row.querySelector('.pay-date')?.value || '',
+        method:row.querySelector('.pay-method')?.value || '',
+        note:row.querySelector('.pay-note')?.value || ''
+      });
+    }
+  });
+
+  const quoted=nval(document.getElementById('cl-quoted')?.value);
+  const actual=nval(document.getElementById('cl-actual')?.value);
+  const paid=payments.reduce((a,p)=>a+nval(p.amount),0);
+  const remaining=Math.max(0,quoted-paid);
+  const existing=editingCustLineIndex!==null ? curCustLines[editingCustLineIndex] : null;
+  const cl={
+    id:existing?.id || uid(),
+    name,
+    location:document.getElementById('cl-loc')?.value || '',
+    delivery,
+    status:remaining>0.01 ? 'TO BE PAID' : 'PAID',
+    quoted,
+    actual,
+    payBy:document.getElementById('cl-payby')?.value || '',
+    payMethod:document.getElementById('cl-paymethod')?.value || '',
+    payments,
+    freeShipping:document.getElementById('cl-free-ship')?.checked || false,
+    actualShippingCost:nval(document.getElementById('cl-ship-actual')?.value),
+    items,
+    doaTotal
+  };
+
+  if(editingCustLineIndex!==null){
+    curCustLines[editingCustLineIndex]=cl;
+  }else{
+    curCustLines.push(cl);
+  }
+
+  if(!db.customers.find(c=>String(c.name||'').toLowerCase()===name.toLowerCase())){
+    const nc={id:uid(),name,location:document.getElementById('cl-loc')?.value || '',phone:'',email:'',notes:'',created:today()};
+    db.customers.push(nc);
+    sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(e=>console.error(e));
+    refreshDatalist();
+  }
+
+  const wasEditingExistingOrder=!!editingOrderId;
+  editingCustLineIndex=null;
+  closeModal('modal-cust-line');
+  resetCustLineModal();
+  renderCustLines();
+  updateSummary();
+
+  if(wasEditingExistingOrder){
+    await saveOrder(true);
+    toast('Customer order updated and saved ✓');
+  }else{
+    toast('Customer added ✓');
+  }
+}
+
+async function saveOrder(silent=false){
+  if(!requireOrderEditor()) return;
+  const num=document.getElementById('o-num')?.value.trim() || '';
+  if(!num){toast('Enter order number',false);return;}
+  const ship=nval(document.getElementById('o-shipping')?.value);
+  const other=nval(document.getElementById('o-othercosts')?.value);
+  const saLines=getSALines();
+  const cq=curCustLines.reduce((a,c)=>a+nval(c.quoted),0);
+  const ca=curCustLines.reduce((a,c)=>a+nval(c.actual),0);
+  const totalA=ca+ship+other+saLines.reduce((a,s)=>a+nval(s.cost),0);
+  const profit=cq-totalA;
+  const doaTotal=curCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+nval(it.actual),0),0);
+  const totalPendingPayment=curCustLines.reduce((a,cl)=>a+customerRemaining(cl),0);
+  const existing=editingOrderId ? db.orders.find(o=>o.id===editingOrderId) : null;
+  const completeAfter=isOrderComplete({...(existing||{}),custLines:curCustLines});
+  const row={
+    id:editingOrderId||uid(),
+    num,
+    order_type:patchedOrderType(),
+    date:document.getElementById('o-date')?.value || today(),
+    suppliers:curSuppliers,
+    shipping:ship,
+    other_costs:other,
+    notes:document.getElementById('o-notes')?.value || '',
+    cust_lines:curCustLines,
+    sa_lines:saLines,
+    total_quoted:cq,
+    total_actual:totalA,
+    profit,
+    doa_total:doaTotal,
+    total_pending:totalPendingPayment,
+    manual_complete: existing?.manualComplete === true && completeAfter ? true : false,
+    created:existing?.created || today()
+  };
+  setSyncStatus('sync-busy','⏳ Saving...');
+  try{
+    if(editingOrderId){
+      await sbUpdate('orders',editingOrderId,row);
+      const idx=db.orders.findIndex(o=>o.id===editingOrderId);
+      if(idx>-1){
+        db.orders[idx]={...db.orders[idx],...row,orderType:row.order_type,otherCosts:other,custLines:JSON.parse(JSON.stringify(curCustLines)),saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:row.manual_complete};
+      }
+      if(!silent) toast('Order updated ✓');
+    }else{
+      await sbInsert('orders',row);
+      db.orders.push({...row,orderType:row.order_type,otherCosts:other,custLines:JSON.parse(JSON.stringify(curCustLines)),saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:false});
+      if(!silent) toast('Order saved ✓');
+    }
+    setSyncStatus('sync-ok','✓ Synced');
+    renderOverview();
+    renderOrders(document.getElementById('orders-search')?.value || '');
+    if(!silent){
+      editingOrderId=null;
+      curCustLines=[];
+      curSuppliers=[];
+      nav('orders');
+    }
+  }catch(e){
+    setSyncStatus('sync-err','✗ Error');
+    toast('Save failed: '+e.message,false);
+    console.error(e);
+  }
+}
+
 // Start the dashboard only after the whole script and DOM have loaded.
 // This prevents loadAll() from running before render functions are available.
 async function startApp(){
