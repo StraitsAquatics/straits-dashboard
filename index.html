@@ -1462,6 +1462,32 @@ function renderOverview(){
 
 // ===== NEW ORDER =====
 function startNewOrder(){if(!requireOrderEditor())return;editingOrderId=null;nav('new-order',null);}
+function selOrderType(type, el){
+  // Update hidden input
+  const inp = document.getElementById('selOrderType');
+  if(inp) inp.value = type;
+  // Update button styles
+  const weekly = document.getElementById('ot-weekly');
+  const adhoc = document.getElementById('ot-adhoc');
+  if(weekly && adhoc){
+    if(type === 'weekly'){
+      weekly.style.background = '#e8f4fd';
+      weekly.style.color = 'var(--ocean)';
+      weekly.style.borderColor = 'var(--ocean)';
+      adhoc.style.background = '#f8fafc';
+      adhoc.style.color = 'var(--text3)';
+      adhoc.style.borderColor = 'var(--border2)';
+    } else {
+      adhoc.style.background = '#fef3c7';
+      adhoc.style.color = '#b45309';
+      adhoc.style.borderColor = '#b45309';
+      weekly.style.background = '#f8fafc';
+      weekly.style.color = 'var(--text3)';
+      weekly.style.borderColor = 'var(--border2)';
+    }
+  }
+}
+
 function initNewOrder(){
   if(!editingOrderId){
     curSuppliers=[];curCustLines=[];selectedDelivery='';
@@ -1478,10 +1504,10 @@ function removeSupplier(s){curSuppliers=curSuppliers.filter(x=>x!==s);renderSupT
 function renderSupTags(){document.getElementById('sup-selected').innerHTML=curSuppliers.map(s=>`<span class="sup-tag">${s} <span style="cursor:pointer;margin-left:3px" onclick="removeSupplier('${s.replace(/'/g,"\\\\'")}')">\u2715</span></span>`).join('');}
 
 let rowCount=0;
-function addItemRow(item='',quoted='',actual='',status='PAID',doa=false){
+function addItemRow(item='',quoted='',actual='',status='TO BE PAID',doa=false,delivered=false,doaResolved=false,supplier=''){
   rowCount++;const rid='ir'+rowCount;
   const d=document.createElement('div');d.id=rid;d.className='flex items-c gap-6 mb-8';d.style.flexWrap='wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" value="${item}" style="flex:2;min-width:150px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted}" style="width:85px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual}" style="width:85px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">\u2715</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${item}" style="flex:2;min-width:150px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted}" style="width:85px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual}" style="width:85px" class="ir-a" oninput="calcItemTotals()"><select class="ir-sup" style="width:145px"><option value="">Supplier...</option>${curSuppliers.map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox" class="ir-del" ${delivered?'checked':''}> ✅ Delivered</label><label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap;cursor:pointer"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> 💀 DOA</label><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button>`;
   document.getElementById('cl-items-list').appendChild(d);
 }
 function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();}
@@ -1496,7 +1522,7 @@ function saveCustLine(){
     const isDOA=row.querySelector('.ir-doa').checked;
     const actual=parseFloat(row.querySelector('.ir-a').value)||0;
     if(isDOA)doaTotal+=actual;
-    items.push({name:row.querySelector('.ir-name').value,quoted:parseFloat(row.querySelector('.ir-q').value)||0,actual,status:row.querySelector('.ir-s').value,doa:isDOA});
+    const rawQ=parseFloat(row.querySelector('.ir-q').value)||0; const itemQ=isDOA?0:rawQ; const isDeliv=row.querySelector('.ir-del')&&row.querySelector('.ir-del').checked; items.push({name:row.querySelector('.ir-name').value,quoted:itemQ,actual:isDOA?actual:actual,originalQuoted:rawQ,status:'TO BE PAID',doa:isDOA,doaResolved:false,delivered:isDeliv||false,supplier:row.querySelector('.ir-sup')?row.querySelector('.ir-sup').value:'',doaAbsorbed:isDOA?actual:0});
   });
   curCustLines.push({id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:document.getElementById('cl-status').value,quoted:parseFloat(document.getElementById('cl-quoted').value)||0,actual:parseFloat(document.getElementById('cl-actual').value)||0,items,doaTotal});
   if(!db.customers.find(c=>c.name.toLowerCase()===name.toLowerCase())){
@@ -1619,20 +1645,7 @@ function openCustLineModal(index=null){
 
 function editCustLine(i){openCustLineModal(i);}
 
-function addItemRow(item='',quoted='',actual='',status='TO BE PAID',doa=false,delivered=false,doaResolved=false){
-  rowCount++; const rid='ir'+rowCount;
-  const d=document.createElement('div'); d.id=rid; d.className='flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" value="${safeAttr(item)}" style="flex:2;min-width:150px" class="ir-name">
-    <input type="number" placeholder="Quoted €" value="${safeAttr(quoted)}" style="width:85px" class="ir-q" oninput="calcItemTotals()">
-    <input type="number" placeholder="Actual €" value="${safeAttr(actual)}" style="width:85px" class="ir-a" oninput="calcItemTotals()">
-    <select class="ir-s" style="width:130px" onchange="calcItemTotals()">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select>
-    <label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-delivered" ${delivered?'checked':''}> Delivered</label>
-    <label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label>
-    <input type="hidden" class="ir-doa-resolved" value="${doaResolved?'1':'0'}">
-    <button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button>`;
-  document.getElementById('cl-items-list').appendChild(d);
-  calcItemTotals();
-}
+
 
 function calcItemTotals(){
   let q=0,a=0;
