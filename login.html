@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Straits Aquatics — Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--ocean:#0a3d62;--reef:#00b4d8;--reef2:#90e0ef;--sand:#f0f4f8;--white:#fff;--text:#1a2332;--text2:#4a5568;--text3:#8a9ab0;--red:#dc2626;--red-bg:#fee2e2;--border:#e2e8ef;--radius:10px;--radius-sm:6px}
+body{min-height:100vh;background:linear-gradient(135deg,#0a1628 0%,#0d2040 50%,#0a3d62 100%);display:flex;align-items:center;justify-content:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:20px;position:relative;overflow:hidden}
+.bg-glow{position:fixed;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,rgba(0,180,216,0.08) 0%,transparent 70%);top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none}
+.particles{position:fixed;inset:0;overflow:hidden;pointer-events:none}
+.p{position:absolute;border-radius:50%;opacity:0;animation:rise linear infinite}
+@keyframes rise{0%{opacity:0;transform:translateY(100vh) scale(0)}10%{opacity:0.4}90%{opacity:0.15}100%{opacity:0;transform:translateY(-50px)}}
+.card{background:rgba(255,255,255,0.04);backdrop-filter:blur(20px);border:1px solid rgba(0,180,216,0.2);border-radius:20px;padding:48px 40px;width:100%;max-width:420px;position:relative;box-shadow:0 20px 60px rgba(0,0,0,0.4)}
+.logo{text-align:center;margin-bottom:36px}
+.logo-icon{width:64px;height:64px;background:linear-gradient(135deg,var(--reef),var(--reef2));border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:30px;margin:0 auto 16px}
+.logo-name{font-size:22px;font-weight:700;color:#fff;letter-spacing:-0.01em}
+.logo-sub{font-size:12px;color:rgba(255,255,255,0.4);margin-top:4px;letter-spacing:0.08em;text-transform:uppercase}
+.divider{height:1px;background:rgba(0,180,216,0.15);margin-bottom:32px}
+.fg{margin-bottom:18px}
+.fg label{display:block;font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.4);margin-bottom:8px}
+.fg input{width:100%;padding:12px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(0,180,216,0.2);border-radius:var(--radius-sm);color:#fff;font-size:14px;outline:none;transition:all 0.2s;font-family:inherit}
+.fg input:focus{border-color:var(--reef);background:rgba(0,180,216,0.08);box-shadow:0 0 0 3px rgba(0,180,216,0.1)}
+.fg input::placeholder{color:rgba(255,255,255,0.2)}
+.btn-login{width:100%;padding:13px;background:linear-gradient(135deg,var(--reef),var(--reef2));color:#0a1628;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;transition:all 0.2s;letter-spacing:0.04em;margin-top:8px}
+.btn-login:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(0,180,216,0.35)}
+.btn-login:active{transform:translateY(0)}
+.btn-login:disabled{opacity:0.6;cursor:not-allowed;transform:none}
+.error{background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.3);border-radius:var(--radius-sm);padding:10px 14px;color:#fca5a5;font-size:12.5px;margin-bottom:16px;display:none;align-items:center;gap:8px}
+.error.show{display:flex}
+.loading{display:none;text-align:center;padding:8px;color:rgba(255,255,255,0.4);font-size:12px}
+.loading.show{display:block}
+.footer{text-align:center;margin-top:28px;color:rgba(255,255,255,0.2);font-size:11px;letter-spacing:0.06em}
+</style>
+</head>
+<body>
+<div class="bg-glow"></div>
+<div class="particles" id="particles"></div>
+
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">🐠</div>
+    <div class="logo-name">Straits Aquatics</div>
+    <div class="logo-sub">Business Dashboard</div>
+  </div>
+  <div class="divider"></div>
+
+  <div class="error" id="error-msg">
+    <span>⚠️</span><span id="error-text">Incorrect username or password</span>
+  </div>
+
+  <div class="fg">
+    <label>Username</label>
+    <input type="text" id="username" placeholder="Enter your username" autocomplete="username" autocapitalize="none">
+  </div>
+  <div class="fg">
+    <label>Password</label>
+    <input type="password" id="password" placeholder="Enter your password" autocomplete="current-password">
+  </div>
+
+  <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In →</button>
+  <div class="loading" id="loading">Verifying credentials...</div>
+</div>
+
+<div class="footer">Straits Aquatics · Gibraltar · v3.0</div>
+
+<script>
+const SB_URL='https://addrfpwgtixvzokkkuyi.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZHJmcHdndGl4dnpva2trdXlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMjkwMjgsImV4cCI6MjA5NzYwNTAyOH0.OMcNNFHIrNBm4sRi8D0V9-ftMadd62X2XDYtF_jRJ4M';
+const H={'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY};
+
+// If already logged in, redirect
+const session = localStorage.getItem('sa_session');
+if(session){
+  try{
+    const s = JSON.parse(session);
+    if(s.expires > Date.now()) { window.location.href='index.html'; }
+    else { localStorage.removeItem('sa_session'); }
+  } catch(e){ localStorage.removeItem('sa_session'); }
+}
+
+// Particles
+(function(){
+  const c=document.getElementById('particles');
+  for(let i=0;i<18;i++){
+    const p=document.createElement('div');p.className='p';
+    const s=Math.random()*3+1.5,x=Math.random()*100,d=Math.random()*20+12,dl=Math.random()*15;
+    const col=Math.random()>0.5?'rgba(0,180,216,':'rgba(144,224,239,';
+    p.style.cssText=`width:${s}px;height:${s}px;left:${x}%;background:${col}0.4);animation-duration:${d}s;animation-delay:${dl}s`;
+    c.appendChild(p);
+  }
+})();
+
+// SHA-256 via SubtleCrypto (browser)
+async function sha256(message){
+  const msgBuffer=new TextEncoder().encode(message);
+  const hashBuffer=await crypto.subtle.digest('SHA-256',msgBuffer);
+  const hashArray=Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+async function verifyPassword(password, stored){
+  const parts = stored.split(':');
+  if(parts.length !== 2) return false;
+  const [salt, hash] = parts;
+  const check = await sha256(salt + password);
+  return check === hash;
+}
+
+function showError(msg){
+  document.getElementById('error-text').textContent=msg||'Incorrect username or password';
+  document.getElementById('error-msg').classList.add('show');
+}
+function hideError(){ document.getElementById('error-msg').classList.remove('show'); }
+
+async function doLogin(){
+  const username = document.getElementById('username').value.trim().toUpperCase();
+  const password = document.getElementById('password').value;
+
+  if(!username||!password){ showError('Please enter your username and password'); return; }
+  hideError();
+
+  const btn=document.getElementById('login-btn');
+  const loading=document.getElementById('loading');
+  btn.disabled=true; btn.textContent='Signing in...';
+  loading.classList.add('show');
+
+  try{
+    // Fetch user from Supabase
+    const r=await fetch(`${SB_URL}/rest/v1/users?username=eq.${encodeURIComponent(username)}&select=*`,{headers:H});
+    if(!r.ok) throw new Error('Connection error');
+    const users=await r.json();
+
+    if(!users||users.length===0){ showError('Username not found'); return; }
+    const user=users[0];
+
+    // Verify password
+    const valid=await verifyPassword(password, user.password_hash);
+    if(!valid){ showError('Incorrect password'); return; }
+
+    // Create session (24hr expiry)
+    const session={
+      id:user.id, username:user.username,
+      displayName:user.display_name, role:user.role,
+      expires:Date.now()+(24*60*60*1000)
+    };
+    localStorage.setItem('sa_session',JSON.stringify(session));
+
+    // Update last login
+    await fetch(`${SB_URL}/rest/v1/users?id=eq.${user.id}`,{
+      method:'PATCH',headers:H,
+      body:JSON.stringify({last_login:new Date().toISOString().split('T')[0]})
+    });
+
+    // Redirect to dashboard
+    window.location.href='index.html';
+
+  } catch(e){
+    showError('Connection error — please try again');
+    console.error(e);
+  } finally{
+    btn.disabled=false; btn.textContent='Sign In →';
+    loading.classList.remove('show');
+  }
+}
+
+// Enter key support
+document.addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
+</script>
+</body>
+</html>
