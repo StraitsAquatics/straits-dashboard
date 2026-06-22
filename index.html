@@ -1287,3 +1287,341 @@ loadAll();
 </script>
 </body>
 </html>
+
+async function seedPrices(){
+  const chunks = [];
+  for(let i=0;i<BUILTIN.length;i+=20) chunks.push(BUILTIN.slice(i,i+20));
+  for(const chunk of chunks){
+    const rows = chunk.map(p=>({id:uid(),name:p.name,cat:p.cat,wild:p.wild||0,capt:p.capt||0,sup:p.sup||'',notes:p.notes||''}));
+    await sbInsert('prices', rows);
+    db.prices.push(...rows);
+  }
+}
+
+// ===== UTILS =====
+function uid(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+function fmt(n){return'€'+parseFloat(n||0).toFixed(2);}
+function today(){return new Date().toISOString().split('T')[0];}
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}
+
+function fmt(n){return'\u20ac'+parseFloat(n||0).toFixed(2);}\
+function today(){return new Date().toISOString().split('T')[0];}\
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}\
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}\
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}\
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}\
+\
+// ===== NAV =====\
+const TITLES={overview:'Dashboard Overview',orders:'Order Manager','new-order':'New Order',customers:'Customers',credits:'Credits & Amounts Owed',prices:'Species Price List',suppliers:'Suppliers',profits:'Profit Tracker'};\
+function nav(id,btn){\
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));\
+  document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));\
+  document.getElementById('page-'+id).classList.add('active');\
+  document.getElementById('page-title').textContent=TITLES[id]||id;\
+  if(btn)btn.classList.add('active');\
+  else{const f=document.querySelector(`.sb-btn[onclick*=\"'${id}'\"]`);if(f)f.classList.add('active');}\
+  const map={overview:renderOverview,orders:renderOrders,customers:renderCustomers,credits:renderCredits,prices:renderPrices,suppliers:renderSuppliers,profits:renderProfits,'new-order':initNewOrder};\
+  if(map[id])map[id]();\
+}\
+\
+// ===== TOAST =====\
+function toast(msg,ok=true){const t=document.getElementById('toast');t.textContent=msg;t.style.background=ok?'#1a2332':'#dc2626';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}\
+\
+// ===== MODALS =====\
+function openModal(id){document.getElementById(id).classList.add('open');document.querySelectorAll(`#${id} input[type=\"date\"]`).forEach(d=>{if(!d.value)d.value=today();});refreshDatalist();}\
+function closeModal(id){document.getElementById(id).classList.remove('open');}\
+document.querySelectorAll('.modal-ov').forEach(o=>o.addEventListener('click',function(e){if(e.target===this)this.classList.remove('open');}));\
+function refreshDatalist(){const opts=db.customers.map(c=>`<option value=\"${c.name}\">`).join('');document.querySelectorAll('[id^=\"dl-custs\"]').forEach(d=>d.innerHTML=opts);}\
+\
+// ===== DELIVERY =====\
+function selDelivery(type,el){\
+  selectedDelivery=type;document.getElementById('cl-delivery').value=type;\
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));\
+  el.classList.add('sel');\
+}\
+\
+// ===== OVERVIEW =====\
+function renderOverview(){\
+  const tQ=db.orders.reduce((a,o)=>a+o.totalQuoted,0);\
+  const tP=db.orders.reduce((a,o)=>a+o.profit,0);\
+  const tD=db.orders.reduce((a,o)=>a+(o.doaTotal||0),0);\
+  document.getElementById('ov-rev').textContent=fmt(tQ);\
+  document.getElementById('ov-profit').textContent=fmt(tP);\
+  document.getElementById('ov-orders').textContent=db.orders.length;\
+  document.getElementById('ov-custs').textContent=db.customers.length;\
+  document.getElementById('ov-credits').textContent=db.credits.filter(c=>c.type==='credit').length;\
+  document.getElementById('ov-doas').textContent=fmt(tD);\
+  const l10=db.orders.slice(-10);const maxP=Math.max(...l10.map(o=>Math.abs(o.profit)),1);\
+  document.getElementById('ov-chart').innerHTML=l10.length?l10.map(o=>`<div class=\"bar-item\"><div class=\"bar-v\" style=\"color:${o.profit>=0?'var(--reef)':'var(--red)'}\">${o.profit>=0?'\u20ac'+Math.round(o.profit):'-\u20ac'+Math.round(Math.abs(o.profit))}</div><div class=\"bar-fill ${o.profit<0?'neg':''}\" style=\"height:${Math.round((Math.abs(o.profit)/maxP)*75)}px\"></div><div class=\"bar-lbl\">#${o.num}</div></div>`).join(''):'<div class=\"empty\" style=\"width:100%\"><p>No orders yet</p></div>';\
+  const rec=[...db.orders].reverse().slice(0,5);\
+  document.getElementById('ov-recent').innerHTML=rec.length?rec.map(o=>`<div class=\"flex items-c gap-8\" style=\"padding:6px 0;border-bottom:1px solid var(--border)\"><span class=\"badge b-blue\">#${o.num}</span><span class=\"text-sm\" style=\"flex:1\">${(o.suppliers||[]).join(', ')}</span><span class=\"font-bold ${o.profit>=0?'text-green':'text-red'}\">${fmt(o.profit)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udce6</div><p>No orders</p></div>';\
+  const sp={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+(cl.quoted||0);}));\
+  const sor=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6);\
+  document.getElementById('ov-topcusts').innerHTML=sor.length?sor.map(([n,a])=>`<div class=\"flex items-c gap-8\" style=\"padding:5px 0;border-bottom:1px solid var(--border)\"><div class=\"cust-init ci-none\" style=\"width:26px;height:26px;font-size:9px\">${inits(n)}</div><span class=\"text-sm\" style=\"flex:1\">${n}</span><span class=\"font-bold\">${fmt(a)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udc65</div><p>No data</p></div>';\
+  const cr=db.credits.slice(-5);\
+  document.getElementById('ov-credsummary').innerHTML=cr.length?cr.map(c=>`<div class=\"flex items-c gap-8\" style=\"padding:5px 0;border-bottom:1px solid var(--border)\"><span class=\"text-sm\" style=\"flex:1\">${c.customer}</span><span class=\"badge ${c.type==='credit'?'b-amber':'b-blue'}\">${c.type==='credit'?'Credit':'Owes'}</span><span class=\"font-bold\">${fmt(c.amount)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udcb3</div><p>No credits</p></div>';\
+}\
+\
+// ===== NEW ORDER =====\
+function startNewOrder(){editingOrderId=null;nav('new-order',null);}\
+function initNewOrder(){\
+  if(!editingOrderId){\
+    curSuppliers=[];curCustLines=[];selectedDelivery='';\
+    ['o-num','o-shipping','o-othercosts','o-notes'].forEach(id=>document.getElementById(id).value='');\
+    document.getElementById('o-date').value=today();\
+    document.getElementById('order-page-title').textContent='New Order';\
+  }\
+  renderSupTags();renderCustLines();updateSummary();\
+  document.querySelectorAll('#sa-lines-wrap .sa-row').forEach(r=>r.remove());\
+  document.getElementById('sa-lines-empty').style.display='block';\
+}\
+function addSupplier(){const v=document.getElementById('sup-picker').value;if(!v||curSuppliers.includes(v))return;curSuppliers.push(v);renderSupTags();}\
+function removeSupplier(s){curSuppliers=curSuppliers.filter(x=>x!==s);renderSupTags();}\
+function renderSupTags(){document.getElementById('sup-selected').innerHTML=curSuppliers.map(s=>`<span class=\"sup-tag\">${s} <span style=\"cursor:pointer;margin-left:3px\" onclick=\"removeSupplier('${s.replace(/'/g,\"\\\\'\")}')\">\u2715</span></span>`).join('');}\
+\
+let rowCount=0;\
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false){\
+  rowCount++;const rid='ir'+rowCount;\
+  const d=document.createElement('div');d.id=rid;d.className='flex items-c gap-6 mb-8';d.style.flexWrap='wrap';\
+  d.innerHTML=`<input type=\"text\" placeholder=\"Item / species\" value=\"${item}\" style=\"flex:2;min-width:150px\" class=\"ir-name\"><input type=\"number\" placeholder=\"Quoted \u20ac\" value=\"${quoted}\" style=\"width:85px\" class=\"ir-q\" oninput=\"calcItemTotals()\"><input type=\"number\" placeholder=\"Actual \u20ac\" value=\"${actual}\" style=\"width:85px\" class=\"ir-a\" oninput=\"calcItemTotals()\"><select class=\"ir-s\" style=\"width:130px\">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class=\"text-xs flex items-c gap-6\"><input type=\"checkbox\" class=\"ir-doa\" ${doa?'checked':''}> DOA</label><button class=\"btn btn-danger btn-xs\" onclick=\"document.getElementById('${rid}').remove();calcItemTotals()\">\u2715</button>`;\
+  document.getElementById('cl-items-list').appendChild(d);\
+}\
+function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();}\
+function calcCustLine(){const q=parseFloat(document.getElementById('cl-quoted').value)||0;const a=parseFloat(document.getElementById('cl-actual').value)||0;const m=a>0?((q-a)/q*100).toFixed(1):'\u2014';document.getElementById('cl-margin').textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;}\
+\
+function saveCustLine(){\
+  const name=document.getElementById('cl-name').value.trim();\
+  if(!name){toast('Enter customer name',false);return;}\
+  const delivery=document.getElementById('cl-delivery').value;\
+  const items=[];let doaTotal=0;\
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{\
+    const isDOA=row.querySelector('.ir-doa').checked;\
+    const actual=parseFloat(row.querySelector('.ir-a').value)||0;\
+    if(isDOA)doaTotal+=actual;\
+    items.push({name:row.querySelector('.ir-name').value,quoted:parseFloat(row.querySelector('.ir-q').value)||0,actual,status:row.querySelector('.ir-s').value,doa:isDOA});\
+  });\
+  curCustLines.push({id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:document.getElementById('cl-status').value,quoted:parseFloat(document.getElementById('cl-quoted').value)||0,actual:parseFloat(document.getElementById('cl-actual').value)||0,items,doaTotal});\
+  if(!db.customers.find(c=>c.name.toLowerCase()===name.toLowerCase())){\
+    const nc={id:uid(),name,location:document.getElementById('cl-loc').value,phone:'',email:'',notes:'',created:today()};\
+    db.customers.push(nc);\
+    sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(e=>console.error(e));\
+    refreshDatalist();\
+  }\
+  closeModal('modal-cust-line');\
+  document.getElementById('cl-items-list').innerHTML='';\
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});\
+  document.getElementById('cl-delivery').value='';\
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));\
+  selectedDelivery='';\
+  renderCustLines();updateSummary();toast('Customer added \u2713');\
+}\
+\
+function renderCustLines(){\
+  const wrap=document.getElementById('cust-lines-wrap');\
+  const empty=document.getElementById('cust-lines-empty');\
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove());\
+  if(!curCustLines.length){empty.style.display='block';return;}\
+  empty.style.display='none';\
+  curCustLines.forEach((cl,i)=>{\
+    const profit=cl.quoted-cl.actual;\
+    const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';\
+    div.innerHTML=`<div class=\"flex items-c gap-8 mb-8\"><div class=\"cust-init ${dlClass(cl.delivery)}\">${inits(cl.name)}</div><div style=\"flex:1\"><div class=\"font-bold\">${cl.name}</div><div class=\"flex gap-6 items-c mt-8\" style=\"flex-wrap:wrap\">${cl.location?`<span class=\"text-xs text-muted\">${cl.location}</span>`:''}<span class=\"badge ${cl.status.includes('PAID')?'b-green':cl.status==='TO BE PAID'?'b-red':'b-grey'}\">${cl.status}</span>${cl.delivery?`<span class=\"badge ${dlBadge(cl.delivery)}\">${dlLabel(cl.delivery)}</span>`:''}</div></div><div class=\"text-right\"><div class=\"font-bold\">${fmt(cl.quoted)}</div><div class=\"text-xs ${profit>=0?'text-green':'text-red'}\">${fmt(profit)}</div></div><button class=\"btn btn-danger btn-xs\" onclick=\"removeCustLine(${i})\">\u2715</button></div>${cl.items&&cl.items.length?`<table class=\"itbl\"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class=\"${it.doa?'doa':''}\"><td>${it.name}${it.doa?' \ud83d\udc80':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}`;\
+    wrap.appendChild(div);\
+  });\
+}\
+
+async function seedPrices(){
+  const chunks = [];
+  for(let i=0;i<BUILTIN.length;i+=20) chunks.push(BUILTIN.slice(i,i+20));
+  for(const chunk of chunks){
+    const rows = chunk.map(p=>({id:uid(),name:p.name,cat:p.cat,wild:p.wild||0,capt:p.capt||0,sup:p.sup||'',notes:p.notes||''}));
+    await sbInsert('prices', rows);
+    db.prices.push(...rows);
+  }
+}
+
+// ===== UTILS =====
+function uid(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+function fmt(n){return'€'+parseFloat(n||0).toFixed(2);}
+function today(){return new Date().toISOString().split('T')[0];}
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}
+
+function fmt(n){return'\u20ac'+parseFloat(n||0).toFixed(2);}\
+function today(){return new Date().toISOString().split('T')[0];}\
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}\
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}\
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}\
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}\
+\
+// ===== NAV =====\
+const TITLES={overview:'Dashboard Overview',orders:'Order Manager','new-order':'New Order',customers:'Customers',credits:'Credits & Amounts Owed',prices:'Species Price List',suppliers:'Suppliers',profits:'Profit Tracker'};\
+function nav(id,btn){\
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));\
+  document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));\
+  document.getElementById('page-'+id).classList.add('active');\
+  document.getElementById('page-title').textContent=TITLES[id]||id;\
+  if(btn)btn.classList.add('active');\
+  else{const f=document.querySelector(`.sb-btn[onclick*=\"'${id}'\"]`);if(f)f.classList.add('active');}\
+  const map={overview:renderOverview,orders:renderOrders,customers:renderCustomers,credits:renderCredits,prices:renderPrices,suppliers:renderSuppliers,profits:renderProfits,'new-order':initNewOrder};\
+  if(map[id])map[id]();\
+}\
+\
+// ===== TOAST =====\
+function toast(msg,ok=true){const t=document.getElementById('toast');t.textContent=msg;t.style.background=ok?'#1a2332':'#dc2626';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}\
+\
+// ===== MODALS =====\
+function openModal(id){document.getElementById(id).classList.add('open');document.querySelectorAll(`#${id} input[type=\"date\"]`).forEach(d=>{if(!d.value)d.value=today();});refreshDatalist();}\
+function closeModal(id){document.getElementById(id).classList.remove('open');}\
+document.querySelectorAll('.modal-ov').forEach(o=>o.addEventListener('click',function(e){if(e.target===this)this.classList.remove('open');}));\
+function refreshDatalist(){const opts=db.customers.map(c=>`<option value=\"${c.name}\">`).join('');document.querySelectorAll('[id^=\"dl-custs\"]').forEach(d=>d.innerHTML=opts);}\
+\
+// ===== DELIVERY =====\
+function selDelivery(type,el){\
+  selectedDelivery=type;document.getElementById('cl-delivery').value=type;\
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));\
+  el.classList.add('sel');\
+}\
+\
+// ===== OVERVIEW =====\
+function renderOverview(){\
+  const tQ=db.orders.reduce((a,o)=>a+o.totalQuoted,0);\
+  const tP=db.orders.reduce((a,o)=>a+o.profit,0);\
+  const tD=db.orders.reduce((a,o)=>a+(o.doaTotal||0),0);\
+  document.getElementById('ov-rev').textContent=fmt(tQ);\
+  document.getElementById('ov-profit').textContent=fmt(tP);\
+  document.getElementById('ov-orders').textContent=db.orders.length;\
+  document.getElementById('ov-custs').textContent=db.customers.length;\
+  document.getElementById('ov-credits').textContent=db.credits.filter(c=>c.type==='credit').length;\
+  document.getElementById('ov-doas').textContent=fmt(tD);\
+  const l10=db.orders.slice(-10);const maxP=Math.max(...l10.map(o=>Math.abs(o.profit)),1);\
+  document.getElementById('ov-chart').innerHTML=l10.length?l10.map(o=>`<div class=\"bar-item\"><div class=\"bar-v\" style=\"color:${o.profit>=0?'var(--reef)':'var(--red)'}\">${o.profit>=0?'\u20ac'+Math.round(o.profit):'-\u20ac'+Math.round(Math.abs(o.profit))}</div><div class=\"bar-fill ${o.profit<0?'neg':''}\" style=\"height:${Math.round((Math.abs(o.profit)/maxP)*75)}px\"></div><div class=\"bar-lbl\">#${o.num}</div></div>`).join(''):'<div class=\"empty\" style=\"width:100%\"><p>No orders yet</p></div>';\
+  const rec=[...db.orders].reverse().slice(0,5);\
+  document.getElementById('ov-recent').innerHTML=rec.length?rec.map(o=>`<div class=\"flex items-c gap-8\" style=\"padding:6px 0;border-bottom:1px solid var(--border)\"><span class=\"badge b-blue\">#${o.num}</span><span class=\"text-sm\" style=\"flex:1\">${(o.suppliers||[]).join(', ')}</span><span class=\"font-bold ${o.profit>=0?'text-green':'text-red'}\">${fmt(o.profit)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udce6</div><p>No orders</p></div>';\
+  const sp={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+(cl.quoted||0);}));\
+  const sor=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6);\
+  document.getElementById('ov-topcusts').innerHTML=sor.length?sor.map(([n,a])=>`<div class=\"flex items-c gap-8\" style=\"padding:5px 0;border-bottom:1px solid var(--border)\"><div class=\"cust-init ci-none\" style=\"width:26px;height:26px;font-size:9px\">${inits(n)}</div><span class=\"text-sm\" style=\"flex:1\">${n}</span><span class=\"font-bold\">${fmt(a)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udc65</div><p>No data</p></div>';\
+  const cr=db.credits.slice(-5);\
+  document.getElementById('ov-credsummary').innerHTML=cr.length?cr.map(c=>`<div class=\"flex items-c gap-8\" style=\"padding:5px 0;border-bottom:1px solid var(--border)\"><span class=\"text-sm\" style=\"flex:1\">${c.customer}</span><span class=\"badge ${c.type==='credit'?'b-amber':'b-blue'}\">${c.type==='credit'?'Credit':'Owes'}</span><span class=\"font-bold\">${fmt(c.amount)}</span></div>`).join(''):'<div class=\"empty\"><div class=\"ei\">\ud83d\udcb3</div><p>No credits</p></div>';\
+}\
+\
+// ===== NEW ORDER =====\
+function startNewOrder(){editingOrderId=null;nav('new-order',null);}\
+function initNewOrder(){\
+  if(!editingOrderId){\
+    curSuppliers=[];curCustLines=[];selectedDelivery='';\
+    ['o-num','o-shipping','o-othercosts','o-notes'].forEach(id=>document.getElementById(id).value='');\
+    document.getElementById('o-date').value=today();\
+    document.getElementById('order-page-title').textContent='New Order';\
+  }\
+  renderSupTags();renderCustLines();updateSummary();\
+  document.querySelectorAll('#sa-lines-wrap .sa-row').forEach(r=>r.remove());\
+  document.getElementById('sa-lines-empty').style.display='block';\
+}\
+function addSupplier(){const v=document.getElementById('sup-picker').value;if(!v||curSuppliers.includes(v))return;curSuppliers.push(v);renderSupTags();}\
+function removeSupplier(s){curSuppliers=curSuppliers.filter(x=>x!==s);renderSupTags();}\
+function renderSupTags(){document.getElementById('sup-selected').innerHTML=curSuppliers.map(s=>`<span class=\"sup-tag\">${s} <span style=\"cursor:pointer;margin-left:3px\" onclick=\"removeSupplier('${s.replace(/'/g,\"\\\\'\")}')\">\u2715</span></span>`).join('');}\
+\
+let rowCount=0;\
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false){\
+  rowCount++;const rid='ir'+rowCount;\
+  const d=document.createElement('div');d.id=rid;d.className='flex items-c gap-6 mb-8';d.style.flexWrap='wrap';\
+  d.innerHTML=`<input type=\"text\" placeholder=\"Item / species\" value=\"${item}\" style=\"flex:2;min-width:150px\" class=\"ir-name\"><input type=\"number\" placeholder=\"Quoted \u20ac\" value=\"${quoted}\" style=\"width:85px\" class=\"ir-q\" oninput=\"calcItemTotals()\"><input type=\"number\" placeholder=\"Actual \u20ac\" value=\"${actual}\" style=\"width:85px\" class=\"ir-a\" oninput=\"calcItemTotals()\"><select class=\"ir-s\" style=\"width:130px\">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class=\"text-xs flex items-c gap-6\"><input type=\"checkbox\" class=\"ir-doa\" ${doa?'checked':''}> DOA</label><button class=\"btn btn-danger btn-xs\" onclick=\"document.getElementById('${rid}').remove();calcItemTotals()\">\u2715</button>`;\
+  document.getElementById('cl-items-list').appendChild(d);\
+}\
+function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();}\
+function calcCustLine(){const q=parseFloat(document.getElementById('cl-quoted').value)||0;const a=parseFloat(document.getElementById('cl-actual').value)||0;const m=a>0?((q-a)/q*100).toFixed(1):'\u2014';document.getElementById('cl-margin').textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;}\
+\
+function saveCustLine(){\
+  const name=document.getElementById('cl-name').value.trim();\
+  if(!name){toast('Enter customer name',false);return;}\
+  const delivery=document.getElementById('cl-delivery').value;\
+  const items=[];let doaTotal=0;\
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{\
+    const isDOA=row.querySelector('.ir-doa').checked;\
+    const actual=parseFloat(row.querySelector('.ir-a').value)||0;\
+    if(isDOA)doaTotal+=actual;\
+    items.push({name:row.querySelector('.ir-name').value,quoted:parseFloat(row.querySelector('.ir-q').value)||0,actual,status:row.querySelector('.ir-s').value,doa:isDOA});\
+  });\
+  curCustLines.push({id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:document.getElementById('cl-status').value,quoted:parseFloat(document.getElementById('cl-quoted').value)||0,actual:parseFloat(document.getElementById('cl-actual').value)||0,items,doaTotal});\
+  if(!db.customers.find(c=>c.name.toLowerCase()===name.toLowerCase())){\
+    const nc={id:uid(),name,location:document.getElementById('cl-loc').value,phone:'',email:'',notes:'',created:today()};\
+    db.customers.push(nc);\
+    sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(e=>console.error(e));\
+    refreshDatalist();\
+  }\
+  closeModal('modal-cust-line');\
+  document.getElementById('cl-items-list').innerHTML='';\
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});\
+  document.getElementById('cl-delivery').value='';\
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));\
+  selectedDelivery='';\
+  renderCustLines();updateSummary();toast('Customer added \u2713');\
+}\
+\
+function renderCustLines(){\
+  const wrap=document.getElementById('cust-lines-wrap');\
+  const empty=document.getElementById('cust-lines-empty');\
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove());\
+  if(!curCustLines.length){empty.style.display='block';return;}\
+  empty.style.display='none';\
+  curCustLines.forEach((cl,i)=>{\
+    const profit=cl.quoted-cl.actual;\
+    const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';\
+    div.innerHTML=`<div class=\"flex items-c gap-8 mb-8\"><div class=\"cust-init ${dlClass(cl.delivery)}\">${inits(cl.name)}</div><div style=\"flex:1\"><div class=\"font-bold\">${cl.name}</div><div class=\"flex gap-6 items-c mt-8\" style=\"flex-wrap:wrap\">${cl.location?`<span class=\"text-xs text-muted\">${cl.location}</span>`:''}<span class=\"badge ${cl.status.includes('PAID')?'b-green':cl.status==='TO BE PAID'?'b-red':'b-grey'}\">${cl.status}</span>${cl.delivery?`<span class=\"badge ${dlBadge(cl.delivery)}\">${dlLabel(cl.delivery)}</span>`:''}</div></div><div class=\"text-right\"><div class=\"font-bold\">${fmt(cl.quoted)}</div><div class=\"text-xs ${profit>=0?'text-green':'text-red'}\">${fmt(profit)}</div></div><button class=\"btn btn-danger btn-xs\" onclick=\"removeCustLine(${i})\">\u2715</button></div>${cl.items&&cl.items.length?`<table class=\"itbl\"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class=\"${it.doa?'doa':''}\"><td>${it.name}${it.doa?' \ud83d\udc80':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}`;\
+    wrap.appendChild(div);\
+  });\
+}\
+function removeCustLine(i){curCustLines.splice(i,1);renderCustLines();updateSummary();}\
+\
+function addSARow(){\
+  const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');\
+  document.getElementById('sa-lines-empty').style.display='none';\
+  const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';\
+  d.innerHTML=`<input type=\"text\" placeholder=\"Item / species\" style=\"flex:2;min-width:150px\" class=\"sa-n\"><input type=\"number\" placeholder=\"Cost \u20ac\" style=\"width:90px\" class=\"sa-c\" oninput=\"updateSummary()\"><input type=\"number\" placeholder=\"Sell \u20ac\" style=\"width:90px\" class=\"sa-s\" oninput=\"updateSummary()\"><select class=\"sa-sup\" style=\"width:160px\"><option value=\"\">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class=\"btn btn-danger btn-xs\" onclick=\"document.getElementById('${id}').remove();updateSummary()\">\u2715</button>`;\
+  wrap.appendChild(d);\
+}\
+function getSALines(){return[...document.querySelectorAll('.sa-row')].map(r=>({name:r.querySelector('.sa-n').value,cost:parseFloat(r.querySelector('.sa-c').value)||0,sell:parseFloat(r.querySelector('.sa-s').value)||0,supplier:r.querySelector('.sa-sup').value}));}\
+function updateSummary(){\
+  const cq=curCustLines.reduce((a,c)=>a+c.quoted,0);\
+  const ca=curCustLines.reduce((a,c)=>a+c.actual,0);\
+  const ship=parseFloat(document.getElementById('o-shipping').value)||0;\
+  const other=parseFloat(document.getElementById('o-othercosts').value)||0;\
+  const saC=getSALines().reduce((a,s)=>a+s.cost,0);\
+  const totalA=ca+ship+other+saC;const profit=cq-totalA;\
+  document.getElementById('sum-quoted').textContent=fmt(cq);\
+  document.getElementById('sum-actual').textContent=fmt(totalA);\
+  document.getElementById('sum-profit').textContent=fmt(profit);\
+  document.getElementById('sum-profit').className='metric-val '+(profit>=0?'mv-green':'mv-red');\
+}\
+\
+
+function removeCustLine(i){curCustLines.splice(i,1);renderCustLines();updateSummary();}\
+\
+function addSARow(){\
+  const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');\
+  document.getElementById('sa-lines-empty').style.display='none';\
+  const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';\
+  d.innerHTML=`<input type=\"text\" placeholder=\"Item / species\" style=\"flex:2;min-width:150px\" class=\"sa-n\"><input type=\"number\" placeholder=\"Cost \u20ac\" style=\"width:90px\" class=\"sa-c\" oninput=\"updateSummary()\"><input type=\"number\" placeholder=\"Sell \u20ac\" style=\"width:90px\" class=\"sa-s\" oninput=\"updateSummary()\"><select class=\"sa-sup\" style=\"width:160px\"><option value=\"\">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class=\"btn btn-danger btn-xs\" onclick=\"document.getElementById('${id}').remove();updateSummary()\">\u2715</button>`;\
+  wrap.appendChild(d);\
+}\
+function getSALines(){return[...document.querySelectorAll('.sa-row')].map(r=>({name:r.querySelector('.sa-n').value,cost:parseFloat(r.querySelector('.sa-c').value)||0,sell:parseFloat(r.querySelector('.sa-s').value)||0,supplier:r.querySelector('.sa-sup').value}));}\
+function updateSummary(){\
+  const cq=curCustLines.reduce((a,c)=>a+c.quoted,0);\
+  const ca=curCustLines.reduce((a,c)=>a+c.actual,0);\
+  const ship=parseFloat(document.getElementById('o-shipping').value)||0;\
+  const other=parseFloat(document.getElementById('o-othercosts').value)||0;\
+  const saC=getSALines().reduce((a,s)=>a+s.cost,0);\
+  const totalA=ca+ship+other+saC;const profit=cq-totalA;\
+  document.getElementById('sum-quoted').textContent=fmt(cq);\
+  document.getElementById('sum-actual').textContent=fmt(totalA);\
+  document.getElementById('sum-profit').textContent=fmt(profit);\
+  document.getElementById('sum-profit').className='metric-val '+(profit>=0?'mv-green':'mv-red');\
+}\
+\
+
