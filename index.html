@@ -1787,6 +1787,13 @@ function setOrderTypeVisual(type){
 }
 function selOrderType(type){setOrderTypeVisual(type);}
 function patchedOrderType(){return document.getElementById('o-type')?.value||'weekly';}
+function normaliseDelivery(v){
+  const s=String(v||'').trim().toLowerCase();
+  if(['local','local pick-up','local pickup','pickup','pick-up'].includes(s))return 'local';
+  if(['post','postage','shipping','posted','courier'].includes(s))return 'post';
+  if(['drop','drop ship','dropship','drop-ship','supplier direct'].includes(s))return 'drop';
+  return '';
+}
 
 function ensureTrackingField(){
   if(document.getElementById('cl-tracking-row'))return;
@@ -1866,22 +1873,54 @@ function updatePaymentTotals(){
   const pEl=document.getElementById('cl-paid-total'),rEl=document.getElementById('cl-remaining'); if(pEl)pEl.textContent=fmt(paid); if(rEl){rEl.textContent=fmt(rem);rEl.className='font-bold '+(rem>0.01?'text-red':'text-green');}
 }
 function editCustLine(i){
-  const cl=curCustLines[i]; if(!cl)return;
-  resetCustLineModal(); editingCustLineIndex=i;
-  const title=document.querySelector('#modal-cust-line .modal-title'); if(title)title.textContent='Edit Customer Order';
-  const btn=document.querySelector('#modal-cust-line .modal-foot .btn-primary'); if(btn)btn.textContent='Update Customer';
-  document.getElementById('cl-name').value=cl.name||''; document.getElementById('cl-loc').value=cl.location||''; document.getElementById('cl-delivery').value=cl.delivery||'';
-  const absorbed=num(cl.actualShippingCost); const baseActual=(cl.actualBase!==undefined)?num(cl.actualBase):(cl.freeShipping?Math.max(0,num(cl.actual)-absorbed):num(cl.actual));
-  document.getElementById('cl-quoted').value=num(cl.quoted).toFixed(2); document.getElementById('cl-actual').value=baseActual.toFixed(2);
-  document.getElementById('cl-payby').value=cl.payBy||''; document.getElementById('cl-paymethod').value=cl.payMethod||'';
-  document.getElementById('cl-free-ship').checked=!!cl.freeShipping; document.getElementById('cl-ship-actual').value=cl.actualShippingCost||'';
+  const cl=curCustLines[i];
+  if(!cl){toast('Could not find this customer line to edit',false);return;}
+  resetCustLineModal();
+  editingCustLineIndex=i;
+
+  const title=document.querySelector('#modal-cust-line .modal-title');
+  if(title)title.textContent='Edit Customer Order';
+  const btn=document.querySelector('#modal-cust-line .modal-foot .btn-primary');
+  if(btn)btn.textContent='Update Customer';
+
+  const delivery=normaliseDelivery(cl.delivery);
+  const setVal=(id,val)=>{const el=document.getElementById(id); if(el)el.value=val??'';};
+  setVal('cl-name',cl.name||'');
+  setVal('cl-loc',cl.location||'');
+  setVal('cl-delivery',delivery);
+
+  const absorbed=num(cl.actualShippingCost);
+  const baseActual=(cl.actualBase!==undefined)?num(cl.actualBase):(cl.freeShipping?Math.max(0,num(cl.actual)-absorbed):num(cl.actual));
+  setVal('cl-quoted',num(cl.quoted).toFixed(2));
+  setVal('cl-actual',baseActual.toFixed(2));
+  setVal('cl-payby',cl.payBy||'');
+  setVal('cl-paymethod',cl.payMethod||'');
+
+  const free=document.getElementById('cl-free-ship');
+  if(free)free.checked=!!cl.freeShipping;
+  setVal('cl-ship-actual',cl.actualShippingCost||'');
+
   document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
-  const opt=document.querySelector(`#dl-selector .dl-opt.${cl.delivery==='local'?'dl-local':cl.delivery==='post'?'dl-post':cl.delivery==='drop'?'dl-drop':''}`); if(opt)opt.classList.add('sel');
-  ensureTrackingField(); const tr=document.getElementById('cl-tracking'); if(tr)tr.value=cl.trackingNumber||cl.tracking_number||''; updateTrackingVisibility();
+  const cls=delivery==='local'?'dl-local':delivery==='post'?'dl-post':delivery==='drop'?'dl-drop':'';
+  if(cls){
+    const opt=document.querySelector(`#dl-selector .dl-opt.${cls}`);
+    if(opt)opt.classList.add('sel');
+  }
+
+  ensureTrackingField();
+  const tr=document.getElementById('cl-tracking');
+  if(tr)tr.value=cl.trackingNumber||cl.tracking_number||'';
+  updateTrackingVisibility();
+
   (cl.items||[]).forEach(it=>addItemRow(it.name||'',it.quoted||0,it.actual||0,it.status||'PAID',!!it.doa,!!it.delivered,!!it.doaResolved));
   (cl.payments||[]).forEach(p=>addPaymentRow(p.amount||0,p.date||today(),p.method||'',p.note||''));
-  toggleFreeShipping();calcCustLine();updatePaymentTotals();openModal('modal-cust-line');
+
+  toggleFreeShipping();
+  calcCustLine();
+  updatePaymentTotals();
+  openModal('modal-cust-line');
 }
+
 async function persistCurrentEditingOrderQuietly(){
   if(!editingOrderId)return;
   const old=db.orders.find(o=>o.id===editingOrderId); if(!old)return;
@@ -1901,7 +1940,7 @@ async function saveCustLine(){
   const payments=collectPayments(), items=[]; let doaTotal=0;
   document.querySelectorAll('#cl-items-list > div').forEach(row=>{const isDOA=!!row.querySelector('.ir-doa')?.checked;const actual=num(row.querySelector('.ir-a')?.value);if(isDOA)doaTotal+=actual;items.push({name:row.querySelector('.ir-name')?.value||'',quoted:num(row.querySelector('.ir-q')?.value),actual,status:row.querySelector('.ir-s')?.value||'PAID',doa:isDOA,delivered:!!row.querySelector('.ir-delivered')?.checked,doaResolved:row.querySelector('.ir-doa-resolved')?.value==='1'});});
   const quoted=num(document.getElementById('cl-quoted')?.value),baseActual=num(document.getElementById('cl-actual')?.value),free=!!document.getElementById('cl-free-ship')?.checked,shipCost=free?num(document.getElementById('cl-ship-actual')?.value):0,actualTotal=baseActual+shipCost;
-  const delivery=document.getElementById('cl-delivery')?.value||'', tracking=(delivery==='post'||delivery==='drop')?(document.getElementById('cl-tracking')?.value.trim()||''):'';
+  const delivery=normaliseDelivery(document.getElementById('cl-delivery')?.value||''), tracking=(delivery==='post'||delivery==='drop')?(document.getElementById('cl-tracking')?.value.trim()||''):'';
   const paid=payments.reduce((s,p)=>s+p.amount,0);
   const line={id:(editingCustLineIndex!==null&&curCustLines[editingCustLineIndex]?.id)?curCustLines[editingCustLineIndex].id:uid(),name,location:document.getElementById('cl-loc')?.value||'',delivery,status:Math.max(0,quoted-paid)<=0.01?'PAID':'TO BE PAID',quoted,actual:actualTotal,actualBase:baseActual,items,doaTotal,payments,payBy:document.getElementById('cl-payby')?.value||'',payMethod:document.getElementById('cl-paymethod')?.value||'',freeShipping:free,actualShippingCost:shipCost,trackingNumber:tracking,tracking_number:tracking};
   const wasEditing=editingCustLineIndex!==null;
