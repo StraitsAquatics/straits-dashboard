@@ -1218,11 +1218,11 @@ async function saveOrder(){
       }
       toast('Order saved ✓');
     }
-    setSyncStatus('sp-ok','Synced');
+    setSyncStatus('sync-ok','✓ Synced');
     editingOrderId=null; curCustLines=[]; curSuppliers=[];
     renderOverview(); nav('orders');
   }catch(e){
-    setSyncStatus('sp-err','Error'); toast('Save failed: '+e.message,false); console.error(e);
+    setSyncStatus('sync-err','✗ Error'); toast('Save failed: '+e.message,false); console.error(e);
   }
 }
 
@@ -1272,7 +1272,7 @@ async function loadAll(){
   }
 }
 
-// ===== INIT =====
+// ===== INIT HELPERS =====
 function updateClock(){
   const now=new Date();
   const pad=n=>String(n).padStart(2,'0');
@@ -1281,9 +1281,6 @@ function updateClock(){
   const el=document.getElementById('cur-date');
   if(el)el.textContent=d+' '+t;
 }
-updateClock();
-setInterval(updateClock,1000);
-loadAll();
 
 
 
@@ -1467,6 +1464,20 @@ function updateSummary(){
   document.getElementById('sum-actual').textContent=fmt(totalA);
   document.getElementById('sum-profit').textContent=fmt(profit);
   document.getElementById('sum-profit').className='metric-val '+(profit>=0?'mv-green':'mv-red');
+}
+
+// Start the dashboard only after the whole script and DOM have loaded.
+// This prevents loadAll() from running before render functions are available.
+function startApp(){
+  updateClock();
+  setInterval(updateClock,1000);
+  loadAll();
+}
+
+if(document.readyState === 'loading'){
+  document.addEventListener('DOMContentLoaded', startApp);
+} else {
+  startApp();
 }
 
 </script>
