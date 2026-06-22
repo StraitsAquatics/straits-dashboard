@@ -314,7 +314,7 @@ textarea{resize:vertical;min-height:60px}
   </div>
   <div class="card mb-14">
     <div class="card-head"><div class="card-title">Customer Orders</div>
-      <button class="btn btn-reef btn-sm" onclick="openModal('modal-cust-line')">+ Add Customer</button></div>
+      <button class="btn btn-reef btn-sm" onclick="openCustLineModal()">+ Add Customer</button></div>
     <div id="cust-lines-wrap">
       <div class="empty" id="cust-lines-empty"><div class="ei">👥</div><p>Add customers to this order</p></div>
     </div>
@@ -420,7 +420,7 @@ textarea{resize:vertical;min-height:60px}
 <!-- MODALS -->
 <div class="modal-ov" id="modal-cust-line">
   <div class="modal">
-    <div class="modal-head"><div class="modal-title">Add Customer to Order</div><button class="modal-close" onclick="closeModal('modal-cust-line')">✕</button></div>
+    <div class="modal-head"><div class="modal-title" id="cust-line-modal-title">Add Customer to Order</div><button class="modal-close" onclick="closeModal('modal-cust-line')">✕</button></div>
     <div class="modal-body">
       <div class="form-grid">
         <div class="fg"><label>Customer Name</label><input type="text" id="cl-name" list="dl-custs"><datalist id="dl-custs"></datalist></div>
@@ -434,6 +434,17 @@ textarea{resize:vertical;min-height:60px}
           <div class="dl-opt dl-drop" onclick="selDelivery('drop',this)">🔴 Drop Ship</div>
         </div>
         <input type="hidden" id="cl-delivery" value="">
+      </div>
+      <div class="fg mt-12 mb-8">
+        <label>Overall Payment Status</label>
+        <select id="cl-status">
+          <option>PAID</option>
+          <option>PAID - CREDIT</option>
+          <option>TO BE PAID</option>
+          <option>DELIVERED</option>
+          <option>SORTEO</option>
+          <option>FREE</option>
+        </select>
       </div>
 
       <div class="divider"></div>
@@ -480,7 +491,7 @@ textarea{resize:vertical;min-height:60px}
     </div>
     <div class="modal-foot">
       <button class="btn btn-sec" onclick="closeModal('modal-cust-line')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveCustLine()">Add Customer</button>
+      <button class="btn btn-primary" id="cust-line-save-btn" onclick="saveCustLine()">Add Customer</button>
     </div>
   </div>
 </div>
@@ -641,7 +652,7 @@ async function sbRpc(fn, data={}){
 
 // ===== LOCAL CACHE =====
 let db = {orders:[], customers:[], credits:[], prices:[]};
-let curSuppliers=[], curCustLines=[], editingOrderId=null, selectedDelivery='';
+let curSuppliers=[], curCustLines=[], editingOrderId=null, editingCustLineIndex=null, selectedDelivery='';
 
 // ===== SYNC STATUS =====
 function setSyncStatus(state, msg){
@@ -982,7 +993,15 @@ function editOrder(id){
   document.getElementById('o-shipping').value=o.shipping||'';
   document.getElementById('o-othercosts').value=o.otherCosts||'';
   document.getElementById('o-notes').value=o.notes||'';
-  renderSupTags();renderCustLines();updateSummary();
+  renderSupTags();
+  document.querySelectorAll('#sa-lines-wrap .sa-row').forEach(r=>r.remove());
+  if((o.saLines||[]).length){
+    document.getElementById('sa-lines-empty').style.display='none';
+    (o.saLines||[]).forEach(s=>addSARow(s));
+  }else{
+    document.getElementById('sa-lines-empty').style.display='block';
+  }
+  renderCustLines();updateSummary();
 }
 
 async function deleteOrder(id){
@@ -1204,12 +1223,12 @@ async function saveOrder(){
   if(!requireOrderEditor())return;
   const num=document.getElementById('o-num').value.trim();
   if(!num){toast('Enter order number',false);return;}
-  const ship=parseFloat(document.getElementById('o-ship').value)||0;
-  const other=parseFloat(document.getElementById('o-other').value)||0;
+  const ship=parseFloat(document.getElementById('o-shipping').value)||0;
+  const other=parseFloat(document.getElementById('o-othercosts').value)||0;
   const saLines=[...document.querySelectorAll('.sa-row')].map(r=>({
-    name:r.querySelector('.sa-name').value,
-    cost:parseFloat(r.querySelector('.sa-cost').value)||0,
-    sell:parseFloat(r.querySelector('.sa-sell').value)||0,
+    name:r.querySelector('.sa-n').value,
+    cost:parseFloat(r.querySelector('.sa-c').value)||0,
+    sell:parseFloat(r.querySelector('.sa-s').value)||0,
     supplier:r.querySelector('.sa-sup')?r.querySelector('.sa-sup').value:''
   })).filter(r=>r.name);
   const cq=curCustLines.reduce((a,c)=>a+(c.quoted||0),0);
@@ -1220,7 +1239,7 @@ async function saveOrder(){
     const paid=(cl.payments||[]).reduce((b,p)=>b+(p.amount||0),0);
     return a+Math.max(0,(cl.quoted||0)-paid);
   },0);
-  const orderType=document.getElementById('selOrderType')?.value||'weekly';
+  const orderType=document.getElementById('o-type')?.value||'weekly';
   const row={
     id:editingOrderId||uid(), num, order_type:orderType,
     date:document.getElementById('o-date').value,
@@ -1231,7 +1250,7 @@ async function saveOrder(){
     doa_total:doaTotal, total_pending:totalPendingPayment,
     manual_complete:false, created:today()
   };
-  setSyncStatus('sp-busy','Saving...');
+  setSyncStatus('sync-busy','⏳ Saving...');
   try{
     if(editingOrderId){
       await sbUpdate('orders',editingOrderId,row);
@@ -1426,14 +1445,91 @@ function removeSupplier(s){curSuppliers=curSuppliers.filter(x=>x!==s);renderSupT
 function renderSupTags(){document.getElementById('sup-selected').innerHTML=curSuppliers.map(s=>`<span class="sup-tag">${s} <span style="cursor:pointer;margin-left:3px" onclick="removeSupplier('${s.replace(/'/g,"\\\\'")}')">\u2715</span></span>`).join('');}
 
 let rowCount=0;
-function addItemRow(item='',quoted='',actual='',status='PAID',doa=false){
+
+function escAttr(v){return String(v ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function openCustLineModal(index=null){
+  if(!requireOrderEditor())return;
+  editingCustLineIndex = (index===null || index===undefined) ? null : index;
+  resetCustLineModal();
+  if(editingCustLineIndex !== null){
+    const cl = curCustLines[editingCustLineIndex];
+    if(!cl){editingCustLineIndex=null;return;}
+    document.getElementById('cust-line-modal-title').textContent = 'Edit Customer Order';
+    document.getElementById('cust-line-save-btn').textContent = 'Update Customer';
+    document.getElementById('cl-name').value = cl.name || '';
+    document.getElementById('cl-loc').value = cl.location || '';
+    document.getElementById('cl-delivery').value = cl.delivery || '';
+    document.getElementById('cl-status').value = cl.status || 'TO BE PAID';
+    document.getElementById('cl-quoted').value = Number(cl.quoted || 0).toFixed(2);
+    document.getElementById('cl-actual').value = Number(cl.actual || 0).toFixed(2);
+    document.getElementById('cl-payby').value = cl.payBy || '';
+    document.getElementById('cl-paymethod').value = cl.payMethod || '';
+    document.getElementById('cl-free-ship').checked = !!cl.freeShipping;
+    document.getElementById('cl-ship-actual').value = cl.actualShippingCost || '';
+    document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+    if(cl.delivery){
+      const opt = [...document.querySelectorAll('#dl-selector .dl-opt')].find(o=>o.getAttribute('onclick')?.includes("'"+cl.delivery+"'"));
+      if(opt) opt.classList.add('sel');
+    }
+    (cl.items||[]).forEach(it=>addItemRow(it.name||'', it.quoted||'', it.actual||'', it.status||'TO BE PAID', !!it.doa, !!it.delivered, !!it.doaResolved));
+    (cl.payments||[]).forEach(p=>addPaymentRow(p.amount||'', p.date||'', p.method||'', p.note||''));
+    toggleFreeShipping();
+    calcCustLine();
+    calcPayments();
+  } else {
+    document.getElementById('cust-line-modal-title').textContent = 'Add Customer to Order';
+    document.getElementById('cust-line-save-btn').textContent = 'Add Customer';
+  }
+  openModal('modal-cust-line');
+}
+
+function resetCustLineModal(){
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin','cl-payby','cl-ship-actual'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  const status=document.getElementById('cl-status'); if(status)status.value='TO BE PAID';
+  const payMethod=document.getElementById('cl-paymethod'); if(payMethod)payMethod.value='';
+  const free=document.getElementById('cl-free-ship'); if(free)free.checked=false;
+  const row=document.getElementById('free-ship-actual-row'); if(row)row.style.display='none';
+  document.getElementById('cl-delivery').value='';
+  document.getElementById('cl-items-list').innerHTML='';
+  document.getElementById('cl-payments-list').innerHTML='';
+  document.getElementById('cl-paid-total').textContent='€0';
+  document.getElementById('cl-remaining').textContent='€0';
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  selectedDelivery='';
+}
+
+function editCustLine(i){openCustLineModal(i);}
+
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false,delivered=false,doaResolved=false){
   rowCount++;const rid='ir'+rowCount;
   const d=document.createElement('div');d.id=rid;d.className='flex items-c gap-6 mb-8';d.style.flexWrap='wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" value="${item}" style="flex:2;min-width:150px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted}" style="width:85px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual}" style="width:85px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">\u2715</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(item)}" style="flex:2;min-width:150px" class="ir-name"><input type="number" placeholder="Quoted €" value="${escAttr(quoted)}" style="width:85px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${escAttr(actual)}" style="width:85px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-delivered" ${delivered?'checked':''}> Delivered</label><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><input type="hidden" class="ir-doa-resolved" value="${doaResolved?'1':'0'}"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button>`;
   document.getElementById('cl-items-list').appendChild(d);
 }
-function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();}
-function calcCustLine(){const q=parseFloat(document.getElementById('cl-quoted').value)||0;const a=parseFloat(document.getElementById('cl-actual').value)||0;const m=a>0?((q-a)/q*100).toFixed(1):'\u2014';document.getElementById('cl-margin').textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;}
+function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();calcPayments();}
+function calcCustLine(){const q=parseFloat(document.getElementById('cl-quoted').value)||0;const a=parseFloat(document.getElementById('cl-actual').value)||0;const m=q>0?((q-a)/q*100).toFixed(1):'—';document.getElementById('cl-margin').textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;calcPayments();}
+
+function toggleFreeShipping(){
+  const chk=document.getElementById('cl-free-ship');
+  const row=document.getElementById('free-ship-actual-row');
+  if(row)row.style.display=chk&&chk.checked?'block':'none';
+}
+
+let paymentRowCount=0;
+function addPaymentRow(amount='',date='',method='',note=''){
+  paymentRowCount++; const rid='pay'+paymentRowCount;
+  const d=document.createElement('div'); d.id=rid; d.className='flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
+  d.innerHTML=`<input type="number" placeholder="Amount €" value="${escAttr(amount)}" style="width:95px" class="pay-amt" oninput="calcPayments()"><input type="date" value="${escAttr(date)}" style="width:135px" class="pay-date"><select class="pay-method" style="width:130px"><option value="">Method...</option>${['Cash','Revolut','Bank Transfer','PayPal','Card','Stripe'].map(m=>`<option ${m===method?'selected':''}>${m}</option>`).join('')}</select><input type="text" placeholder="Note" value="${escAttr(note)}" style="flex:1;min-width:120px" class="pay-note"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcPayments()">✕</button>`;
+  document.getElementById('cl-payments-list').appendChild(d);
+  calcPayments();
+}
+function calcPayments(){
+  const quoted=parseFloat(document.getElementById('cl-quoted')?.value)||0;
+  let paid=0; document.querySelectorAll('.pay-amt').forEach(i=>paid+=parseFloat(i.value)||0);
+  const paidEl=document.getElementById('cl-paid-total'); if(paidEl)paidEl.textContent=fmt(paid);
+  const remEl=document.getElementById('cl-remaining'); if(remEl)remEl.textContent=fmt(Math.max(0,quoted-paid));
+}
 
 function saveCustLine(){
   const name=document.getElementById('cl-name').value.trim();
@@ -1444,22 +1540,57 @@ function saveCustLine(){
     const isDOA=row.querySelector('.ir-doa').checked;
     const actual=parseFloat(row.querySelector('.ir-a').value)||0;
     if(isDOA)doaTotal+=actual;
-    items.push({name:row.querySelector('.ir-name').value,quoted:parseFloat(row.querySelector('.ir-q').value)||0,actual,status:row.querySelector('.ir-s').value,doa:isDOA});
+    items.push({
+      name:row.querySelector('.ir-name').value,
+      quoted:parseFloat(row.querySelector('.ir-q').value)||0,
+      actual,
+      status:row.querySelector('.ir-s').value,
+      delivered:row.querySelector('.ir-delivered')?.checked || false,
+      doa:isDOA,
+      doaResolved:row.querySelector('.ir-doa-resolved')?.value==='1'
+    });
   });
-  curCustLines.push({id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:document.getElementById('cl-status').value,quoted:parseFloat(document.getElementById('cl-quoted').value)||0,actual:parseFloat(document.getElementById('cl-actual').value)||0,items,doaTotal});
+  const payments=[];
+  document.querySelectorAll('#cl-payments-list > div').forEach(row=>{
+    const amount=parseFloat(row.querySelector('.pay-amt').value)||0;
+    if(amount>0) payments.push({amount,date:row.querySelector('.pay-date').value,method:row.querySelector('.pay-method').value,note:row.querySelector('.pay-note').value});
+  });
+  const quoted=parseFloat(document.getElementById('cl-quoted').value)||0;
+  const actual=parseFloat(document.getElementById('cl-actual').value)||0;
+  const existing = editingCustLineIndex!==null ? curCustLines[editingCustLineIndex] : null;
+  const cl={
+    id:existing?.id || uid(),
+    name,
+    location:document.getElementById('cl-loc').value,
+    delivery,
+    status:document.getElementById('cl-status').value,
+    quoted,
+    actual,
+    payBy:document.getElementById('cl-payby').value,
+    payMethod:document.getElementById('cl-paymethod').value,
+    payments,
+    freeShipping:document.getElementById('cl-free-ship').checked,
+    actualShippingCost:parseFloat(document.getElementById('cl-ship-actual').value)||0,
+    items,
+    doaTotal
+  };
+  if(editingCustLineIndex!==null){
+    curCustLines[editingCustLineIndex]=cl;
+    toast('Customer order updated ✓');
+  }else{
+    curCustLines.push(cl);
+    toast('Customer added ✓');
+  }
   if(!db.customers.find(c=>c.name.toLowerCase()===name.toLowerCase())){
     const nc={id:uid(),name,location:document.getElementById('cl-loc').value,phone:'',email:'',notes:'',created:today()};
     db.customers.push(nc);
     sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(e=>console.error(e));
     refreshDatalist();
   }
+  editingCustLineIndex=null;
   closeModal('modal-cust-line');
-  document.getElementById('cl-items-list').innerHTML='';
-  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-  document.getElementById('cl-delivery').value='';
-  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
-  selectedDelivery='';
-  renderCustLines();updateSummary();toast('Customer added \u2713');
+  resetCustLineModal();
+  renderCustLines();updateSummary();
 }
 
 function renderCustLines(){
@@ -1470,14 +1601,17 @@ function renderCustLines(){
   empty.style.display='none';
   curCustLines.forEach((cl,i)=>{
     const profit=cl.quoted-cl.actual;
+    const paid=(cl.payments||[]).reduce((a,p)=>a+(p.amount||0),0);
+    const remaining=Math.max(0,(cl.quoted||0)-paid);
     const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
-    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name)}</div><div style="flex:1"><div class="font-bold">${cl.name}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${cl.location}</span>`:''}<span class="badge ${cl.status.includes('PAID')?'b-green':cl.status==='TO BE PAID'?'b-red':'b-grey'}">${cl.status}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(cl.quoted)}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">\u2715</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${it.name}${it.doa?' \ud83d\udc80':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}`;
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name)}</div><div style="flex:1"><div class="font-bold">${cl.name}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${cl.location}</span>`:''}<span class="badge ${cl.status&&cl.status.includes('PAID')?'b-green':cl.status==='TO BE PAID'?'b-red':'b-grey'}">${cl.status||'TO BE PAID'}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${paid?`<span class="badge b-blue">Paid ${fmt(paid)}</span>`:''}${remaining?`<span class="badge b-amber">Balance ${fmt(remaining)}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(cl.quoted)}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${it.name}${it.doa?' 💀':''}${it.delivered?' ✓':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}`;
     wrap.appendChild(div);
   });
 }
-function removeCustLine(i){curCustLines.splice(i,1);renderCustLines();updateSummary();}
+function removeCustLine(i){if(!requireOrderEditor())return;curCustLines.splice(i,1);renderCustLines();updateSummary();}
 
-function addSARow(){
+
+function addSARow(initial={}){
   const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
   document.getElementById('sa-lines-empty').style.display='none';
   const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
