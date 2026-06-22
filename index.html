@@ -962,6 +962,25 @@ function orderIsPaidAndDelivered(o){
   return isOrderComplete(o);
 }
 
+function orderIsAutoComplete(o){
+  const custLines = o.custLines || [];
+  if(!custLines.length) return false;
+  const allDelivered = custLines.every(cl =>
+    (cl.items||[]).length===0 ||
+    (cl.items||[]).every(it => it.delivered===true || (it.doa && it.doaResolved))
+  );
+  const allPaid = custLines.every(cl => {
+    if(cl.status==='FREE'||cl.status==='SORTEO') return true;
+    if(cl.status==='TO BE PAID') return false;
+    const paid = (cl.payments||[]).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
+    return Math.max(0,(parseFloat(cl.quoted)||0)-paid)<=0.01;
+  });
+  const noUnresolvedDOA = custLines.every(cl=>
+    (cl.items||[]).every(it=>!it.doa||it.doaResolved)
+  );
+  return allDelivered && allPaid && noUnresolvedDOA;
+}
+
 function renderOrders(filter=''){
   const search=(filter||'').toLowerCase();
   const baseRows=db.orders.filter(o=>!search||
@@ -989,7 +1008,11 @@ function renderOrders(filter=''){
     const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'—';
     const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
     const statusBadge=complete?'<span class="badge b-green">Completed</span>':'<span class="badge b-red">Active</span>';
-    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'—'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${statusBadge}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
+    const manualBtn=complete
+      ? `<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`
+      : `<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;
+    const dim=complete?'opacity:0.62;':'';
+    return`<tr style="${dim}"><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'—'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${statusBadge}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${manualBtn}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
   }).join('');
 }
 function filterOrders(v){renderOrders(v);}
@@ -1149,24 +1172,8 @@ function renderProfits(){
 let currentOrderTab = 'active';
 
 function isOrderComplete(o){
-  if(o.manualComplete===true) return true;
-  const custLines = o.custLines || [];
-  if(!custLines.length) return false;
-  const allDelivered = custLines.every(cl =>
-    (cl.items||[]).length===0 ||
-    (cl.items||[]).every(it => it.delivered===true || (it.doa && it.doaResolved))
-  );
-  const allPaid = custLines.every(cl => {
-    if(cl.status==='FREE'||cl.status==='SORTEO') return true;
-    const paid = (cl.payments||[]).reduce((a,p)=>a+(p.amount||0),0);
-    return Math.max(0,(cl.quoted||0)-paid)<=0.01;
-  });
-  const noUnresolvedDOA = custLines.every(cl=>
-    (cl.items||[]).every(it=>!it.doa||it.doaResolved)
-  );
-  return allDelivered && allPaid && noUnresolvedDOA;
+  return o.manualComplete===true || orderIsAutoComplete(o);
 }
-
 function setOrderTab(tab, btn){
   currentOrderTab = tab;
   document.querySelectorAll('.order-tab').forEach(b=>{
@@ -1201,7 +1208,12 @@ async function toggleItemDelivered(e, custLineId, itemIdx){
   cl.items[itemIdx].delivered = !cl.items[itemIdx].delivered;
   if(order){
     try{
-      await sbUpdate('orders', order.id, {cust_lines: order.custLines});
+      const payload = {cust_lines: order.custLines};
+      if(!orderIsAutoComplete(order) && order.manualComplete===true){
+        order.manualComplete = false;
+        payload.manual_complete = false;
+      }
+      await sbUpdate('orders', order.id, payload);
       renderOrders(document.getElementById('orders-search')?.value||'');
       renderOverview();
       toast(cl.items[itemIdx].delivered ? '✓ Delivered' : 'Marked as pending');
@@ -1263,6 +1275,18 @@ async function saveOrder(){
     return a+Math.max(0,(cl.quoted||0)-paid);
   },0);
   const orderType=document.getElementById('o-type')?.value||'weekly';
+  const existingOrder = editingOrderId ? db.orders.find(o=>o.id===editingOrderId) : null;
+  const draftOrderForCompletion = {
+    ...(existingOrder||{}),
+    custLines:curCustLines,
+    saLines,
+    totalQuoted:cq,
+    totalActual:totalA,
+    profit,
+    doaTotal
+  };
+  const autoCompleteNow = orderIsAutoComplete(draftOrderForCompletion);
+  const manualOverrideNow = autoCompleteNow ? !!(existingOrder?.manualComplete) : false;
   const row={
     id:editingOrderId||uid(), num, order_type:orderType,
     date:document.getElementById('o-date').value,
@@ -1271,18 +1295,18 @@ async function saveOrder(){
     cust_lines:curCustLines, sa_lines:saLines,
     total_quoted:cq, total_actual:totalA, profit,
     doa_total:doaTotal, total_pending:totalPendingPayment,
-    manual_complete: editingOrderId ? !!(db.orders.find(o=>o.id===editingOrderId)?.manualComplete) : false, created:today()
+    manual_complete: manualOverrideNow, created:today()
   };
   setSyncStatus('sync-busy','⏳ Saving...');
   try{
     if(editingOrderId){
       await sbUpdate('orders',editingOrderId,row);
       const idx=db.orders.findIndex(o=>o.id===editingOrderId);
-      if(idx>-1)db.orders[idx]={...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:orderIsPaidAndDelivered({...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal})};
+      if(idx>-1)db.orders[idx]={...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:manualOverrideNow};
       toast('Order updated ✓');
     } else {
       await sbInsert('orders',row);
-      db.orders.push({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:orderIsPaidAndDelivered({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal})});
+      db.orders.push({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:manualOverrideNow});
       for(const cl of curCustLines){
         if(!db.customers.find(c=>c.name===cl.name)){
           const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()};
