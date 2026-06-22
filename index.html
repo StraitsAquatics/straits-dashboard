@@ -497,6 +497,7 @@ textarea{resize:vertical;min-height:60px}
         <div class="fg"><label>Role</label>
           <select id="u-role">
             <option value="viewer">Viewer (read only)</option>
+            <option value="editor">Editor (orders only)</option>
             <option value="admin">Admin (full access)</option>
           </select>
         </div>
@@ -628,6 +629,14 @@ async function sbUpdate(table, id, data){
 async function sbDelete(table, id){
   const r = await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, {method:'DELETE', headers:H});
   if(!r.ok) throw new Error(await r.text());
+}
+async function sbRpc(fn, data={}){
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {method:'POST', headers:H, body:JSON.stringify(data)});
+  if(!r.ok){
+    const body = await r.text();
+    throw new Error(body || `RPC ${fn} failed`);
+  }
+  return r.json();
 }
 
 // ===== LOCAL CACHE =====
@@ -796,128 +805,146 @@ const BUILTIN = [
 ];
 
 // ===== LOAD ALL DATA =====
-// ===== SIGN OUT =====
-function signOut(){
-  // no session;
-  // no redirect;
+// ===== AUTH / USER SESSION =====
+function getSessionToken(){return localStorage.getItem('sa_session_token')||'';}
+function setSessionToken(token){localStorage.setItem('sa_session_token',token);}
+function clearSession(){localStorage.removeItem('sa_session_token');window._session=null;}
+function roleLabel(role){return role==='admin'?'Admin':role==='editor'?'Editor':'Viewer';}
+function canEditOrders(){return ['admin','editor'].includes(window._session?.role);}
+function canAdmin(){return window._session?.role==='admin';}
+function requireAdmin(){if(!canAdmin()){toast('Admin access required',false);return false;}return true;}
+function requireOrderEditor(){if(!canEditOrders()){toast('Read-only access',false);return false;}return true;}
+
+async function validateCurrentSession(){
+  const token=getSessionToken();
+  if(!token){window.location.href='login.html';return false;}
+  try{
+    const res=await sbRpc('validate_dashboard_session',{p_token:token});
+    const sess=Array.isArray(res)?res[0]:res;
+    if(!sess || !sess.id){throw new Error('Invalid session');}
+    window._session={id:sess.id,username:sess.username,displayName:sess.display_name,role:sess.role,sessionToken:token};
+    initUserSession();
+    return true;
+  }catch(e){
+    console.error('Session validation failed:',e);
+    clearSession();
+    window.location.href='login.html';
+    return false;
+  }
 }
 
-// ===== INIT USER SESSION =====
+async function signOut(){
+  const token=getSessionToken();
+  try{ if(token) await sbRpc('logout_dashboard_user',{p_token:token}); }catch(e){console.warn(e);}
+  clearSession();
+  window.location.href='login.html';
+}
+
 function initUserSession(){
   const sess=window._session;
   if(!sess)return;
-  // Show user in topbar
   const nameEl=document.getElementById('current-user-name');
   const roleEl=document.getElementById('current-user-role');
   if(nameEl)nameEl.textContent=sess.displayName||sess.username;
-  if(roleEl)roleEl.textContent=sess.role==='admin'?'Admin':'Viewer';
-  // Show/hide admin features
-  if(sess.role==='admin'){
-    const adminLabel=document.getElementById('admin-sidebar-label');
-    const adminBtn=document.getElementById('users-sidebar-btn');
-    if(adminLabel)adminLabel.style.display='block';
-    if(adminBtn)adminBtn.style.display='flex';
-  }
-  // If viewer, hide all edit/add/delete buttons
-  if(sess.role==='viewer'){
-    applyViewerMode();
-  }
+  if(roleEl)roleEl.textContent=roleLabel(sess.role);
+
+  const adminLabel=document.getElementById('admin-sidebar-label');
+  const adminBtn=document.getElementById('users-sidebar-btn');
+  if(adminLabel)adminLabel.style.display=canAdmin()?'block':'none';
+  if(adminBtn)adminBtn.style.display=canAdmin()?'flex':'none';
+
+  applyPermissionMode();
 }
 
-function applyViewerMode(){
-  // Hide add/edit/delete buttons for viewers - applied after render
+function applyPermissionMode(){
+  const old=document.getElementById('permission-style');
+  if(old) old.remove();
   const style=document.createElement('style');
-  style.textContent=`
-    .btn-primary:not(.viewer-ok), .btn-reef, .btn-danger,
-    #page-new-order .btn-primary,
-    button[onclick*="startNewOrder"],
-    button[onclick*="openAdd"],
-    button[onclick*="openEdit"],
-    button[onclick*="deleteOrder"],
-    button[onclick*="openModal("],
-    button[onclick*="addSARow"],
-    button[onclick*="addItemRow"],
-    button[onclick*="addPaymentRow"],
-    button[onclick*="addSupplier"],
-    button[onclick*="addVar"],
-    button[onclick*="saveOrder"],
-    button[onclick*="saveCustomer"],
-    button[onclick*="saveCredit"],
-    button[onclick*="savePrice"],
-    button[onclick*="seedProducts"],
-    .sb-btn[onclick*="new-order"] { display:none !important; }
-    .viewer-notice { display:block !important; }
-  `;
+  style.id='permission-style';
+
+  if(window._session?.role==='viewer'){
+    style.textContent=`
+      .btn-primary:not(.viewer-ok), .btn-reef, .btn-danger,
+      button[onclick*="startNewOrder"],
+      button[onclick*="openModal("],
+      button[onclick*="addSARow"], button[onclick*="addItemRow"], button[onclick*="addPaymentRow"],
+      button[onclick*="addSupplier"], button[onclick*="saveOrder"], button[onclick*="saveCustomer"],
+      button[onclick*="saveCredit"], button[onclick*="savePrice"], button[onclick*="delete"],
+      .sb-btn[onclick*="new-order"] { display:none !important; }
+    `;
+  }else if(window._session?.role==='editor'){
+    style.textContent=`
+      #admin-sidebar-label, #users-sidebar-btn,
+      #page-customers button[onclick*="openModal"], #page-credits button[onclick*="openModal"],
+      #page-prices button[onclick*="openModal"],
+      button[onclick*="saveCustomer"], button[onclick*="saveCredit"], button[onclick*="savePrice"],
+      button[onclick*="deleteUser"], button[onclick*="toggleUserRole"], button[onclick*="deleteOrder"] { display:none !important; }
+    `;
+  }
   document.head.appendChild(style);
-  // Hide new order from sidebar
-  const newOrderBtn=document.querySelector('.sb-btn[onclick*="new-order"]');
-  if(newOrderBtn)newOrderBtn.style.display='none';
 }
 
-// ===== USERS =====
+// ===== USERS ADMIN PANEL =====
 async function renderUsers(){
   const tbody=document.getElementById('users-body');
   if(!tbody)return;
+  if(!canAdmin()){
+    tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Admin access required</p></div></td></tr>';
+    return;
+  }
   try{
-    const r=await fetch(SB_URL+'/rest/v1/users?order=created.asc',{headers:H});
-    const users=await r.json();
+    const users=await sbRpc('list_dashboard_users',{p_token:getSessionToken()});
     if(!users.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No users</p></div></td></tr>';return;}
     const currId=window._session?.id;
     tbody.innerHTML=users.map(u=>`<tr>
       <td class="font-bold">${u.display_name||u.username}</td>
       <td><span style="font-family:monospace;font-size:12px;color:var(--text2)">${u.username}</span></td>
-      <td><span class="badge ${u.role==='admin'?'b-blue':'b-grey'}">${u.role==='admin'?'Admin':'Viewer'}</span></td>
-      <td class="text-sm text-muted">${u.last_login||'Never'}</td>
-      <td><div style="display:flex;gap:6px">
-        <button class="btn btn-sec btn-xs" onclick="toggleUserRole('${u.id}','${u.role}')">${u.role==='admin'?'Make Viewer':'Make Admin'}</button>
+      <td><span class="badge ${u.role==='admin'?'b-blue':u.role==='editor'?'b-amber':'b-grey'}">${roleLabel(u.role)}</span></td>
+      <td class="text-sm text-muted">${u.last_login?new Date(u.last_login).toLocaleString():'Never'}</td>
+      <td><div style="display:flex;gap:6px;flex-wrap:wrap">
+        <select onchange="changeUserRole('${u.id}',this.value)" ${u.id===currId?'disabled':''} style="width:105px;padding:3px 6px;font-size:11px">
+          <option value="viewer" ${u.role==='viewer'?'selected':''}>Viewer</option>
+          <option value="editor" ${u.role==='editor'?'selected':''}>Editor</option>
+          <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+        </select>
         ${u.id!==currId?`<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${u.display_name||u.username}')">Delete</button>`:'<span class="text-xs text-muted">(you)</span>'}
       </div></td>
     </tr>`).join('');
-  }catch(e){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users</p></div></td></tr>';}
+  }catch(e){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users</p></div></td></tr>';console.error(e);}
 }
-
-async function sha256(message){
-  const buf=new TextEncoder().encode(message);
-  const hashBuf=await crypto.subtle.digest('SHA-256',buf);
-  return Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-
-function uid8(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
 
 async function saveUser(){
+  if(!requireAdmin())return;
   const name=document.getElementById('u-name').value.trim();
   const username=document.getElementById('u-username').value.trim().toUpperCase();
   const password=document.getElementById('u-password').value;
   const role=document.getElementById('u-role').value;
   if(!name||!username||!password){toast('Fill in all fields',false);return;}
-  // Hash password
-  const salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
-  const hash=await sha256(salt+password);
-  const password_hash=salt+':'+hash;
   try{
-    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role,created:new Date().toISOString().split('T')[0]})});
-    if(!r.ok)throw new Error(await r.text());
+    await sbRpc('create_dashboard_user',{p_token:getSessionToken(),p_username:username,p_display_name:name,p_password:password,p_role:role});
     closeModal('modal-add-user');
     ['u-name','u-username','u-password'].forEach(id=>document.getElementById(id).value='');
     renderUsers();toast('User created ✓');
-  }catch(e){toast('Error: '+e.message,false);}
+  }catch(e){toast('Error creating user',false);console.error(e);}
+}
+
+async function changeUserRole(id,newRole){
+  if(!requireAdmin())return;
+  if(!confirm('Change this user to '+newRole+'?')){renderUsers();return;}
+  try{await sbRpc('update_dashboard_user_role',{p_token:getSessionToken(),p_user_id:id,p_role:newRole});renderUsers();toast('Role updated');}
+  catch(e){toast('Error updating role',false);console.error(e);renderUsers();}
 }
 
 async function toggleUserRole(id,currentRole){
   const newRole=currentRole==='admin'?'viewer':'admin';
-  if(!confirm('Change this user to '+newRole+'?'))return;
-  try{
-    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'PATCH',headers:H,body:JSON.stringify({role:newRole})});
-    renderUsers();toast('Role updated');
-  }catch(e){toast('Error',false);}
+  return changeUserRole(id,newRole);
 }
 
 async function deleteUser(id,name){
+  if(!requireAdmin())return;
   if(!confirm('Delete user "'+name+'"? They will be signed out immediately.'))return;
-  try{
-    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'DELETE',headers:H});
-    renderUsers();toast('User deleted');
-  }catch(e){toast('Error',false);}
+  try{await sbRpc('delete_dashboard_user',{p_token:getSessionToken(),p_user_id:id});renderUsers();toast('User deleted');}
+  catch(e){toast('Error deleting user',false);console.error(e);}
 }
 
 function renderOrders(filter=''){
@@ -959,6 +986,7 @@ function editOrder(id){
 }
 
 async function deleteOrder(id){
+  if(!canAdmin())return toast('Only admins can delete orders',false);
   if(!confirm('Delete this order? This cannot be undone.'))return;
   setSyncStatus('sync-busy','\u23f3 Deleting...');
   try{await sbDelete('orders',id);db.orders=db.orders.filter(o=>o.id!==id);setSyncStatus('sync-ok','\u2713 Synced');renderOrders();toast('Order deleted');}
@@ -967,6 +995,7 @@ async function deleteOrder(id){
 
 // ===== CUSTOMERS =====
 async function saveCustomer(){
+  if(!canAdmin())return toast('Only admins can add customers directly',false);
   const name=document.getElementById('cust-name').value.trim();
   if(!name){toast('Enter a name',false);return;}
   const nc={id:uid(),name,location:document.getElementById('cust-loc').value,phone:document.getElementById('cust-phone').value,email:document.getElementById('cust-email').value,notes:document.getElementById('cust-notes').value,created:today()};
@@ -993,6 +1022,7 @@ async function delCust(id){
 
 // ===== CREDITS =====
 async function saveCredit(){
+  if(!canAdmin())return toast('Only admins can add credits',false);
   const cust=document.getElementById('cr-cust').value.trim();
   const amt=parseFloat(document.getElementById('cr-amount').value)||0;
   if(!cust||!amt){toast('Fill in customer and amount',false);return;}
@@ -1018,6 +1048,7 @@ async function delCredit(id){
 
 // ===== PRICES =====
 async function savePrice(){
+  if(!canAdmin())return toast('Only admins can edit prices',false);
   const name=document.getElementById('pr-name').value.trim();
   if(!name){toast('Enter a name',false);return;}
   const np={id:uid(),name,cat:document.getElementById('pr-cat').value,wild:parseFloat(document.getElementById('pr-wild').value)||0,capt:parseFloat(document.getElementById('pr-capt').value)||0,sup:document.getElementById('pr-sup').value,notes:document.getElementById('pr-notes').value};
@@ -1170,6 +1201,7 @@ function refreshDatalist(){
 }
 
 async function saveOrder(){
+  if(!requireOrderEditor())return;
   const num=document.getElementById('o-num').value.trim();
   if(!num){toast('Enter order number',false);return;}
   const ship=parseFloat(document.getElementById('o-ship').value)||0;
@@ -1377,7 +1409,7 @@ function renderOverview(){
 }
 
 // ===== NEW ORDER =====
-function startNewOrder(){editingOrderId=null;nav('new-order',null);}
+function startNewOrder(){if(!requireOrderEditor())return;editingOrderId=null;nav('new-order',null);}
 function initNewOrder(){
   if(!editingOrderId){
     curSuppliers=[];curCustLines=[];selectedDelivery='';
@@ -1468,10 +1500,11 @@ function updateSummary(){
 
 // Start the dashboard only after the whole script and DOM have loaded.
 // This prevents loadAll() from running before render functions are available.
-function startApp(){
+async function startApp(){
   updateClock();
   setInterval(updateClock,1000);
-  loadAll();
+  const ok = await validateCurrentSession();
+  if(ok) loadAll();
 }
 
 if(document.readyState === 'loading'){

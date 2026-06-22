@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Straits Aquatics — Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--ocean:#0a3d62;--ocean2:#0c4f7e;--reef:#00b4d8;--sand:#f0f4f8;--white:#fff;--border:#d0d8e4;--text:#1a2332;--muted:#8a9ab0;--red:#dc2626;--green:#16a34a}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;background:linear-gradient(135deg,var(--ocean),#06243b);display:flex;align-items:center;justify-content:center;padding:20px;color:var(--text)}
+.login-card{width:100%;max-width:390px;background:var(--white);border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.28);overflow:hidden}
+.login-head{background:linear-gradient(135deg,var(--ocean),var(--ocean2));padding:28px 26px;color:#fff;text-align:center}
+.logo{width:58px;height:58px;border-radius:16px;background:var(--reef);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:28px}
+h1{font-size:22px;line-height:1.1}.sub{font-size:12px;opacity:.7;margin-top:6px}
+.login-body{padding:26px}
+label{display:block;font-size:12px;font-weight:700;color:#4a5568;margin-bottom:6px}
+input{width:100%;padding:11px 12px;border:1px solid var(--border);border-radius:9px;font-size:14px;outline:none;margin-bottom:14px;text-transform:none}
+input:focus{border-color:var(--reef);box-shadow:0 0 0 3px rgba(0,180,216,.13)}
+#username{text-transform:uppercase}
+button{width:100%;border:none;border-radius:9px;background:var(--ocean);color:#fff;font-size:14px;font-weight:700;padding:12px;cursor:pointer;transition:.12s}
+button:hover{background:var(--ocean2)}button:disabled{opacity:.65;cursor:not-allowed}
+.msg{display:none;margin-top:12px;font-size:12px;padding:9px 10px;border-radius:8px}.msg.err{display:block;background:#fee2e2;color:var(--red)}.msg.ok{display:block;background:#dcfce7;color:var(--green)}
+.foot{padding:0 26px 24px;color:var(--muted);font-size:11px;text-align:center}
+</style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="login-head">
+      <div class="logo">🐠</div>
+      <h1>Straits Aquatics</h1>
+      <div class="sub">Dashboard login</div>
+    </div>
+    <form class="login-body" id="login-form">
+      <label for="username">Username</label>
+      <input id="username" autocomplete="username" placeholder="RCASTLE" required>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="Enter password" required>
+      <button id="login-btn" type="submit">Sign in</button>
+      <div id="msg" class="msg"></div>
+    </form>
+    <div class="foot">Access is restricted to authorised Straits Aquatics users.</div>
+  </div>
+
+<script>
+const SB_URL = 'https://addrfpwgtixvzokkkuyi.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhZGRyZnB3Z3RpeHZ6b2tra3V5aSIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzgyMDI5MDI4LCJleHAiOjIwOTc2MDUwMjh9.OMcNNFHIrNBm4sRi8D0V9-ftMadd62X2XDYtF_jRJ4M';
+const H = {'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY};
+
+async function sbRpc(fn, data={}){
+  const r = await fetch(`${SB_URL}/rest/v1/rpc/${fn}`, {method:'POST',headers:H,body:JSON.stringify(data)});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function showMsg(text,type='err'){
+  const el=document.getElementById('msg');
+  el.className='msg '+type;
+  el.textContent=text;
+}
+
+async function checkExistingSession(){
+  const token=localStorage.getItem('sa_session_token');
+  if(!token)return;
+  try{
+    const res=await sbRpc('validate_dashboard_session',{p_token:token});
+    const sess=Array.isArray(res)?res[0]:res;
+    if(sess && sess.id) window.location.href='index.html';
+  }catch(e){localStorage.removeItem('sa_session_token');}
+}
+
+checkExistingSession();
+
+document.getElementById('login-form').addEventListener('submit',async(e)=>{
+  e.preventDefault();
+  const btn=document.getElementById('login-btn');
+  const username=document.getElementById('username').value.trim().toUpperCase();
+  const password=document.getElementById('password').value;
+  btn.disabled=true;btn.textContent='Signing in...';
+  try{
+    const res=await sbRpc('login_dashboard_user',{p_username:username,p_password:password});
+    const sess=Array.isArray(res)?res[0]:res;
+    if(!sess || !sess.session_token) throw new Error('No session returned');
+    localStorage.setItem('sa_session_token',sess.session_token);
+    showMsg('Login successful. Loading dashboard...','ok');
+    window.location.href='index.html';
+  }catch(err){
+    console.error(err);
+    showMsg('Login failed. Check the username and password.');
+    btn.disabled=false;btn.textContent='Sign in';
+  }
+});
+</script>
+</body>
+</html>
