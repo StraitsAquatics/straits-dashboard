@@ -958,15 +958,38 @@ async function deleteUser(id,name){
   catch(e){toast('Error deleting user',false);console.error(e);}
 }
 
+function orderIsPaidAndDelivered(o){
+  return isOrderComplete(o);
+}
+
 function renderOrders(filter=''){
-  const rows=db.orders.filter(o=>!filter||o.num.includes(filter)||(o.suppliers||[]).join(',').toLowerCase().includes(filter.toLowerCase())||(o.custLines||[]).some(c=>c.name.toLowerCase().includes(filter.toLowerCase())));
+  const search=(filter||'').toLowerCase();
+  const baseRows=db.orders.filter(o=>!search||
+    String(o.num||'').toLowerCase().includes(search)||
+    (o.suppliers||[]).join(',').toLowerCase().includes(search)||
+    (o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(search))
+  );
+
+  const activeCount=db.orders.filter(o=>!orderIsPaidAndDelivered(o)).length;
+  const completedCount=db.orders.filter(o=>orderIsPaidAndDelivered(o)).length;
+  const allCount=db.orders.length;
+  const ca=document.getElementById('tab-count-active'); if(ca)ca.textContent=activeCount;
+  const cc=document.getElementById('tab-count-completed'); if(cc)cc.textContent=completedCount;
+  const call=document.getElementById('tab-count-all'); if(call)call.textContent=allCount;
+
+  let rows=baseRows;
+  if(currentOrderTab==='active') rows=baseRows.filter(o=>!orderIsPaidAndDelivered(o));
+  if(currentOrderTab==='completed') rows=baseRows.filter(o=>orderIsPaidAndDelivered(o));
+
   const tbody=document.getElementById('orders-body');
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="ei">\ud83d\udce6</div><p>No orders found</p></div></td></tr>';return;}
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}
   tbody.innerHTML=[...rows].reverse().map(o=>{
+    const complete=orderIsPaidAndDelivered(o);
     const pClass=o.profit>=0?'text-green':'text-red';
-    const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'\u2014';
-    const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' \u2014 '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
-    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'\u2014'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${o.doaTotal>0?`<span class="badge b-red">\u20ac${o.doaTotal.toFixed(0)}</span>`:'\u2014'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">\u2715</button></div></td></tr>`;
+    const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'—';
+    const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
+    const statusBadge=complete?'<span class="badge b-green">Completed</span>':'<span class="badge b-red">Active</span>';
+    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'—'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${statusBadge}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
   }).join('');
 }
 function filterOrders(v){renderOrders(v);}
@@ -1248,18 +1271,18 @@ async function saveOrder(){
     cust_lines:curCustLines, sa_lines:saLines,
     total_quoted:cq, total_actual:totalA, profit,
     doa_total:doaTotal, total_pending:totalPendingPayment,
-    manual_complete:false, created:today()
+    manual_complete: editingOrderId ? !!(db.orders.find(o=>o.id===editingOrderId)?.manualComplete) : false, created:today()
   };
   setSyncStatus('sync-busy','⏳ Saving...');
   try{
     if(editingOrderId){
       await sbUpdate('orders',editingOrderId,row);
       const idx=db.orders.findIndex(o=>o.id===editingOrderId);
-      if(idx>-1)db.orders[idx]={...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:false};
+      if(idx>-1)db.orders[idx]={...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:orderIsPaidAndDelivered({...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal})};
       toast('Order updated ✓');
     } else {
       await sbInsert('orders',row);
-      db.orders.push({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:false});
+      db.orders.push({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:orderIsPaidAndDelivered({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal})});
       for(const cl of curCustLines){
         if(!db.customers.find(c=>c.name===cl.name)){
           const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()};
