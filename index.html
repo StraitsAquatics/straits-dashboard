@@ -1397,7 +1397,7 @@ function renderOverview(){
   document.getElementById('ov-custs').textContent=db.customers.length;
   document.getElementById('ov-credits').textContent=db.credits.filter(c=>c.type==='credit').length;
   document.getElementById('ov-doas').textContent=fmt(tD);
-  const l10=db.orders.slice(-10);const maxP=Math.max(...l10.map(o=>Math.abs(o.profit)),1);
+  const l10=db.orders.slice(-4);const maxP=Math.max(...l10.map(o=>Math.abs(o.profit)),1);
   document.getElementById('ov-chart').innerHTML=l10.length?l10.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${o.profit>=0?'var(--reef)':'var(--red)'}">${o.profit>=0?'€'+Math.round(o.profit):'-€'+Math.round(Math.abs(o.profit))}</div><div class="bar-fill ${o.profit<0?'neg':''}" style="height:${Math.round((Math.abs(o.profit)/maxP)*75)}px"></div><div class="bar-lbl">#${o.num}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';
   const rec=[...db.orders].reverse().slice(0,5);
   document.getElementById('ov-recent').innerHTML=rec.length?rec.map(o=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${o.num}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).join(', ')}</span><span class="font-bold ${o.profit>=0?'text-green':'text-red'}">${fmt(o.profit)}</span></div>`).join(''):'<div class="empty"><div class="ei">\ud83d\udce6</div><p>No orders</p></div>';
@@ -2252,7 +2252,7 @@ function renderOverview(){
   document.getElementById('ov-pending').textContent=fmt(pendingTotal);
   document.getElementById('ov-doas').textContent=fmt(tD);
 
-  const l10=(db.orders||[]).slice(-10);const maxP=Math.max(...l10.map(o=>Math.abs(nval(o.profit))),1);
+  const l10=(db.orders||[]).slice(-4);const maxP=Math.max(...l10.map(o=>Math.abs(nval(o.profit))),1);
   document.getElementById('ov-chart').innerHTML=l10.length?l10.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${nval(o.profit)>=0?'var(--reef)':'var(--red)'}">${nval(o.profit)>=0?'€'+Math.round(nval(o.profit)):'-€'+Math.round(Math.abs(nval(o.profit)))}</div><div class="bar-fill ${nval(o.profit)<0?'neg':''}" style="height:${Math.round((Math.abs(nval(o.profit))/maxP)*75)}px"></div><div class="bar-lbl">#${o.num}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';
 
   const rec=[...(db.orders||[])].reverse().slice(0,5);
