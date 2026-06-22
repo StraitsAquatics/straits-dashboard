@@ -1163,6 +1163,12 @@ async function resolveDOA(e, custLineId, itemIdx, cancelDOA){
   }catch(err){ toast('Save failed',false); }
 }
 
+function refreshDatalist(){
+  // populate customer name datalist for autocomplete
+  const dl=document.getElementById('cust-datalist');
+  if(dl){dl.innerHTML=db.customers.map(c=>`<option value="${c.name}">`).join('');}
+}
+
 async function saveOrder(){
   const num=document.getElementById('o-num').value.trim();
   if(!num){toast('Enter order number',false);return;}
@@ -1258,7 +1264,6 @@ async function loadAll(){
     }
     setSyncStatus('sync-ok','✓ Synced');
     document.getElementById('loading-screen').style.display='none';
-    refreshDatalist();
     renderOverview();
   } catch(e){
     setSyncStatus('sync-err','✗ Offline');
