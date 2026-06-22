@@ -646,8 +646,16 @@ let curSuppliers=[], curCustLines=[], editingOrderId=null, selectedDelivery='';
 // ===== SYNC STATUS =====
 function setSyncStatus(state, msg){
   const el = document.getElementById('sync-status');
+  if(!el) return;
   el.className = 'sync-pill ' + state;
   el.textContent = msg;
+  // Auto-clear error after 5s (except for initial load errors)
+  if(state === 'sync-err' && msg !== '✗ Offline'){
+    setTimeout(()=>{
+      el.className = 'sync-pill sync-ok';
+      el.textContent = '✓ Synced';
+    }, 5000);
+  }
 }
 
 // ===== BUILT-IN PRICES =====
@@ -1338,8 +1346,9 @@ async function loadAll(){
     renderOverview();
   } catch(e){
     setSyncStatus('sync-err','✗ Offline');
-    document.getElementById('loading-screen').innerHTML='<div style="text-align:center;color:#fff;padding:20px"><div style="font-size:32px">⚠️</div><p>Could not connect to database</p><button onclick="location.reload()" style="margin-top:16px;padding:8px 20px;background:var(--reef);color:#fff;border:none;border-radius:6px;cursor:pointer">Retry</button></div>';
-    console.error(e);
+    document.getElementById('loading-screen').style.display='none';
+    console.error('loadAll error:', e);
+    toast('Could not load data — check connection', false);
   }
 }
 
