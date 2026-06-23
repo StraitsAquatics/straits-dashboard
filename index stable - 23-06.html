@@ -1,0 +1,2032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Straits Aquatics — Dashboard</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ocean:#0a3d62;--ocean2:#0c4f7e;--reef:#00b4d8;--reef2:#90e0ef;
+  --sand:#f0f4f8;--white:#ffffff;--border:#e2e8ef;--border2:#d0d8e4;
+  --text:#1a2332;--text2:#4a5568;--text3:#8a9ab0;
+  --green:#16a34a;--green-bg:#dcfce7;--amber:#b45309;--amber-bg:#fef3c7;
+  --red:#dc2626;--red-bg:#fee2e2;--blue:#1d4ed8;--blue-bg:#dbeafe;
+  --radius:10px;--radius-sm:6px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--sand);color:var(--text);font-size:14px;min-height:100vh}
+.layout{display:flex;min-height:100vh}
+.sidebar{width:224px;background:var(--ocean);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;overflow-y:auto}
+.sb-logo{padding:16px;border-bottom:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;gap:10px}
+.sb-logo-icon{width:34px;height:34px;background:var(--reef);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:17px;flex-shrink:0}
+.sb-brand{font-size:13px;font-weight:700;color:#fff}.sb-sub{font-size:10px;color:rgba(255,255,255,0.45);margin-top:1px}
+.sb-label{font-size:9.5px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:rgba(255,255,255,0.28);padding:10px 14px 3px}
+.sb-btn{display:flex;align-items:center;gap:8px;padding:7px 14px;color:rgba(255,255,255,0.62);cursor:pointer;font-size:12.5px;border:none;background:none;width:100%;text-align:left;transition:all 0.1s;border-left:2px solid transparent}
+.sb-btn:hover{background:rgba(255,255,255,0.07);color:#fff}
+.sb-btn.active{background:rgba(0,180,216,0.16);color:#fff;font-weight:600;border-left-color:var(--reef)}
+.sb-btn .ic{font-size:14px;width:16px;text-align:center;flex-shrink:0}
+.sb-footer{padding:10px 14px;border-top:1px solid rgba(255,255,255,0.07);font-size:9.5px;color:rgba(255,255,255,0.22);margin-top:auto}
+.main{margin-left:224px;flex:1;display:flex;flex-direction:column}
+.topbar{background:var(--white);border-bottom:1px solid var(--border);padding:0 22px;height:50px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.topbar-title{font-size:14px;font-weight:700}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.date-pill{font-size:11px;color:var(--text3);background:var(--sand);padding:3px 9px;border-radius:20px;border:1px solid var(--border)}
+.sync-pill{font-size:10px;padding:3px 9px;border-radius:20px;font-weight:600;transition:all 0.3s}
+.sync-ok{background:#dcfce7;color:#15803d}
+.sync-busy{background:#fef3c7;color:#b45309}
+.sync-err{background:#fee2e2;color:#dc2626}
+.content{padding:18px 22px;flex:1}
+.page{display:none}.page.active{display:block}
+
+/* LOADING SCREEN */
+#loading-screen{position:fixed;inset:0;background:var(--ocean);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;color:#fff;gap:16px}
+#loading-screen .spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.2);border-top-color:var(--reef);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loading-screen p{font-size:14px;opacity:0.7}
+
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:11px;margin-bottom:18px}
+.metric{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);padding:13px 15px}
+.metric-lbl{font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text3);margin-bottom:5px}
+.metric-val{font-size:23px;font-weight:800;color:var(--text);line-height:1}
+.metric-sub{font-size:10.5px;color:var(--text3);margin-top:3px}
+.mv-green{color:var(--green)}.mv-amber{color:var(--amber)}.mv-red{color:var(--red)}.mv-blue{color:var(--blue)}
+
+.card{background:var(--white);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:14px}
+.card-head{padding:11px 15px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.card-title{font-size:12.5px;font-weight:700}
+.card-body{padding:14px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:7px 9px;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--text3);border-bottom:1px solid var(--border);background:#f8fafc;white-space:nowrap}
+td{padding:8px 9px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:#f5f8fc}
+
+.badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap}
+.b-green{background:var(--green-bg);color:var(--green)}
+.b-amber{background:var(--amber-bg);color:var(--amber)}
+.b-red{background:var(--red-bg);color:var(--red)}
+.b-blue{background:var(--blue-bg);color:var(--blue)}
+.b-grey{background:#f1f5f9;color:#64748b}
+
+.dl-local{background:#dcfce7;color:#15803d;border:1px solid #86efac}
+.dl-post{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd}
+.dl-drop{background:#fee2e2;color:#dc2626;border:1px solid #fca5a5}
+
+.cust-init{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
+.ci-local{background:#dcfce7;color:#15803d;border:2px solid #16a34a}
+.ci-post{background:#dbeafe;color:#1d4ed8;border:2px solid #1d4ed8}
+.ci-drop{background:#fee2e2;color:#dc2626;border:2px solid #dc2626}
+.ci-none{background:var(--ocean);color:#fff;border:2px solid var(--ocean2)}
+
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.fg-full{grid-column:1/-1}
+.fg{display:flex;flex-direction:column;gap:4px}
+label{font-size:11px;font-weight:600;color:var(--text2)}
+input,select,textarea{padding:7px 9px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-size:12.5px;color:var(--text);background:var(--white);font-family:inherit;outline:none;transition:border 0.12s}
+input:focus,select:focus,textarea:focus{border-color:var(--reef);box-shadow:0 0 0 3px rgba(0,180,216,0.12)}
+textarea{resize:vertical;min-height:60px}
+
+.btn{padding:6px 13px;border-radius:var(--radius-sm);font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all 0.1s;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.btn-primary{background:var(--ocean);color:#fff}.btn-primary:hover{background:var(--ocean2)}
+.btn-reef{background:var(--reef);color:#fff}.btn-reef:hover{background:#009db8}
+.btn-sec{background:var(--white);color:var(--text2);border-color:var(--border2)}.btn-sec:hover{background:var(--sand)}
+.btn-danger{background:var(--red-bg);color:var(--red);border-color:#fca5a5}.btn-danger:hover{background:#fca5a5}
+.btn-sm{padding:4px 9px;font-size:11px}.btn-xs{padding:2px 7px;font-size:10px}
+
+.modal-ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:200;align-items:center;justify-content:center;padding:14px}
+.modal-ov.open{display:flex}
+.modal{background:var(--white);border-radius:var(--radius);width:580px;max-width:100%;max-height:93vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.2)}
+.modal-head{padding:13px 17px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-size:13.5px;font-weight:700}
+.modal-close{cursor:pointer;font-size:17px;color:var(--text3);background:none;border:none;line-height:1}
+.modal-body{padding:17px}
+.modal-foot{padding:11px 17px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+
+.toast{position:fixed;bottom:18px;right:18px;background:var(--text);color:#fff;padding:9px 15px;border-radius:var(--radius-sm);font-size:12px;font-weight:500;opacity:0;transform:translateY(5px);transition:all 0.18s;z-index:999;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0)}
+
+.flex{display:flex}.items-c{align-items:center}.gap-6{gap:6px}.gap-8{gap:8px}.gap-10{gap:10px}.gap-12{gap:12px}
+.ml-auto{margin-left:auto}.mt-8{margin-top:8px}.mt-12{margin-top:12px}.mb-8{margin-bottom:8px}.mb-12{margin-bottom:12px}.mb-14{margin-bottom:14px}
+.text-sm{font-size:11px}.text-xs{font-size:10px}.text-muted{color:var(--text3)}
+.font-bold{font-weight:700}.text-green{color:var(--green)}.text-red{color:var(--red)}.text-amber{color:var(--amber)}
+.empty{text-align:center;padding:36px 20px;color:var(--text3)}
+.empty .ei{font-size:28px;margin-bottom:7px;opacity:0.4}
+.divider{border:none;border-top:1px solid var(--border);margin:11px 0}
+.section-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;flex-wrap:wrap;gap:8px}
+.section-title{font-size:14px;font-weight:700}
+
+.itbl{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:8px}
+.itbl th{background:#f0f4f8;padding:5px 7px;text-align:left;font-size:9px;font-weight:700;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border)}
+.itbl td{padding:5px 7px;border-bottom:1px solid #edf2f7}
+.itbl tr:last-child td{border-bottom:none}
+.itbl tr.doa td{background:#fff5f5}
+
+.sup-tag{display:inline-flex;align-items:center;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;background:#e8f4fd;color:#1565c0;margin:1px}
+
+.ostat-bar{display:flex;gap:18px;padding:9px 15px;background:#f7fafb;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.ostat-lbl{font-size:9.5px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:0.05em}
+.ostat-val{font-size:12.5px;font-weight:700}
+
+.bar-chart{display:flex;align-items:flex-end;gap:5px;height:90px}
+.bar-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px}
+.bar-fill{width:100%;background:var(--reef2);border-radius:3px 3px 0 0;border:1px solid var(--reef);min-height:2px}
+.bar-fill.neg{background:#fca5a5;border-color:var(--red)}
+.bar-lbl{font-size:9px;color:var(--text3);text-align:center}
+.bar-v{font-size:9px;font-weight:700}
+
+.pbar-wrap{background:#f0f4f8;border-radius:20px;height:5px;overflow:hidden;margin-top:3px;min-width:60px}
+.pbar{height:100%;border-radius:20px;background:var(--reef)}.pbar.neg{background:var(--red)}
+
+.dl-selector{display:flex;gap:6px;flex-wrap:wrap}
+.dl-opt{padding:5px 11px;border-radius:20px;font-size:11px;font-weight:700;cursor:pointer;border:2px solid transparent;transition:all 0.12s;opacity:0.5}
+.dl-opt.sel{opacity:1}
+.dl-opt.dl-local{border-color:#16a34a}.dl-opt.dl-post{border-color:#1d4ed8}.dl-opt.dl-drop{border-color:#dc2626}
+
+@media(max-width:860px){
+  .sidebar{width:48px}.sb-brand,.sb-sub,.sb-label,.sb-btn span:not(.ic){display:none}
+  .sb-btn{padding:9px;justify-content:center}.main{margin-left:48px}
+  .two-col,.three-col,.form-grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-screen">
+  <div class="spinner"></div>
+  <p>Connecting to database...</p>
+</div>
+
+<div class="layout">
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-icon">🐠</div>
+    <div><div class="sb-brand">Straits Aquatics</div><div class="sb-sub">Dashboard</div></div>
+  </div>
+  <div style="padding:8px 0">
+    <div class="sb-label">Overview</div>
+    <button class="sb-btn active" onclick="nav('overview',this)"><span class="ic">📊</span><span>Dashboard</span></button>
+    <div class="sb-label">Orders</div>
+    <button class="sb-btn" onclick="nav('orders',this)"><span class="ic">📦</span><span>Order Manager</span></button>
+    <button class="sb-btn" onclick="nav('new-order',this)"><span class="ic">➕</span><span>New Order</span></button>
+    <div class="sb-label">Customers</div>
+    <button class="sb-btn" onclick="nav('customers',this)"><span class="ic">👥</span><span>Customers</span></button>
+    <button class="sb-btn" onclick="nav('credits',this)"><span class="ic">💳</span><span>Credits & Owed</span></button>
+    <div class="sb-label">Catalogue</div>
+    <button class="sb-btn" onclick="nav('prices',this)"><span class="ic">🐟</span><span>Price List</span></button>
+    <button class="sb-btn" onclick="nav('suppliers',this)"><span class="ic">🏭</span><span>Suppliers</span></button>
+    <div class="sb-label">Finance</div>
+    <button class="sb-btn" onclick="nav('profits',this)"><span class="ic">📈</span><span>Profit Tracker</span></button>
+    <div class="sb-label" id="admin-sidebar-label" style="display:none">Admin</div>
+    <button class="sb-btn" id="users-sidebar-btn" onclick="nav('users',this)" style="display:none"><span class="ic">👤</span><span>Users</span></button>
+  </div>
+  <div class="sb-footer">v3.0 · Live · Gibraltar</div>
+</aside>
+
+<main class="main">
+<div class="topbar">
+  <div class="topbar-title" id="page-title">Dashboard Overview</div>
+  <div class="topbar-right">
+    <span class="sync-pill sync-busy" id="sync-status">⏳ Syncing...</span>
+    <span class="date-pill" id="cur-date"></span>
+    <div style="display:flex;align-items:center;gap:8px;padding:4px 10px;background:rgba(0,180,216,0.08);border:1px solid rgba(0,180,216,0.2);border-radius:20px">
+      <span style="font-size:11px;color:var(--reef);font-weight:600" id="current-user-name"></span>
+      <span id="current-user-role" style="font-size:9px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;padding:2px 6px;border-radius:10px;background:rgba(0,180,216,0.15);color:var(--reef)"></span>
+    </div>
+    <button onclick="signOut()" style="padding:5px 12px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:none;color:var(--text3);font-size:11px;cursor:pointer">Sign Out</button>
+  </div>
+</div>
+<div class="content">
+
+<!-- OVERVIEW -->
+<div id="page-overview" class="page active">
+  <div class="metrics">
+    <div class="metric"><div class="metric-lbl">Total Revenue Quoted</div><div class="metric-val" id="ov-rev">€0</div><div class="metric-sub">All orders</div></div>
+    <div class="metric"><div class="metric-lbl">Total Profit</div><div class="metric-val mv-green" id="ov-profit">€0</div><div class="metric-sub">Quoted − actual cost</div></div>
+    <div class="metric"><div class="metric-lbl">Active Orders</div><div class="metric-val mv-blue" id="ov-orders">0</div><div class="metric-sub"><span id="ov-completed" style="color:var(--green)">0</span> completed</div></div>
+    <div class="metric"><div class="metric-lbl">Customers</div><div class="metric-val" id="ov-custs">0</div><div class="metric-sub">In database</div></div>
+    <div class="metric"><div class="metric-lbl">Credits Outstanding</div><div class="metric-val mv-amber" id="ov-credits">0</div><div class="metric-sub">Customers with balance</div></div>
+    <div class="metric"><div class="metric-lbl">Pending Payments</div><div class="metric-val mv-amber" id="ov-pending">€0</div><div class="metric-sub">Owed to us by customers</div></div>
+    <div class="metric"><div class="metric-lbl">Today's Profit</div><div class="metric-val mv-green" id="ov-today-profit">€0</div><div class="metric-sub">Orders placed today</div></div>
+    <div class="metric"><div class="metric-lbl">Active DOA Claims</div><div class="metric-val mv-red" id="ov-doas">€0</div><div class="metric-sub">Unresolved</div></div>
+  </div>
+  <div class="two-col">
+    <div class="card"><div class="card-head"><div class="card-title">Profit by Order</div></div>
+      <div class="card-body"><div class="bar-chart" id="ov-chart"></div></div></div>
+    <div class="card"><div class="card-head"><div class="card-title">Recent Orders</div></div>
+      <div class="card-body" id="ov-recent"><div class="empty"><div class="ei">📦</div><p>No orders yet</p></div></div></div>
+  </div>
+  <div class="two-col">
+    <div class="card"><div class="card-head"><div class="card-title">Top Customers by Spend</div></div>
+      <div class="card-body" id="ov-topcusts"><div class="empty"><div class="ei">👥</div><p>No data yet</p></div></div></div>
+    <div class="card"><div class="card-head"><div class="card-title">Credits Summary</div></div>
+      <div class="card-body" id="ov-credsummary"><div class="empty"><div class="ei">💳</div><p>No credits recorded</p></div></div></div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">💰 Pending Payments — Owed to Us</div>
+      <span class="text-sm text-muted">Customers with outstanding balances</span>
+    </div>
+    <div class="card-body" id="ov-pending-breakdown">
+      <div class="empty"><div class="ei">✅</div><p>No pending payments</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- ORDERS LIST -->
+<div id="page-orders" class="page">
+  <div class="section-hd">
+    <div class="section-title">Order Manager</div>
+    <div class="flex gap-8 items-c">
+      <input type="text" id="orders-search" placeholder="Search..." oninput="filterOrders(this.value)" style="max-width:200px">
+      <button class="btn btn-primary" onclick="startNewOrder()">+ New Order</button>
+    </div>
+  </div>
+  <!-- Order tabs -->
+  <div class="flex gap-0 mb-14" style="border-bottom:2px solid var(--border)">
+    <button class="order-tab active" id="tab-active" onclick="setOrderTab('active',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--reef);border-bottom:2px solid var(--reef);margin-bottom:-2px;transition:all 0.15s">
+      🔴 Active <span id="tab-count-active" class="badge b-red" style="margin-left:5px">0</span>
+    </button>
+    <button class="order-tab" id="tab-completed" onclick="setOrderTab('completed',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.15s">
+      ✅ Completed <span id="tab-count-completed" class="badge b-green" style="margin-left:5px">0</span>
+    </button>
+    <button class="order-tab" id="tab-all" onclick="setOrderTab('all',this)" style="padding:8px 20px;font-size:12.5px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all 0.15s">
+      📋 All Orders <span id="tab-count-all" class="badge b-grey" style="margin-left:5px">0</span>
+    </button>
+  </div>
+  <div class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3)">Customer colour:</span>
+    <span class="badge dl-local">🟢 Local Pick-up</span>
+    <span class="badge dl-post">🔵 Postage</span>
+    <span class="badge dl-drop">🔴 Drop Ship</span>
+  </div>
+  <div class="card"><div class="tbl-wrap">
+    <table><thead><tr><th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody id="orders-body"><tr><td colspan="9"><div class="empty"><div class="ei">📦</div><p>No orders yet</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- NEW ORDER -->
+<div id="page-new-order" class="page">
+  <div class="section-hd">
+    <div class="section-title" id="order-page-title">New Order</div>
+    <div class="flex gap-8">
+      <button class="btn btn-sec" onclick="nav('orders',null)">← Back</button>
+      <button class="btn btn-primary" onclick="saveOrder()">💾 Save Order</button>
+    </div>
+  </div>
+  <div class="card mb-14">
+    <div class="card-head"><div class="card-title">Order Details</div></div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="fg fg-full"><label>Order Type</label>
+          <div class="flex gap-8 mt-8">
+            <div id="ot-weekly" onclick="selOrderType('weekly',this)" style="padding:5px 14px;border-radius:20px;border:2px solid var(--ocean);background:#e8f4fd;color:var(--ocean);font-size:11px;font-weight:700;cursor:pointer">📦 Weekly Order</div>
+            <div id="ot-adhoc" onclick="selOrderType('adhoc',this)" style="padding:5px 14px;border-radius:20px;border:2px solid var(--border2);background:#f8fafc;color:var(--text3);font-size:11px;font-weight:700;cursor:pointer">⚡ Ad Hoc</div>
+          </div>
+          <input type="hidden" id="o-type" value="weekly">
+        </div>
+        <div class="fg"><label>Order Number / Reference</label><input type="text" id="o-num" placeholder="Weekly: 42  |  Ad Hoc: AQ-Jun-25"></div>
+        <div class="fg"><label>Date</label><input type="date" id="o-date"></div>
+        <div class="fg fg-full"><label>Supplier(s)</label>
+          <div class="flex gap-6 items-c mb-8" style="flex-wrap:wrap" id="sup-selected"></div>
+          <div class="flex gap-6 items-c" style="flex-wrap:wrap">
+            <select id="sup-picker" style="max-width:220px">
+              <option value="">Pick supplier...</option>
+              <option>De Jong Marine Life</option><option>Reef Fish Centre</option><option>Amblard</option>
+              <option>Dream Corals</option><option>Aq-arium</option><option>Lunaqua</option>
+              <option>Blue Clownfish</option><option>Marine Aquatics</option><option>Red Sea / Tecno</option>
+              <option>Fauna Marin</option><option>Aquaforest</option><option>Other</option>
+            </select>
+            <button class="btn btn-sec btn-sm" onclick="addSupplier()">+ Add</button>
+          </div>
+        </div>
+        <div class="fg"><label>Shipping / Delivery Cost (€)</label><input type="number" id="o-shipping" step="0.01" min="0" placeholder="0.00" oninput="updateSummary()"></div>
+        <div class="fg"><label>Other SA Costs – fuel, tolls etc (€)</label><input type="number" id="o-othercosts" step="0.01" min="0" placeholder="0.00" oninput="updateSummary()"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="o-notes" rows="2"></textarea></div>
+      </div>
+    </div>
+  </div>
+  <div class="card mb-14">
+    <div class="card-head"><div class="card-title">Customer Orders</div>
+      <button class="btn btn-reef btn-sm" onclick="openModal('modal-cust-line')">+ Add Customer</button></div>
+    <div id="cust-lines-wrap">
+      <div class="empty" id="cust-lines-empty"><div class="ei">👥</div><p>Add customers to this order</p></div>
+    </div>
+  </div>
+  <div class="card mb-14">
+    <div class="card-head"><div class="card-title">🐠 Straits Aquatics Stock (for resale)</div>
+      <button class="btn btn-sec btn-sm" onclick="addSARow()">+ Add Item</button></div>
+    <div id="sa-lines-wrap">
+      <div class="empty" id="sa-lines-empty"><div class="ei">📦</div><p>Add items purchased for SA stock</p></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head"><div class="card-title">Order Summary</div></div>
+    <div class="card-body">
+      <div class="three-col">
+        <div class="metric"><div class="metric-lbl">Total Quoted</div><div class="metric-val mv-green" id="sum-quoted">€0</div></div>
+        <div class="metric"><div class="metric-lbl">Total Actual Cost</div><div class="metric-val mv-amber" id="sum-actual">€0</div></div>
+        <div class="metric"><div class="metric-lbl">Estimated Profit</div><div class="metric-val" id="sum-profit">€0</div></div>
+        <div class="metric"><div class="metric-lbl">DOA Absorbed by SA</div><div class="metric-val mv-red" id="sum-doa-absorbed">€0</div><div class="metric-sub">Written off as SA cost</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CUSTOMERS -->
+<div id="page-customers" class="page">
+  <div class="section-hd">
+    <div class="section-title">Customers</div>
+    <div class="flex gap-8 items-c">
+      <input type="text" placeholder="Search..." oninput="filterCustomers(this.value)" style="max-width:200px">
+      <button class="btn btn-primary" onclick="openModal('modal-add-customer')">+ Add Customer</button>
+    </div>
+  </div>
+  <div class="card"><div class="tbl-wrap">
+    <table><thead><tr><th>Name</th><th>Location</th><th>Phone</th><th>Total Spent</th><th>Orders</th><th>Credit</th><th>Notes</th><th></th></tr></thead>
+    <tbody id="customers-body"><tr><td colspan="8"><div class="empty"><div class="ei">👥</div><p>No customers yet</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- CREDITS -->
+<div id="page-credits" class="page">
+  <div class="section-hd"><div class="section-title">Credits & Amounts Owed</div>
+    <button class="btn btn-primary" onclick="openModal('modal-credit')">+ Record Entry</button></div>
+  <div class="two-col">
+    <div class="card"><div class="card-head"><div class="card-title">Customer Credits (held with us)</div></div>
+      <div class="card-body" id="cred-positive"><div class="empty"><div class="ei">💳</div><p>None</p></div></div></div>
+    <div class="card"><div class="card-head"><div class="card-title">Owed to Us (unpaid)</div></div>
+      <div class="card-body" id="cred-negative"><div class="empty"><div class="ei">💳</div><p>None</p></div></div></div>
+  </div>
+  <div class="card"><div class="tbl-wrap">
+    <table><thead><tr><th>Customer</th><th>Type</th><th>Amount</th><th>Reason</th><th>Date</th><th>Order #</th><th></th></tr></thead>
+    <tbody id="credits-body"><tr><td colspan="7"><div class="empty"><div class="ei">💳</div><p>No entries</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- PRICES -->
+<div id="page-prices" class="page">
+  <div class="section-hd"><div class="section-title">Species Price List</div>
+    <button class="btn btn-primary" onclick="openModal('modal-add-price')">+ Add Species</button></div>
+  <input type="text" id="price-search" placeholder="🔍 Search species, category..." oninput="filterPrices(this.value)"
+    style="width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-size:13px;margin-bottom:12px">
+  <div class="card"><div class="tbl-wrap">
+    <table><thead><tr><th>Species / Item</th><th>Category</th><th>Wild (€)</th><th>Captive (€)</th><th>Supplier</th><th>Notes</th><th></th></tr></thead>
+    <tbody id="prices-body"><tr><td colspan="7"><div class="empty"><div class="ei">🐟</div><p>Loading...</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+<!-- SUPPLIERS -->
+<div id="page-suppliers" class="page">
+  <div class="section-hd"><div class="section-title">Supplier Reference</div></div>
+  <div class="three-col" id="sup-cards"></div>
+</div>
+
+<!-- PROFITS -->
+<div id="page-users" class="page">
+  <div class="section-hd">
+    <div class="section-title">User Management</div>
+    <button class="btn btn-primary" onclick="openModal('modal-add-user')">+ Add User</button>
+  </div>
+  <div class="card"><div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Last Login</th><th>Actions</th></tr></thead>
+      <tbody id="users-body"><tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>Loading users...</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+<div id="page-profits" class="page">
+  <div class="section-hd"><div class="section-title">Profit by Order</div></div>
+  <div class="card"><div class="tbl-wrap">
+    <table><thead><tr><th>Order #</th><th>Date</th><th>Supplier(s)</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>Margin</th><th>Status</th></tr></thead>
+    <tbody id="profit-body"><tr><td colspan="8"><div class="empty"><div class="ei">📈</div><p>No orders yet</p></div></td></tr></tbody>
+    </table>
+  </div></div>
+</div>
+
+</div></main>
+</div>
+
+<!-- MODALS -->
+<div class="modal-ov" id="modal-cust-line">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Add Customer to Order</div><button class="modal-close" onclick="closeModal('modal-cust-line')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg"><label>Customer Name</label><input type="text" id="cl-name" list="dl-custs"><datalist id="dl-custs"></datalist></div>
+        <div class="fg"><label>Location</label><input type="text" id="cl-loc" placeholder="e.g. Gibraltar, Algeciras"></div>
+      </div>
+      <div class="fg mt-12 mb-8">
+        <label>Delivery / Fulfilment Method</label>
+        <div class="dl-selector mt-8" id="dl-selector">
+          <div class="dl-opt dl-local" onclick="selDelivery('local',this)">🟢 Local Pick-up</div>
+          <div class="dl-opt dl-post" onclick="selDelivery('post',this)">🔵 Postage</div>
+          <div class="dl-opt dl-drop" onclick="selDelivery('drop',this)">🔴 Drop Ship</div>
+        </div>
+        <input type="hidden" id="cl-delivery" value="">
+      </div>
+
+      <div class="divider"></div>
+      <div class="flex items-c gap-8 mb-8">
+        <div class="font-bold text-sm">Items</div>
+        <button class="btn btn-sec btn-xs" onclick="addItemRow()">+ Add Item</button>
+      </div>
+      <div id="cl-items-list"></div>
+      <div class="divider"></div>
+      <div class="form-grid">
+        <div class="fg"><label>Total Quoted (€)</label><input type="number" id="cl-quoted" step="0.01" placeholder="0.00" oninput="calcCustLine()"></div>
+        <div class="fg"><label>Total Actual Cost (€)</label><input type="number" id="cl-actual" step="0.01" placeholder="0.00" oninput="calcCustLine()"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--green-bg);border:1px solid #86efac;border-radius:var(--radius-sm);margin-top:4px">
+        <input type="checkbox" id="cl-free-ship" style="width:16px;height:16px;cursor:pointer;accent-color:var(--green)" onchange="toggleFreeShipping()">
+        <label for="cl-free-ship" style="font-size:12px;font-weight:600;color:var(--green);cursor:pointer;text-transform:none;letter-spacing:0">🚚 Free Shipping to customer</label>
+        <span style="font-size:11px;color:var(--text3);margin-left:4px">(quoted = €0, enter actual shipping cost above)</span>
+      </div>
+      <div id="free-ship-actual-row" style="display:none;margin-top:8px">
+        <div class="fg"><label>Actual Shipping Cost (€) — absorbed by SA</label><input type="number" id="cl-ship-actual" step="0.01" min="0" placeholder="0.00" oninput="calcCustLine()"></div>
+      </div>
+      <div class="mt-8 text-sm text-muted" id="cl-margin"></div>
+      <div class="divider"></div>
+      <div class="font-bold text-sm mb-8">💳 Payment Tracking</div>
+      <div class="form-grid mb-8">
+        <div class="fg"><label>Pay By Date (deadline)</label><input type="date" id="cl-payby"></div>
+        <div class="fg"><label>Payment Method</label>
+          <select id="cl-paymethod">
+            <option value="">Not specified</option>
+            <option>Cash</option><option>Revolut</option><option>Bank Transfer</option>
+            <option>PayPal</option><option>Card</option><option>Stripe</option>
+          </select>
+        </div>
+      </div>
+      <div class="flex items-c gap-8 mb-8">
+        <div class="text-sm font-bold">Payment Instalments</div>
+        <button class="btn btn-sec btn-xs" onclick="addPaymentRow()">+ Add Payment</button>
+      </div>
+      <div id="cl-payments-list"></div>
+      <div class="flex items-c gap-8 mt-8 text-sm">
+        <span class="text-muted">Total paid:</span><span id="cl-paid-total" class="font-bold text-green">€0</span>
+        <span class="text-muted" style="margin-left:8px">Remaining:</span><span id="cl-remaining" class="font-bold text-red">€0</span>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-cust-line')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCustLine()">Add Customer</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-ov" id="modal-add-user">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title" id="user-modal-title">Add User</div><button class="mc-btn" onclick="closeModal('modal-add-user')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg"><label>Display Name</label><input type="text" id="u-name" placeholder="e.g. Ryan Castle"></div>
+        <div class="fg"><label>Username</label><input type="text" id="u-username" placeholder="e.g. RCASTLE" style="text-transform:uppercase"></div>
+        <div class="fg"><label>Password</label><input type="password" id="u-password" placeholder="Enter password"></div>
+        <div class="fg"><label>Role</label>
+          <select id="u-role">
+            <option value="viewer">Viewer (read only)</option>
+            <option value="admin">Admin (full access)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-add-user')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveUser()">Save User</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-ov" id="modal-order-detail">
+  <div class="modal" style="width:760px;max-width:98vw">
+    <div class="modal-head"><div class="modal-title" id="od-title">Order Detail</div><button class="modal-close" onclick="closeModal('modal-order-detail')">✕</button></div>
+    <div class="ostat-bar" id="od-statbar"></div>
+    <div class="modal-body" id="od-body"></div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-order-detail')">Close</button>
+      <button class="btn btn-danger btn-sm" id="od-del-btn">Delete Order</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-ov" id="modal-add-customer">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Add Customer</div><button class="modal-close" onclick="closeModal('modal-add-customer')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg"><label>Full Name</label><input type="text" id="cust-name"></div>
+        <div class="fg"><label>Location</label><input type="text" id="cust-loc" placeholder="e.g. Gibraltar, Algeciras"></div>
+        <div class="fg"><label>Phone / WhatsApp</label><input type="text" id="cust-phone"></div>
+        <div class="fg"><label>Email</label><input type="email" id="cust-email"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="cust-notes" rows="2"></textarea></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-add-customer')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCustomer()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-ov" id="modal-credit">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Record Credit / Debt</div><button class="modal-close" onclick="closeModal('modal-credit')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg"><label>Customer</label>
+          <input type="text" id="cr-cust" list="dl-custs2" placeholder="Type to search customers..." autocomplete="off">
+          <datalist id="dl-custs2"></datalist>
+        </div>
+        <div class="fg"><label>Type</label>
+          <select id="cr-type">
+            <option value="credit">Credit (they have credit with us)</option>
+            <option value="owed">Owed to us (unpaid)</option>
+          </select>
+        </div>
+        <div class="fg"><label>Amount (€)</label><input type="number" id="cr-amount" step="0.01" min="0"></div>
+        <div class="fg"><label>Order # (optional)</label><input type="text" id="cr-order"></div>
+        <div class="fg fg-full"><label>Reason</label><input type="text" id="cr-reason"></div>
+        <div class="fg"><label>Date</label><input type="date" id="cr-date"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-credit')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveCredit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-ov" id="modal-add-price">
+  <div class="modal">
+    <div class="modal-head"><div class="modal-title">Add to Price List</div><button class="modal-close" onclick="closeModal('modal-add-price')">✕</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="fg fg-full"><label>Species / Item Name</label><input type="text" id="pr-name"></div>
+        <div class="fg"><label>Category</label>
+          <select id="pr-cat">
+            <option>Fish</option><option>Coral (SPS)</option><option>Coral (LPS)</option><option>Coral (Soft)</option>
+            <option>Invertebrate</option><option>Anemone</option><option>Clean-up Crew</option>
+            <option>Live Food</option><option>Dry Goods</option><option>Equipment</option><option>Other</option>
+          </select>
+        </div>
+        <div class="fg"><label>Wild Price (€)</label><input type="number" id="pr-wild" step="0.01" min="0"></div>
+        <div class="fg"><label>Captive Price (€)</label><input type="number" id="pr-capt" step="0.01" min="0"></div>
+        <div class="fg"><label>Main Supplier</label><input type="text" id="pr-sup"></div>
+        <div class="fg"><label>Notes</label><input type="text" id="pr-notes"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-sec" onclick="closeModal('modal-add-price')">Cancel</button>
+      <button class="btn btn-primary" onclick="savePrice()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+
+// ===== SUPABASE CONFIG =====
+const SB_URL = 'https://addrfpwgtixvzokkkuyi.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkZHJmcHdndGl4dnpva2trdXlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIwMjkwMjgsImV4cCI6MjA5NzYwNTAyOH0.OMcNNFHIrNBm4sRi8D0V9-ftMadd62X2XDYtF_jRJ4M';
+
+const H = {'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY,'Prefer':'return=representation','X-Client-Info':'straits-aquatics/1.0'};
+
+async function sbGet(table, extra=''){
+  const url = `${SB_URL}/rest/v1/${table}?${extra}`;
+  console.log('Fetching:', url);
+  const r = await fetch(url, {headers:H});
+  if(!r.ok){
+    const body = await r.text();
+    console.error(`sbGet ${table} failed ${r.status}:`, body);
+    throw new Error(`${r.status} on ${table}: ${body}`);
+  }
+  return r.json();
+}
+async function sbInsert(table, data){
+  const r = await fetch(`${SB_URL}/rest/v1/${table}`, {method:'POST', headers:H, body:JSON.stringify(data)});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function sbUpdate(table, id, data){
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, {method:'PATCH', headers:{...H,'Prefer':'return=representation'}, body:JSON.stringify(data)});
+  if(!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+async function sbDelete(table, id){
+  const r = await fetch(`${SB_URL}/rest/v1/${table}?id=eq.${id}`, {method:'DELETE', headers:H});
+  if(!r.ok) throw new Error(await r.text());
+}
+
+// ===== LOCAL CACHE =====
+let db = {orders:[], customers:[], credits:[], prices:[]};
+let curSuppliers=[], curCustLines=[], editingOrderId=null, selectedDelivery='';
+
+// ===== SYNC STATUS =====
+function setSyncStatus(state, msg){
+  const el = document.getElementById('sync-status');
+  el.className = 'sync-pill ' + state;
+  el.textContent = msg;
+}
+
+// ===== BUILT-IN PRICES =====
+const BUILTIN = [
+  {name:'Linckia Star - red',cat:'Invertebrate',wild:35,capt:0,sup:'',notes:''},
+  {name:'Acanthurus achilles',cat:'Fish',wild:320,capt:0,sup:'',notes:''},
+  {name:'Acanthurus achilles X nigricans Hybrid S/M',cat:'Fish',wild:420,capt:0,sup:'',notes:''},
+  {name:'Acanthurus achilles X nigricans Hybrid M/L',cat:'Fish',wild:470,capt:0,sup:'',notes:''},
+  {name:'Acanthurus japonicus L',cat:'Fish',wild:88,capt:0,sup:'',notes:''},
+  {name:'Acanthurus japonicus M',cat:'Fish',wild:72,capt:0,sup:'',notes:''},
+  {name:'Acanthurus japonicus S',cat:'Fish',wild:68,capt:0,sup:'',notes:''},
+  {name:'Acanthurus Leucosternon - Powder Blue Tang S',cat:'Fish',wild:57,capt:0,sup:'',notes:''},
+  {name:'Acanthurus pyroferus mimic Heraldi S',cat:'Fish',wild:55,capt:0,sup:'',notes:''},
+  {name:'Acanthurus Triostegus M',cat:'Fish',wild:40,capt:0,sup:'',notes:''},
+  {name:'Acreichthys Tomentosus',cat:'Fish',wild:24.97,capt:30,sup:'',notes:'Filefish'},
+  {name:'Alpheus Randalli',cat:'Invertebrate',wild:25.5,capt:0,sup:'',notes:'Pistol shrimp'},
+  {name:'Amphiprion biaculeatus Lightning - DJM Bred',cat:'Fish',wild:0,capt:28,sup:'De Jong Marine Life',notes:'Captive bred'},
+  {name:'Amphiprion ocellaris T.B. S/M',cat:'Fish',wild:15,capt:0,sup:'De Jong Marine Life',notes:''},
+  {name:'Amphiprion ocellaris Premium Snowflake DJM',cat:'Fish',wild:0,capt:60,sup:'De Jong Marine Life',notes:''},
+  {name:'Amphiprion ocellaris Snow Storm DJM',cat:'Fish',wild:0,capt:55,sup:'De Jong Marine Life',notes:''},
+  {name:'Amphiprion Ocellaris Mocha Storm',cat:'Fish',wild:99,capt:0,sup:'',notes:''},
+  {name:'Amphiprion Ocellaris Super Storm',cat:'Fish',wild:107,capt:0,sup:'',notes:''},
+  {name:'Amphiprion Platinum',cat:'Fish',wild:23.5,capt:0,sup:'',notes:''},
+  {name:'Anampses caeruleopunctatus',cat:'Fish',wild:61,capt:0,sup:'',notes:''},
+  {name:'Anampses meleagrides',cat:'Fish',wild:58,capt:0,sup:'',notes:'Yellowtail wrasse'},
+  {name:'Anampses twistii',cat:'Fish',wild:79,capt:0,sup:'',notes:''},
+  {name:'Apolemichthys trimaculatus S',cat:'Fish',wild:60,capt:0,sup:'',notes:''},
+  {name:'Apolemichthys Xanthopunctatus L',cat:'Fish',wild:430,capt:0,sup:'',notes:''},
+  {name:'Apolemichthys Xanthopunctatus M',cat:'Fish',wild:340,capt:0,sup:'',notes:''},
+  {name:'Apolemichthys xanthopunctatus T.B.',cat:'Fish',wild:0,capt:340,sup:'De Jong Marine Life',notes:''},
+  {name:'Archaster typicus',cat:'Invertebrate',wild:18,capt:0,sup:'',notes:'Sand sifting starfish'},
+  {name:'Berghia Nudibranch aiptasia',cat:'Invertebrate',wild:35,capt:0,sup:'Reef Fish Centre',notes:'1=€35 / 5=€25 per pc'},
+  {name:'Brittle starfish',cat:'Invertebrate',wild:16,capt:0,sup:'',notes:''},
+  {name:'Centropyge Bicolor',cat:'Fish',wild:39.6,capt:0,sup:'',notes:''},
+  {name:'Centropyge Bispinosa',cat:'Fish',wild:39,capt:0,sup:'',notes:'Two-spined angel'},
+  {name:'Centropyge Flavissima M',cat:'Fish',wild:68,capt:88,sup:'',notes:'Lemonpeel angel'},
+  {name:'Centropyge flavissima Hybrid',cat:'Fish',wild:136,capt:275,sup:'',notes:''},
+  {name:'Centropyge heraldi M',cat:'Fish',wild:44,capt:0,sup:'',notes:'Yellow angel'},
+  {name:'Centropyge interruptus T.B.',cat:'Fish',wild:0,capt:2500,sup:'De Jong Marine Life',notes:'Rare'},
+  {name:'Centropyge Multicolor',cat:'Fish',wild:112.5,capt:0,sup:'',notes:''},
+  {name:'Chaetodon auriga L',cat:'Fish',wild:72,capt:0,sup:'',notes:'Threadfin butterflyfish'},
+  {name:'Chaetodon Auriga M',cat:'Fish',wild:52.8,capt:0,sup:'',notes:''},
+  {name:'Chaetodon auriga S',cat:'Fish',wild:39,capt:0,sup:'',notes:''},
+  {name:'Chelmon',cat:'Fish',wild:59,capt:66,sup:'Reef Fish Centre',notes:'Copperband butterfly'},
+  {name:'Chromis Vanderbilt',cat:'Fish',wild:14,capt:0,sup:'',notes:''},
+  {name:'Chromis Viridis',cat:'Fish',wild:12.5,capt:0,sup:'',notes:'1pc €12.50 / 5pcs €12 / 6+ €11'},
+  {name:'Chrysiptora springeri',cat:'Fish',wild:10.36,capt:0,sup:'',notes:'Springer damsel'},
+  {name:'Cirrhilabrus aquamarinus',cat:'Fish',wild:61,capt:0,sup:'',notes:''},
+  {name:'Cirrhilabrus Aurantidorsalis',cat:'Fish',wild:64,capt:0,sup:'',notes:''},
+  {name:'Cirrhilabrus scottorum',cat:'Fish',wild:150,capt:0,sup:'',notes:''},
+  {name:'Cirrhilabrus Solorensis',cat:'Fish',wild:49.9,capt:0,sup:'',notes:''},
+  {name:'Cittarium pica',cat:'Invertebrate',wild:6.6,capt:0,sup:'Amblard',notes:'West Atlantic top shell'},
+  {name:'Cryptocentrus Cinctus',cat:'Fish',wild:26,capt:0,sup:'',notes:'Yellow watchman goby'},
+  {name:'Ctenochaetus cyanocheilus',cat:'Fish',wild:59,capt:0,sup:'',notes:''},
+  {name:'Ctenochaetus flavicauda',cat:'Fish',wild:159,capt:0,sup:'',notes:''},
+  {name:'Ctenocheatus Tominiensis S',cat:'Fish',wild:45,capt:0,sup:'',notes:'Tomini tang'},
+  {name:'Dendrochirus brachypterus L',cat:'Fish',wild:49,capt:0,sup:'',notes:'Dwarf fuzzy lionfish'},
+  {name:'Dendrochirus brachypterus M',cat:'Fish',wild:39,capt:0,sup:'',notes:''},
+  {name:'Dendrochirus zebra S',cat:'Fish',wild:39,capt:0,sup:'',notes:'Zebra lionfish'},
+  {name:'Diademichthys lineatus',cat:'Fish',wild:34,capt:0,sup:'',notes:''},
+  {name:'Discosoma sanctithomae ultra red',cat:'Coral (Soft)',wild:55,capt:0,sup:'',notes:''},
+  {name:'Dolabella auricularia',cat:'Invertebrate',wild:30,capt:0,sup:'',notes:'Sea hare'},
+  {name:'Echidna nebulosa Snowflake moray S',cat:'Fish',wild:45,capt:0,sup:'',notes:''},
+  {name:'Ecsenius Stigmatura',cat:'Fish',wild:26.95,capt:0,sup:'',notes:'Tail spot blenny'},
+  {name:'Elacatinus figaro T.B.',cat:'Fish',wild:0,capt:33,sup:'',notes:''},
+  {name:'Elacatinus oceanops',cat:'Fish',wild:24,capt:32,sup:'',notes:''},
+  {name:'Engina mendicaria',cat:'Invertebrate',wild:3,capt:0,sup:'',notes:'Bumble bee snail'},
+  {name:'Genicanthus bellus female',cat:'Fish',wild:145,capt:0,sup:'',notes:''},
+  {name:'Gnathophyllum americanum',cat:'Invertebrate',wild:16,capt:0,sup:'',notes:'Bumblebee shrimp'},
+  {name:'Gobiodon Citrinus',cat:'Fish',wild:25,capt:0,sup:'',notes:'Lemon coral goby'},
+  {name:'Gobiodon okinawae',cat:'Fish',wild:17.5,capt:0,sup:'',notes:'Yellow coral goby'},
+  {name:'Gramma loreto',cat:'Fish',wild:33.5,capt:0,sup:'',notes:'Royal gramma'},
+  {name:'Halichoeres chrysus',cat:'Fish',wild:24,capt:0,sup:'',notes:'Canary wrasse'},
+  {name:'Halichoeres Iridis - Radiant Wrasse',cat:'Fish',wild:57,capt:0,sup:'',notes:''},
+  {name:'Halichoeres leucoxanthus',cat:'Fish',wild:35,capt:0,sup:'',notes:''},
+  {name:'Halichoeres melanurus',cat:'Fish',wild:50,capt:0,sup:'',notes:''},
+  {name:'Hemitaurichthys polyepis',cat:'Fish',wild:108,capt:0,sup:'',notes:'Pyramid butterfly'},
+  {name:'Heteractis crispa Cream M',cat:'Anemone',wild:44,capt:0,sup:'',notes:''},
+  {name:'Hymenocera picta',cat:'Invertebrate',wild:46.9,capt:55,sup:'',notes:'Harlequin shrimp'},
+  {name:'Imperator juv',cat:'Fish',wild:89,capt:0,sup:'',notes:'Emperor angel juvenile'},
+  {name:'Labroides Dimidiatus',cat:'Fish',wild:18,capt:0,sup:'',notes:'Cleaner wrasse'},
+  {name:'Lactoria cornuta M',cat:'Fish',wild:46,capt:0,sup:'',notes:'Longhorn cowfish'},
+  {name:'Lactoria cornuta S',cat:'Fish',wild:40,capt:0,sup:'',notes:''},
+  {name:'Lysmata Amboinensis',cat:'Invertebrate',wild:17.9,capt:0,sup:'',notes:'Cleaner shrimp'},
+  {name:'Lysmata Debelius',cat:'Invertebrate',wild:26.28,capt:0,sup:'',notes:'Fire / blood shrimp'},
+  {name:'Lysmata Wurdemanni',cat:'Invertebrate',wild:18.9,capt:0,sup:'',notes:'Peppermint shrimp'},
+  {name:'Macropharyngodon bipartitus',cat:'Fish',wild:49,capt:0,sup:'',notes:''},
+  {name:'Meiacanthus atrodorsalis',cat:'Fish',wild:29.4,capt:0,sup:'',notes:'Fork-tailed blenny'},
+  {name:'Midas blenny',cat:'Fish',wild:33,capt:0,sup:'',notes:'Ecsenius midas'},
+  {name:'Mirolabrichthys Dispar',cat:'Fish',wild:26.5,capt:0,sup:'',notes:'Dispar anthias'},
+  {name:'Mirolabrichthys Evansi - Yellowtail Goldie',cat:'Fish',wild:35,capt:0,sup:'',notes:''},
+  {name:'Mirolabrihthys Tuka',cat:'Fish',wild:52,capt:0,sup:'',notes:'Purple queen anthias'},
+  {name:'Mithrax',cat:'Invertebrate',wild:15,capt:0,sup:'',notes:'Emerald crab'},
+  {name:'Nemateleotris decora',cat:'Fish',wild:35,capt:0,sup:'',notes:'Decorated firefish'},
+  {name:'Nemateleotris Helfrichi',cat:'Fish',wild:88,capt:0,sup:'',notes:'Helfrichi firefish'},
+  {name:'Nemateleotris Magnifica - Firefish',cat:'Fish',wild:26,capt:0,sup:'',notes:''},
+  {name:'Neocirrhites armatus',cat:'Fish',wild:88,capt:0,sup:'',notes:'Flame hawkfish'},
+  {name:'Neoglyphidodon crossi',cat:'Fish',wild:11.9,capt:0,sup:'',notes:''},
+  {name:'Ostracion cubicus M',cat:'Fish',wild:42.5,capt:0,sup:'',notes:'Cubicus boxfish'},
+  {name:'Ostracion cubicus S',cat:'Fish',wild:36,capt:0,sup:'',notes:''},
+  {name:'Paracanthurus hepatus M',cat:'Fish',wild:62,capt:0,sup:'',notes:'Blue tang / palette surgeonfish'},
+  {name:'Paracentropyge Multifasciata',cat:'Fish',wild:89,capt:0,sup:'',notes:'Multibarred angel'},
+  {name:'Paragobiodon lacunicolus',cat:'Fish',wild:34,capt:0,sup:'',notes:''},
+  {name:'Plerogyra Sinuosa Green L',cat:'Coral (LPS)',wild:108,capt:0,sup:'',notes:'Green bubble coral'},
+  {name:'Plerogyra Sinuosa Green M',cat:'Coral (LPS)',wild:87.6,capt:0,sup:'',notes:''},
+  {name:'Pomacanthus imperator Adult',cat:'Fish',wild:180,capt:0,sup:'',notes:'Emperor angel'},
+  {name:'Pomacanthus Paru - French Angelfish',cat:'Fish',wild:290,capt:0,sup:'',notes:''},
+  {name:'Pomacanthus xanthometopon Adult L',cat:'Fish',wild:450,capt:0,sup:'',notes:'Blueface angel'},
+  {name:'Pomacanthus xanthometopon Adult M',cat:'Fish',wild:399,capt:0,sup:'',notes:''},
+  {name:'Premnas Biaculeatus S',cat:'Fish',wild:23,capt:0,sup:'',notes:'Maroon clown'},
+  {name:'Premnas Biaculeatus Gold Nugget',cat:'Fish',wild:99,capt:0,sup:'',notes:''},
+  {name:'Pseudanthias Bimaculatus',cat:'Fish',wild:49,capt:0,sup:'',notes:''},
+  {name:'Pseudocheilinus hexataenia',cat:'Fish',wild:26,capt:0,sup:'',notes:'Six line wrasse'},
+  {name:'Pseudochromis Paccagnellae',cat:'Fish',wild:25,capt:0,sup:'',notes:'Royal dottyback'},
+  {name:'Pterapogon kauderni T.B. DJM',cat:'Fish',wild:0,capt:29,sup:'De Jong Marine Life',notes:'Captive bred banggai cardinal'},
+  {name:'Ptereleotris evides',cat:'Fish',wild:35,capt:0,sup:'',notes:''},
+  {name:'Pygoplites diacanthus',cat:'Fish',wild:169,capt:169,sup:'',notes:'Regal angelfish'},
+  {name:'Rainfordi',cat:'Fish',wild:20.7,capt:0,sup:'',notes:'Old glory / court jester goby'},
+  {name:'Rhinecanthus Aculeatus',cat:'Fish',wild:40,capt:0,sup:'',notes:'Picasso triggerfish'},
+  {name:'Rhinomuraena Quaesita Blue - Ribbon Eel Male',cat:'Fish',wild:110,capt:0,sup:'',notes:''},
+  {name:'Sabellastarte magnifica',cat:'Invertebrate',wild:22.5,capt:0,sup:'Amblard',notes:'Magnificent feather duster'},
+  {name:'Salarias Fasciatus',cat:'Fish',wild:30,capt:0,sup:'',notes:'Sailfin blenny'},
+  {name:'Scartella cristata',cat:'Fish',wild:36.5,capt:0,sup:'',notes:''},
+  {name:'Scleronephthya spp M',cat:'Coral (Soft)',wild:56,capt:0,sup:'',notes:''},
+  {name:'Scleronephthya spp ML',cat:'Coral (Soft)',wild:72,capt:0,sup:'',notes:''},
+  {name:'Siganus Magnificus L',cat:'Fish',wild:100,capt:0,sup:'',notes:'Magnificent foxface'},
+  {name:'Siganus Magnificus M',cat:'Fish',wild:88,capt:0,sup:'',notes:''},
+  {name:'Siganus Vulpinus M',cat:'Fish',wild:45,capt:0,sup:'',notes:'Foxface rabbitfish'},
+  {name:'Signigobius Biocellatus',cat:'Fish',wild:28,capt:0,sup:'',notes:'Crab-eye goby'},
+  {name:'Sohal Tang',cat:'Fish',wild:99,capt:0,sup:'',notes:'Acanthurus sohal'},
+  {name:'Stenorhynchus seticornis Arrow crab',cat:'Invertebrate',wild:30,capt:0,sup:'Amblard',notes:'Caribbean'},
+  {name:'Stonogobiops Yasha - Clown Shrimp Goby',cat:'Fish',wild:40,capt:0,sup:'',notes:''},
+  {name:'Synchiropus Splendidus',cat:'Fish',wild:29,capt:0,sup:'',notes:'Mandarin dragonet'},
+  {name:'Synchiropus Sycorax',cat:'Fish',wild:37.5,capt:0,sup:'Reef Fish Centre',notes:'Ruby red dragonet'},
+  {name:'Thalassoma genivittatum',cat:'Fish',wild:55,capt:0,sup:'',notes:''},
+  {name:'Thor amboinensis',cat:'Invertebrate',wild:16,capt:0,sup:'',notes:'Sexy shrimp'},
+  {name:'Tridacna maxima Gold/yellow pacific 4-7cm',cat:'Invertebrate',wild:74.95,capt:0,sup:'',notes:''},
+  {name:'Trimma rubromaculatus',cat:'Fish',wild:22,capt:0,sup:'',notes:''},
+  {name:'Trimma tevegae',cat:'Fish',wild:22,capt:0,sup:'',notes:''},
+  {name:'Turbo brunneus',cat:'Invertebrate',wild:4.5,capt:0,sup:'',notes:'Clean-up crew snail'},
+  {name:'Valencienna Strigata',cat:'Fish',wild:30,capt:0,sup:'',notes:'Gold head sleeper goby'},
+  {name:'Valenciennea longipinnis 1pc',cat:'Fish',wild:32,capt:0,sup:'',notes:'Long fin goby'},
+  {name:'Valenciennea longipinnis pair',cat:'Fish',wild:70,capt:0,sup:'',notes:''},
+  {name:'Valenciennea puellaris 1pc',cat:'Fish',wild:32,capt:0,sup:'',notes:'Maiden goby'},
+  {name:'Valenciennea puellaris pair',cat:'Fish',wild:70,capt:0,sup:'',notes:''},
+  {name:'Valenciennea sexguttata 1pc',cat:'Fish',wild:32,capt:0,sup:'',notes:''},
+  {name:'Valenciennea sexguttata pair',cat:'Fish',wild:70,capt:0,sup:'',notes:''},
+  {name:'Wetmorella albofasciata',cat:'Fish',wild:39,capt:0,sup:'',notes:''},
+  {name:'Zebrasoma desjardinii M',cat:'Fish',wild:72,capt:0,sup:'',notes:'Indian sailfin tang'},
+  {name:'Zebrasoma desjardinii S',cat:'Fish',wild:56,capt:0,sup:'',notes:''},
+  {name:'Zebrasoma scopas',cat:'Fish',wild:48,capt:0,sup:'',notes:'Brown tang'},
+  {name:'Zebrasoma veliferum L',cat:'Fish',wild:52.8,capt:0,sup:'',notes:'Pacific sailfin tang'},
+  {name:'Zebrasoma veliferum M',cat:'Fish',wild:43.2,capt:0,sup:'',notes:''},
+  {name:'Zebrasoma veliferum S',cat:'Fish',wild:38,capt:0,sup:'',notes:''},
+];
+
+// ===== LOAD ALL DATA =====
+// ===== SIGN OUT =====
+function signOut(){
+  // no session;
+  // no redirect;
+}
+
+// ===== INIT USER SESSION =====
+function initUserSession(){
+  const sess=window._session;
+  if(!sess)return;
+  // Show user in topbar
+  const nameEl=document.getElementById('current-user-name');
+  const roleEl=document.getElementById('current-user-role');
+  if(nameEl)nameEl.textContent=sess.displayName||sess.username;
+  if(roleEl)roleEl.textContent=sess.role==='admin'?'Admin':'Viewer';
+  // Show/hide admin features
+  if(sess.role==='admin'){
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const adminBtn=document.getElementById('users-sidebar-btn');
+    if(adminLabel)adminLabel.style.display='block';
+    if(adminBtn)adminBtn.style.display='flex';
+  }
+  // If viewer, hide all edit/add/delete buttons
+  if(sess.role==='viewer'){
+    applyViewerMode();
+  }
+}
+
+function applyViewerMode(){
+  // Hide add/edit/delete buttons for viewers - applied after render
+  const style=document.createElement('style');
+  style.textContent=`
+    .btn-primary:not(.viewer-ok), .btn-reef, .btn-danger,
+    #page-new-order .btn-primary,
+    button[onclick*="startNewOrder"],
+    button[onclick*="openAdd"],
+    button[onclick*="openEdit"],
+    button[onclick*="deleteOrder"],
+    button[onclick*="openModal("],
+    button[onclick*="addSARow"],
+    button[onclick*="addItemRow"],
+    button[onclick*="addPaymentRow"],
+    button[onclick*="addSupplier"],
+    button[onclick*="addVar"],
+    button[onclick*="saveOrder"],
+    button[onclick*="saveCustomer"],
+    button[onclick*="saveCredit"],
+    button[onclick*="savePrice"],
+    button[onclick*="seedProducts"],
+    .sb-btn[onclick*="new-order"] { display:none !important; }
+    .viewer-notice { display:block !important; }
+  `;
+  document.head.appendChild(style);
+  // Hide new order from sidebar
+  const newOrderBtn=document.querySelector('.sb-btn[onclick*="new-order"]');
+  if(newOrderBtn)newOrderBtn.style.display='none';
+}
+
+// ===== USERS =====
+async function renderUsers(){
+  const tbody=document.getElementById('users-body');
+  if(!tbody)return;
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/users?order=created.asc',{headers:H});
+    const users=await r.json();
+    if(!users.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No users</p></div></td></tr>';return;}
+    const currId=window._session?.id;
+    tbody.innerHTML=users.map(u=>`<tr>
+      <td class="font-bold">${u.display_name||u.username}</td>
+      <td><span style="font-family:monospace;font-size:12px;color:var(--text2)">${u.username}</span></td>
+      <td><span class="badge ${u.role==='admin'?'b-blue':'b-grey'}">${u.role==='admin'?'Admin':'Viewer'}</span></td>
+      <td class="text-sm text-muted">${u.last_login||'Never'}</td>
+      <td><div style="display:flex;gap:6px">
+        <button class="btn btn-sec btn-xs" onclick="toggleUserRole('${u.id}','${u.role}')">${u.role==='admin'?'Make Viewer':'Make Admin'}</button>
+        ${u.id!==currId?`<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${u.display_name||u.username}')">Delete</button>`:'<span class="text-xs text-muted">(you)</span>'}
+      </div></td>
+    </tr>`).join('');
+  }catch(e){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users</p></div></td></tr>';}
+}
+
+async function sha256(message){
+  const buf=new TextEncoder().encode(message);
+  const hashBuf=await crypto.subtle.digest('SHA-256',buf);
+  return Array.from(new Uint8Array(hashBuf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function uid8(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+
+async function saveUser(){
+  const name=document.getElementById('u-name').value.trim();
+  const username=document.getElementById('u-username').value.trim().toUpperCase();
+  const password=document.getElementById('u-password').value;
+  const role=document.getElementById('u-role').value;
+  if(!name||!username||!password){toast('Fill in all fields',false);return;}
+  // Hash password
+  const salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
+  const hash=await sha256(salt+password);
+  const password_hash=salt+':'+hash;
+  try{
+    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role,created:new Date().toISOString().split('T')[0]})});
+    if(!r.ok)throw new Error(await r.text());
+    closeModal('modal-add-user');
+    ['u-name','u-username','u-password'].forEach(id=>document.getElementById(id).value='');
+    renderUsers();toast('User created ✓');
+  }catch(e){toast('Error: '+e.message,false);}
+}
+
+async function toggleUserRole(id,currentRole){
+  const newRole=currentRole==='admin'?'viewer':'admin';
+  if(!confirm('Change this user to '+newRole+'?'))return;
+  try{
+    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'PATCH',headers:H,body:JSON.stringify({role:newRole})});
+    renderUsers();toast('Role updated');
+  }catch(e){toast('Error',false);}
+}
+
+async function deleteUser(id,name){
+  if(!confirm('Delete user "'+name+'"? They will be signed out immediately.'))return;
+  try{
+    await fetch(SB_URL+'/rest/v1/users?id=eq.'+id,{method:'DELETE',headers:H});
+    renderUsers();toast('User deleted');
+  }catch(e){toast('Error',false);}
+}
+
+function renderOrders(filter=''){
+  const rows=db.orders.filter(o=>!filter||o.num.includes(filter)||(o.suppliers||[]).join(',').toLowerCase().includes(filter.toLowerCase())||(o.custLines||[]).some(c=>c.name.toLowerCase().includes(filter.toLowerCase())));
+  const tbody=document.getElementById('orders-body');
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="ei">\ud83d\udce6</div><p>No orders found</p></div></td></tr>';return;}
+  tbody.innerHTML=[...rows].reverse().map(o=>{
+    const pClass=o.profit>=0?'text-green':'text-red';
+    const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'\u2014';
+    const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' \u2014 '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
+    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'\u2014'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${o.doaTotal>0?`<span class="badge b-red">\u20ac${o.doaTotal.toFixed(0)}</span>`:'\u2014'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">\u2715</button></div></td></tr>`;
+  }).join('');
+}
+function filterOrders(v){renderOrders(v);}
+
+function viewOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  document.getElementById('od-title').textContent=`Order #${o.num} \u2014 ${(o.suppliers||[]).join(', ')}`;
+  document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${o.date||'\u2014'}</div></div><div><div class="ostat-lbl">Quoted</div><div class="ostat-val text-green">${fmt(o.totalQuoted)}</div></div><div><div class="ostat-lbl">Actual Cost</div><div class="ostat-val text-amber">${fmt(o.totalActual)}</div></div><div><div class="ostat-lbl">Profit</div><div class="ostat-val ${o.profit>=0?'text-green':'text-red'}">${fmt(o.profit)}</div></div><div><div class="ostat-lbl">Shipping</div><div class="ostat-val">${fmt(o.shipping||0)}</div></div>${o.doaTotal?`<div><div class="ostat-lbl">DOAs</div><div class="ostat-val text-red">${fmt(o.doaTotal)}</div></div>`:''}`;
+  let html=(o.custLines||[]).map(cl=>{const profit=cl.quoted-cl.actual;return`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name)}</div><div style="flex:1"><div class="font-bold">${cl.name}${cl.location?` <span class="text-xs text-muted">(${cl.location})</span>`:''}</div><div class="flex gap-6 items-c mt-8"><span class="badge ${customerPayBadgeClass(cl)}">${cl.status}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(cl.quoted)}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div></div>${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${it.name||'\u2014'}${it.doa?' \ud83d\udc80':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}</div>`;}).join('');
+  if((o.saLines||[]).length)html+=`<div style="padding:10px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;margin-bottom:12px"><div class="font-bold mb-8">\ud83d\udc20 Straits Aquatics Stock</div><table class="itbl"><thead><tr><th>Item</th><th>Cost</th><th>Sell</th><th>Supplier</th></tr></thead><tbody>${o.saLines.map(s=>`<tr><td>${s.name}</td><td>${fmt(s.cost)}</td><td>${fmt(s.sell)}</td><td>${s.supplier||'\u2014'}</td></tr>`).join('')}</tbody></table></div>`;
+  if(o.notes)html+=`<p class="text-sm text-muted mt-8">\ud83d\udcdd ${o.notes}</p>`;
+  document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No items.</p>';
+  document.getElementById('od-del-btn').onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+  openModal('modal-order-detail');
+}
+
+function editOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  editingOrderId=id;curSuppliers=[...(o.suppliers||[])];curCustLines=JSON.parse(JSON.stringify(o.custLines||[]));
+  nav('new-order',null);
+  document.getElementById('order-page-title').textContent=`Edit Order #${o.num}`;
+  document.getElementById('o-num').value=o.num;
+  document.getElementById('o-date').value=o.date||today();
+  document.getElementById('o-shipping').value=o.shipping||'';
+  document.getElementById('o-othercosts').value=o.otherCosts||'';
+  document.getElementById('o-notes').value=o.notes||'';
+  renderSupTags();renderCustLines();updateSummary();
+}
+
+async function deleteOrder(id){
+  if(!confirm('Delete this order? This cannot be undone.'))return;
+  setSyncStatus('sync-busy','\u23f3 Deleting...');
+  try{await sbDelete('orders',id);db.orders=db.orders.filter(o=>o.id!==id);setSyncStatus('sync-ok','\u2713 Synced');renderOrders();toast('Order deleted');}
+  catch(e){setSyncStatus('sync-err','\u2717 Error');toast('Delete failed',false);}
+}
+
+// ===== CUSTOMERS =====
+async function saveCustomer(){
+  const name=document.getElementById('cust-name').value.trim();
+  if(!name){toast('Enter a name',false);return;}
+  const nc={id:uid(),name,location:document.getElementById('cust-loc').value,phone:document.getElementById('cust-phone').value,email:document.getElementById('cust-email').value,notes:document.getElementById('cust-notes').value,created:today()};
+  setSyncStatus('sync-busy','\u23f3 Saving...');
+  try{await sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:nc.phone,email:nc.email,notes:nc.notes,created:nc.created});db.customers.push(nc);setSyncStatus('sync-ok','\u2713 Synced');closeModal('modal-add-customer');refreshDatalist();renderCustomers();toast('Customer saved \u2713');}
+  catch(e){setSyncStatus('sync-err','\u2717 Error');toast('Save failed',false);}
+}
+function filterCustomers(v){renderCustomers(v);}
+function renderCustomers(filter=''){
+  const tbody=document.getElementById('customers-body');
+  const rows=db.customers.filter(c=>!filter||c.name.toLowerCase().includes(filter.toLowerCase())||(c.location||'').toLowerCase().includes(filter.toLowerCase()));
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="8"><div class="empty"><div class="ei">\ud83d\udc65</div><p>No customers found</p></div></td></tr>';return;}
+  tbody.innerHTML=rows.map(c=>{
+    let spent=0,ords=0;db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{if(cl.name.toLowerCase()===c.name.toLowerCase()){spent+=cl.quoted;ords++;}}));
+    const credit=db.credits.filter(cr=>cr.customer.toLowerCase()===c.name.toLowerCase()&&cr.type==='credit').reduce((a,cr)=>a+cr.amount,0);
+    return`<tr><td><div class="flex items-c gap-8"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(c.name)}</div><span class="font-bold">${c.name}</span></div></td><td>${c.location||'\u2014'}</td><td>${c.phone||'\u2014'}</td><td class="font-bold text-green">${fmt(spent)}</td><td>${ords}</td><td>${credit>0?`<span class="badge b-amber">${fmt(credit)}</span>`:'\u2014'}</td><td class="text-sm text-muted">${c.notes||'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCust('${c.id}')">\u2715</button></td></tr>`;
+  }).join('');
+}
+async function delCust(id){
+  if(!confirm('Delete customer?'))return;
+  try{await sbDelete('customers',id);db.customers=db.customers.filter(c=>c.id!==id);renderCustomers();toast('Deleted');}
+  catch(e){toast('Delete failed',false);}
+}
+
+// ===== CREDITS =====
+async function saveCredit(){
+  const cust=document.getElementById('cr-cust').value.trim();
+  const amt=parseFloat(document.getElementById('cr-amount').value)||0;
+  if(!cust||!amt){toast('Fill in customer and amount',false);return;}
+  const nc={id:uid(),customer:cust,type:document.getElementById('cr-type').value,amount:amt,reason:document.getElementById('cr-reason').value,order_num:document.getElementById('cr-order').value,date:document.getElementById('cr-date').value};
+  try{await sbInsert('credits',nc);db.credits.push({id:nc.id,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,date:nc.date});closeModal('modal-credit');renderCredits();renderOverview();toast('Saved \u2713');}
+  catch(e){toast('Save failed',false);}
+}
+function renderCredits(){
+  const grp=(arr)=>{const g={};arr.forEach(c=>{g[c.customer]=(g[c.customer]||0)+c.amount;});return g;};
+  const pos=grp(db.credits.filter(c=>c.type==='credit'));const neg=grp(db.credits.filter(c=>c.type==='owed'));
+  const html=(obj,cls)=>Object.keys(obj).length?Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([n,a])=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="font-bold" style="flex:1">${n}</span><span class="${cls}">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">\ud83d\udcb3</div><p>None</p></div>';
+  document.getElementById('cred-positive').innerHTML=html(pos,'text-amber font-bold');
+  document.getElementById('cred-negative').innerHTML=html(neg,'text-blue font-bold');
+  const tbody=document.getElementById('credits-body');
+  if(!db.credits.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">\ud83d\udcb3</div><p>No entries</p></div></td></tr>';return;}
+  tbody.innerHTML=[...db.credits].reverse().map(c=>`<tr><td class="font-bold">${c.customer}</td><td><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes us'}</span></td><td class="font-bold">${fmt(c.amount)}</td><td>${c.reason||'\u2014'}</td><td>${c.date||'\u2014'}</td><td>${c.order?`#${c.order}`:'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCredit('${c.id}')">\u2715</button></td></tr>`).join('');
+}
+async function delCredit(id){
+  if(!confirm('Delete?'))return;
+  try{await sbDelete('credits',id);db.credits=db.credits.filter(c=>c.id!==id);renderCredits();}
+  catch(e){toast('Delete failed',false);}
+}
+
+// ===== PRICES =====
+async function savePrice(){
+  const name=document.getElementById('pr-name').value.trim();
+  if(!name){toast('Enter a name',false);return;}
+  const np={id:uid(),name,cat:document.getElementById('pr-cat').value,wild:parseFloat(document.getElementById('pr-wild').value)||0,capt:parseFloat(document.getElementById('pr-capt').value)||0,sup:document.getElementById('pr-sup').value,notes:document.getElementById('pr-notes').value};
+  try{await sbInsert('prices',np);db.prices.push(np);closeModal('modal-add-price');renderPrices();toast('Added \u2713');}
+  catch(e){toast('Save failed',false);}
+}
+function filterPrices(v){renderPrices(v);}
+function renderPrices(filter=''){
+  const tbody=document.getElementById('prices-body');
+  const rows=db.prices.filter(p=>!filter||p.name.toLowerCase().includes(filter.toLowerCase())||(p.cat||'').toLowerCase().includes(filter.toLowerCase())||(p.notes||'').toLowerCase().includes(filter.toLowerCase()));
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">\ud83d\udc1f</div><p>No results</p></div></td></tr>';return;}
+  tbody.innerHTML=rows.map(p=>`<tr><td class="font-bold">${p.name}</td><td><span class="badge b-grey">${p.cat||'\u2014'}</span></td><td>${p.wild?fmt(p.wild):'\u2014'}</td><td>${p.capt?fmt(p.capt):'\u2014'}</td><td class="text-sm text-muted">${p.sup||'\u2014'}</td><td class="text-sm text-muted">${p.notes||'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delPrice('${p.id}')">\u2715</button></td></tr>`).join('');
+}
+async function delPrice(id){
+  if(!confirm('Remove?'))return;
+  try{await sbDelete('prices',id);db.prices=db.prices.filter(p=>p.id!==id);renderPrices();}
+  catch(e){toast('Delete failed',false);}
+}
+
+// ===== SUPPLIERS =====
+const SUPPLIERS=[
+  {name:'De Jong Marine Life',type:'Live Animals',url:'https://shop.dejongmarinelife.nl',email:'Info@dejongmarinelife.nl',contact:'Johan',notes:'Captive bred & wild. Primary live supplier.'},
+  {name:'Reef Fish Centre',type:'Live Animals',url:'https://reeffishcenter.shop',email:'info@reeffishcenter.nl',contact:'Josh / Jack',notes:'Wide range wild livestock. Pacific & Indo-Pacific.'},
+  {name:'Amblard',type:'Live Animals',url:'https://pro.amblard.com',email:'europe@amblard.com',contact:'Karin / Stephanie',notes:'Premium corals & fish. Sambawa, Java, Pacific collections.'},
+  {name:'Dream Corals',type:'Live Animals',url:'https://www.dreamcorals.eu',email:'\u2014',contact:'\u2014',notes:'Premium SPS/LPS, mushrooms, rare & WYSIWYG pieces.'},
+  {name:'Aq-arium',type:'Dry Goods',url:'https://clientes.aq-arium.com',email:'\u2014',contact:'Ramon / Helena',notes:'Main dry goods. Aquaforest, equipment, additives, test kits.'},
+  {name:'Lunaqua',type:'Live Food',url:'\u2014',email:'\u2014',contact:'\u2014',notes:'Copepods (Tisbe/Tigriopus), Artemia, rotifers, phyto, zoobloom.'},
+  {name:'Blue Clownfish',type:'Dry Goods',url:'\u2014',email:'admin@blueclownfish.com',contact:'Rafa',notes:'Excel orders only. EasySPS, EasyBooster, misc dry goods.'},
+  {name:'Marine Aquatics',type:'Dry Goods',url:'https://www.marine-aquatics.eu',email:'r.macek@marine-aquatics.eu',contact:'Radomir',notes:'AI lights, pumps, misc equipment.'},
+  {name:'Red Sea / Tecno',type:'Dry Goods',url:'\u2014',email:'info@tecnoaquarium.com',contact:'\u2014',notes:'Red Sea Reef Mat rollers, Red Sea products.'},
+  {name:'Blau / BMF',type:'Dry Goods',url:'https://bmf-b2b.com',email:'administracion@barcelonamarinefarm.com',contact:'Olga',notes:'Blau fans, equipment, misc.'},
+];
+function renderSuppliers(){
+  document.getElementById('sup-cards').innerHTML=SUPPLIERS.map(s=>`<div class="card" style="margin-bottom:0"><div class="card-head"><div><div class="font-bold">${s.name}</div><span class="badge b-grey" style="margin-top:4px;display:inline-flex">${s.type}</span></div></div><div class="card-body">${s.contact!=='\u2014'?`<div class="text-sm mb-8"><span class="text-muted">Contact:</span> <strong>${s.contact}</strong></div>`:''}`+
+    `${s.email!=='\u2014'?`<div class="text-sm mb-8 text-muted">${s.email}</div>`:''}`+
+    `${s.url!=='\u2014'?`<div class="text-sm mb-8"><a href="${s.url}" target="_blank" style="color:var(--reef)">${s.url}</a></div>`:''}`+
+    `<div class="text-xs text-muted">${s.notes}</div></div></div>`).join('');
+}
+
+// ===== PROFITS =====
+function renderProfits(){
+  const tbody=document.getElementById('profit-body');
+  if(!db.orders.length){tbody.innerHTML='<tr><td colspan="8"><div class="empty"><div class="ei">\ud83d\udcc8</div><p>No orders yet</p></div></td></tr>';return;}
+  tbody.innerHTML=[...db.orders].reverse().map(o=>{
+    const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(1)+'%':'\u2014';
+    const bW=o.totalQuoted?Math.min(100,Math.max(0,(o.profit/o.totalQuoted)*100)).toFixed(0):0;
+    const pC=o.profit>=0?'text-green':'text-red';
+    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${o.date||'\u2014'}</td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${fmt(o.totalQuoted)}</td><td>${fmt(o.totalActual)}</td><td class="font-bold ${pC}">${fmt(o.profit)}</td><td><div style="min-width:80px"><div class="text-xs font-bold ${pC}">${margin}</div><div class="pbar-wrap"><div class="pbar ${o.profit<0?'neg':''}" style="width:${bW}%"></div></div></div></td><td>${o.profit>=0?'<span class="badge b-green">Profit</span>':'<span class="badge b-red">Loss</span>'}</td></tr>`;
+  }).join('');
+}
+
+
+
+
+// ===== ORDER TABS =====
+let currentOrderTab = 'active';
+
+function isOrderComplete(o){
+  if(o.manualComplete===true) return true;
+  const custLines = o.custLines || [];
+  if(!custLines.length) return false;
+  const allDelivered = custLines.every(cl =>
+    (cl.items||[]).length===0 ||
+    (cl.items||[]).every(it => it.delivered===true || (it.doa && it.doaResolved))
+  );
+  const allPaid = custLines.every(cl => {
+    if(cl.status==='FREE'||cl.status==='SORTEO') return true;
+    const paid = (cl.payments||[]).reduce((a,p)=>a+(p.amount||0),0);
+    return Math.max(0,(cl.quoted||0)-paid)<=0.01;
+  });
+  const noUnresolvedDOA = custLines.every(cl=>
+    (cl.items||[]).every(it=>!it.doa||it.doaResolved)
+  );
+  return allDelivered && allPaid && noUnresolvedDOA;
+}
+
+function setOrderTab(tab, btn){
+  currentOrderTab = tab;
+  document.querySelectorAll('.order-tab').forEach(b=>{
+    b.style.color='var(--text3)';
+    b.style.borderBottomColor='transparent';
+  });
+  if(btn){ btn.style.color='var(--reef)'; btn.style.borderBottomColor='var(--reef)'; }
+  renderOrders(document.getElementById('orders-search')?.value||'');
+}
+
+async function toggleOrderComplete(id){
+  const o = db.orders.find(x=>x.id===id); if(!o)return;
+  o.manualComplete = !o.manualComplete;
+  try{
+    await sbUpdate('orders', id, {manual_complete: o.manualComplete});
+    renderOrders(document.getElementById('orders-search')?.value||'');
+    renderOverview();
+    toast(o.manualComplete ? 'Order marked complete ✓' : 'Order reopened');
+  }catch(e){ o.manualComplete=!o.manualComplete; toast('Save failed',false); }
+}
+
+async function toggleItemDelivered(e, custLineId, itemIdx){
+  if(e)e.stopPropagation();
+  let cl = curCustLines.find(c=>c.id===custLineId);
+  let order = null;
+  if(!cl){
+    order = db.orders.find(o=>(o.custLines||[]).some(c=>c.id===custLineId));
+    if(!order){toast('Order not found',false);return;}
+    cl = order.custLines.find(c=>c.id===custLineId);
+  }
+  if(!cl||!cl.items||!cl.items[itemIdx]){toast('Item not found',false);return;}
+  cl.items[itemIdx].delivered = !cl.items[itemIdx].delivered;
+  if(order){
+    try{
+      await sbUpdate('orders', order.id, {cust_lines: order.custLines});
+      renderOrders(document.getElementById('orders-search')?.value||'');
+      renderOverview();
+      toast(cl.items[itemIdx].delivered ? '✓ Delivered' : 'Marked as pending');
+    }catch(err){
+      cl.items[itemIdx].delivered = !cl.items[itemIdx].delivered;
+      toast('Save failed: '+err.message, false);
+    }
+  } else { renderCustLines(); updateSummary(); }
+}
+
+async function resolveDOA(e, custLineId, itemIdx, cancelDOA){
+  if(e)e.stopPropagation();
+  const order = db.orders.find(o=>(o.custLines||[]).some(cl=>cl.id===custLineId));
+  if(!order){toast('Order not found',false);return;}
+  const cl = order.custLines.find(c=>c.id===custLineId);
+  if(!cl||!cl.items[itemIdx]){toast('Item not found',false);return;}
+  const item = cl.items[itemIdx];
+  if(cancelDOA){
+    if(!confirm('Cancel DOA on "'+item.name+'"?'))return;
+    item.doa=false; item.doaResolved=false;
+    item.quoted=item.originalQuoted||item.actual; item.doaAbsorbed=0;
+  } else {
+    if(!confirm('Mark DOA as resolved?'))return;
+    item.doaResolved=true;
+  }
+  const doaTotal=order.custLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+(it.actual||0),0),0);
+  order.doaTotal=doaTotal;
+  try{
+    await sbUpdate('orders',order.id,{cust_lines:order.custLines,doa_total:doaTotal});
+    toast(cancelDOA?'DOA cancelled':'DOA resolved');
+    renderOrders(); renderOverview();
+  }catch(err){ toast('Save failed',false); }
+}
+
+function refreshDatalist(){
+  // populate customer name datalist for autocomplete
+  const dl=document.getElementById('cust-datalist');
+  if(dl){dl.innerHTML=db.customers.map(c=>`<option value="${c.name}">`).join('');}
+}
+
+async function saveOrder(){
+  const num=document.getElementById('o-num').value.trim();
+  if(!num){toast('Enter order number',false);return;}
+  const ship=parseFloat(document.getElementById('o-shipping').value)||0;
+  const other=parseFloat(document.getElementById('o-othercosts').value)||0;
+  const saLines=[...document.querySelectorAll('.sa-row')].map(r=>({
+    name:r.querySelector('.sa-name').value,
+    cost:parseFloat(r.querySelector('.sa-cost').value)||0,
+    sell:parseFloat(r.querySelector('.sa-sell').value)||0,
+    supplier:r.querySelector('.sa-sup')?r.querySelector('.sa-sup').value:''
+  })).filter(r=>r.name);
+  const cq=curCustLines.reduce((a,c)=>a+(c.quoted||0),0);
+  const totalA=curCustLines.reduce((a,c)=>a+(c.actual||0),0)+ship+other+saLines.reduce((a,s)=>a+(s.cost||0),0);
+  const profit=cq-totalA;
+  const doaTotal=curCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+(it.actual||0),0),0);
+  const totalPendingPayment=curCustLines.reduce((a,cl)=>{
+    const paid=(cl.payments||[]).reduce((b,p)=>b+(p.amount||0),0);
+    return a+Math.max(0,(cl.quoted||0)-paid);
+  },0);
+  const orderType=document.getElementById('o-type')?.value||'weekly';
+  const row={
+    id:editingOrderId||uid(), num, order_type:orderType,
+    date:document.getElementById('o-date').value,
+    suppliers:curSuppliers, shipping:ship, other_costs:other,
+    notes:document.getElementById('o-notes').value,
+    cust_lines:curCustLines, sa_lines:saLines,
+    total_quoted:cq, total_actual:totalA, profit,
+    doa_total:doaTotal, total_pending:totalPendingPayment,
+    manual_complete:false, created:today()
+  };
+  setSyncStatus('sync-busy','Saving...');
+  try{
+    if(editingOrderId){
+      await sbUpdate('orders',editingOrderId,row);
+      const idx=db.orders.findIndex(o=>o.id===editingOrderId);
+      if(idx>-1)db.orders[idx]={...db.orders[idx],...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:false};
+      toast('Order updated ✓');
+    } else {
+      await sbInsert('orders',row);
+      db.orders.push({...row,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,manualComplete:false});
+      for(const cl of curCustLines){
+        if(!db.customers.find(c=>c.name===cl.name)){
+          const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()};
+          await sbInsert('customers',nc);
+          db.customers.push(nc);
+        }
+      }
+      toast('Order saved ✓');
+    }
+    setSyncStatus('sp-ok','Synced');
+    editingOrderId=null; curCustLines=[]; curSuppliers=[];
+    renderOverview(); nav('orders');
+  }catch(e){
+    setSyncStatus('sp-err','Error'); toast('Save failed: '+e.message,false); console.error(e);
+  }
+}
+
+async function loadAll(){
+  try {
+    setSyncStatus('sync-busy','⏳ Loading...');
+    const [orders, customers, credits, prices] = await Promise.all([
+      sbGet('orders','order=created.asc'),
+      sbGet('customers','order=name.asc'),
+      sbGet('credits','order=date.desc'),
+      sbGet('prices','order=name.asc')
+    ]);
+    db.orders = orders.map(o=>({
+      id:o.id, num:o.num, orderType:o.order_type||'weekly', date:o.date,
+      suppliers:o.suppliers||[],
+      shipping:o.shipping||0, otherCosts:o.other_costs||0, notes:o.notes||'',
+      custLines:o.cust_lines||[], saLines:o.sa_lines||[],
+      totalQuoted:o.total_quoted||0, totalActual:o.total_actual||0,
+      profit:o.profit||0, doaTotal:o.doa_total||0,
+      totalPending:o.total_pending||0,
+      manualComplete:o.manual_complete||false,
+      created:o.created||''
+    }));
+    db.customers = customers.map(c=>({
+      id:c.id,name:c.name,location:c.location||'',
+      phone:c.phone||'',email:c.email||'',notes:c.notes||'',created:c.created||''
+    }));
+    db.credits = credits.map(c=>({
+      id:c.id,customer:c.customer,type:c.type,amount:c.amount,
+      reason:c.reason||'',order:c.order_num||'',date:c.date||''
+    }));
+    db.prices = prices.map(p=>({
+      id:p.id,name:p.name,cat:p.cat||'',
+      wild:p.wild||0,capt:p.capt||0,sup:p.sup||'',notes:p.notes||''
+    }));
+    if(db.prices.length === 0){
+      setSyncStatus('sync-busy','⏳ Seeding...');
+      await seedPrices();
+    }
+    setSyncStatus('sync-ok','✓ Synced');
+    document.getElementById('loading-screen').style.display='none';
+    renderOverview();
+  } catch(e){
+    setSyncStatus('sync-err','✗ Offline');
+    document.getElementById('loading-screen').innerHTML='<div style="text-align:center;color:#fff;padding:20px"><div style="font-size:32px">⚠️</div><p>Could not connect to database</p><button onclick="location.reload()" style="margin-top:16px;padding:8px 20px;background:var(--reef);color:#fff;border:none;border-radius:6px;cursor:pointer">Retry</button></div>';
+    console.error(e);
+  }
+}
+
+// ===== INIT =====
+function updateClock(){
+  const now=new Date();
+  const pad=n=>String(n).padStart(2,'0');
+  const d=pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'+now.getFullYear();
+  const t=pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+  const el=document.getElementById('cur-date');
+  if(el)el.textContent=d+' '+t;
+}
+updateClock();
+setInterval(updateClock,1000);
+loadAll();
+
+
+
+
+
+async function seedPrices(){
+  const chunks = [];
+  for(let i=0;i<BUILTIN.length;i+=20) chunks.push(BUILTIN.slice(i,i+20));
+  for(const chunk of chunks){
+    const rows = chunk.map(p=>({id:uid(),name:p.name,cat:p.cat,wild:p.wild||0,capt:p.capt||0,sup:p.sup||'',notes:p.notes||''}));
+    await sbInsert('prices', rows);
+    db.prices.push(...rows);
+  }
+}
+
+// ===== UTILS =====
+function uid(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+
+async function seedPrices(){
+  const chunks = [];
+  for(let i=0;i<BUILTIN.length;i+=20) chunks.push(BUILTIN.slice(i,i+20));
+  for(const chunk of chunks){
+    const rows = chunk.map(p=>({id:uid(),name:p.name,cat:p.cat,wild:p.wild||0,capt:p.capt||0,sup:p.sup||'',notes:p.notes||''}));
+    await sbInsert('prices', rows);
+    db.prices.push(...rows);
+  }
+}
+
+// ===== UTILS =====
+function uid(){return Date.now().toString(36)+Math.random().toString(36).substr(2,5);}
+function fmt(n){return'€'+parseFloat(n||0).toFixed(2);}
+function today(){return new Date().toISOString().split('T')[0];}
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}
+
+function fmt(n){return'€'+parseFloat(n||0).toFixed(2);}
+function today(){return new Date().toISOString().split('T')[0];}
+function dlClass(t){return t==='local'?'ci-local':t==='post'?'ci-post':t==='drop'?'ci-drop':'ci-none';}
+function dlLabel(t){return t==='local'?'Local Pick-up':t==='post'?'Postage':t==='drop'?'Drop Ship':'';}
+function dlBadge(t){return t==='local'?'dl-local':t==='post'?'dl-post':t==='drop'?'dl-drop':'';}
+function inits(name){return name.split(' ').map(w=>w[0]).join('').substr(0,2).toUpperCase();}
+
+// ===== NAV =====
+const TITLES={overview:'Dashboard Overview',orders:'Order Manager','new-order':'New Order',customers:'Customers',credits:'Credits & Amounts Owed',prices:'Species Price List',suppliers:'Suppliers',profits:'Profit Tracker'};
+function nav(id,btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+id).classList.add('active');
+  document.getElementById('page-title').textContent=TITLES[id]||id;
+  if(btn)btn.classList.add('active');
+  else{const f=document.querySelector(`.sb-btn[onclick*="'${id}'"]`);if(f)f.classList.add('active');}
+  const map={overview:renderOverview,orders:renderOrders,customers:renderCustomers,credits:renderCredits,prices:renderPrices,suppliers:renderSuppliers,profits:renderProfits,'new-order':initNewOrder};
+  if(map[id])map[id]();
+}
+
+// ===== TOAST =====
+function toast(msg,ok=true){const t=document.getElementById('toast');t.textContent=msg;t.style.background=ok?'#1a2332':'#dc2626';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);}
+
+// ===== MODALS =====
+function openModal(id){document.getElementById(id).classList.add('open');document.querySelectorAll(`#${id} input[type="date"]`).forEach(d=>{if(!d.value)d.value=today();});refreshDatalist();}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.modal-ov').forEach(o=>o.addEventListener('click',function(e){if(e.target===this)this.classList.remove('open');}));
+function refreshDatalist(){const opts=db.customers.map(c=>`<option value="${c.name}">`).join('');document.querySelectorAll('[id^="dl-custs"]').forEach(d=>d.innerHTML=opts);}
+
+// ===== DELIVERY =====
+function selDelivery(type,el){
+  selectedDelivery=type;document.getElementById('cl-delivery').value=type;
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  el.classList.add('sel');
+}
+
+// ===== OVERVIEW =====
+
+function getPaidAmount(cl){
+  return (cl.payments||[]).reduce((a,p)=>a+(parseFloat(p.amount)||0),0);
+}
+function getCustomerBalance(cl){
+  if(!cl) return 0;
+  if(cl.status==='FREE' || cl.status==='SORTEO') return 0;
+  const quoted=parseFloat(cl.quoted)||0;
+  const paid=getPaidAmount(cl);
+  return Math.max(0, quoted-paid);
+}
+function isCustomerFullyPaid(cl){
+  return getCustomerBalance(cl)<=0.01;
+}
+function customerPayStatusText(cl){
+  if(cl.status==='FREE' || cl.status==='SORTEO') return cl.status;
+  return isCustomerFullyPaid(cl) ? 'PAID' : 'TO BE PAID';
+}
+function customerPayBadgeClass(cl){
+  if(cl.status==='FREE' || cl.status==='SORTEO') return 'b-grey';
+  return isCustomerFullyPaid(cl) ? 'b-green' : 'b-red';
+}
+function getOrderPendingBalance(o){
+  return (o.custLines||[]).reduce((sum,cl)=>sum+getCustomerBalance(cl),0);
+}
+
+function renderOverview(){
+  const tQ=db.orders.reduce((a,o)=>a+(parseFloat(o.totalQuoted)||0),0);
+  const tP=db.orders.reduce((a,o)=>a+(parseFloat(o.profit)||0),0);
+  const tD=db.orders.reduce((a,o)=>a+(parseFloat(o.doaTotal)||0),0);
+  const completed=db.orders.filter(o=>isOrderComplete(o)).length;
+  const active=db.orders.length-completed;
+  const orderPending=db.orders.reduce((a,o)=>a+getOrderPendingBalance(o),0);
+  const creditOwed=db.credits.filter(c=>c.type==='owed').reduce((a,c)=>a+(parseFloat(c.amount)||0),0);
+  const pendingTotal=orderPending+creditOwed;
+
+  document.getElementById('ov-rev').textContent=fmt(tQ);
+  document.getElementById('ov-profit').textContent=fmt(tP);
+  document.getElementById('ov-orders').textContent=active;
+  const compEl=document.getElementById('ov-completed'); if(compEl) compEl.textContent=completed;
+  document.getElementById('ov-custs').textContent=db.customers.length;
+  document.getElementById('ov-credits').textContent=db.credits.filter(c=>c.type==='credit').length;
+  document.getElementById('ov-pending').textContent=fmt(pendingTotal);
+  document.getElementById('ov-doas').textContent=fmt(tD);
+
+  const l10=db.orders.slice(-10);const maxP=Math.max(...l10.map(o=>Math.abs(parseFloat(o.profit)||0)),1);
+  document.getElementById('ov-chart').innerHTML=l10.length?l10.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${o.profit>=0?'var(--reef)':'var(--red)'}">${o.profit>=0?'€'+Math.round(o.profit):'-€'+Math.round(Math.abs(o.profit))}</div><div class="bar-fill ${o.profit<0?'neg':''}" style="height:${Math.round((Math.abs(o.profit)/maxP)*75)}px"></div><div class="bar-lbl">#${o.num}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';
+  const rec=[...db.orders].reverse().slice(0,5);
+  document.getElementById('ov-recent').innerHTML=rec.length?rec.map(o=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${o.num}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).join(', ')}</span><span class="font-bold ${o.profit>=0?'text-green':'text-red'}">${fmt(o.profit)}</span></div>`).join(''):'<div class="empty"><div class="ei">📦</div><p>No orders</p></div>';
+
+  const sp={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+(parseFloat(cl.quoted)||0);}));
+  const sor=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  document.getElementById('ov-topcusts').innerHTML=sor.length?sor.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="text-sm" style="flex:1">${n}</span><span class="font-bold">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">👥</div><p>No data</p></div>';
+
+  const cr=db.credits.slice(-5);
+  document.getElementById('ov-credsummary').innerHTML=cr.length?cr.map(c=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><span class="text-sm" style="flex:1">${c.customer}</span><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes'}</span><span class="font-bold">${fmt(c.amount)}</span></div>`).join(''):'<div class="empty"><div class="ei">💳</div><p>No credits</p></div>';
+
+  const pendingByCustomer={};
+  db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{
+    const bal=getCustomerBalance(cl);
+    if(bal>0.01) pendingByCustomer[cl.name]=(pendingByCustomer[cl.name]||0)+bal;
+  }));
+  db.credits.filter(c=>c.type==='owed').forEach(c=>{pendingByCustomer[c.customer]=(pendingByCustomer[c.customer]||0)+(parseFloat(c.amount)||0);});
+  const pendingRows=Object.entries(pendingByCustomer).sort((a,b)=>b[1]-a[1]);
+  const pendingEl=document.getElementById('ov-pending-breakdown');
+  if(pendingEl){
+    pendingEl.innerHTML=pendingRows.length?pendingRows.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="font-bold" style="flex:1">${n}</span><span class="badge b-red">TO BE PAID</span><span class="font-bold text-red">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">✅</div><p>No pending payments</p></div>';
+  }
+}
+
+// ===== NEW ORDER =====
+function startNewOrder(){editingOrderId=null;nav('new-order',null);}
+function initNewOrder(){
+  if(!editingOrderId){
+    curSuppliers=[];curCustLines=[];selectedDelivery='';
+    ['o-num','o-shipping','o-othercosts','o-notes'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('o-date').value=today();
+    document.getElementById('order-page-title').textContent='New Order';
+  }
+  renderSupTags();renderCustLines();updateSummary();
+  document.querySelectorAll('#sa-lines-wrap .sa-row').forEach(r=>r.remove());
+  document.getElementById('sa-lines-empty').style.display='block';
+}
+function addSupplier(){const v=document.getElementById('sup-picker').value;if(!v||curSuppliers.includes(v))return;curSuppliers.push(v);renderSupTags();}
+function removeSupplier(s){curSuppliers=curSuppliers.filter(x=>x!==s);renderSupTags();}
+function renderSupTags(){document.getElementById('sup-selected').innerHTML=curSuppliers.map(s=>`<span class="sup-tag">${s} <span style="cursor:pointer;margin-left:3px" onclick="removeSupplier('${s.replace(/'/g,"\\\\'")}')">\u2715</span></span>`).join('');}
+
+let rowCount=0;
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false){
+  rowCount++;const rid='ir'+rowCount;
+  const d=document.createElement('div');d.id=rid;d.className='flex items-c gap-6 mb-8';d.style.flexWrap='wrap';
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${item}" style="flex:2;min-width:150px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted}" style="width:85px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual}" style="width:85px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">\u2715</button>`;
+  document.getElementById('cl-items-list').appendChild(d);
+}
+function calcItemTotals(){let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=parseFloat(i.value)||0);document.querySelectorAll('.ir-a').forEach(i=>a+=parseFloat(i.value)||0);document.getElementById('cl-quoted').value=q.toFixed(2);document.getElementById('cl-actual').value=a.toFixed(2);calcCustLine();}
+function calcCustLine(){const q=parseFloat(document.getElementById('cl-quoted').value)||0;const a=parseFloat(document.getElementById('cl-actual').value)||0;const m=a>0?((q-a)/q*100).toFixed(1):'\u2014';document.getElementById('cl-margin').textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;}
+
+function saveCustLine(){
+  const name=document.getElementById('cl-name').value.trim();
+  if(!name){toast('Enter customer name',false);return;}
+  const delivery=document.getElementById('cl-delivery').value;
+  const items=[];let doaTotal=0;
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{
+    const isDOA=row.querySelector('.ir-doa').checked;
+    const actual=parseFloat(row.querySelector('.ir-a').value)||0;
+    if(isDOA)doaTotal+=actual;
+    items.push({name:row.querySelector('.ir-name').value,quoted:parseFloat(row.querySelector('.ir-q').value)||0,actual,status:row.querySelector('.ir-s').value,doa:isDOA});
+  });
+  curCustLines.push({id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:document.getElementById('cl-status').value,quoted:parseFloat(document.getElementById('cl-quoted').value)||0,actual:parseFloat(document.getElementById('cl-actual').value)||0,items,doaTotal});
+  if(!db.customers.find(c=>c.name.toLowerCase()===name.toLowerCase())){
+    const nc={id:uid(),name,location:document.getElementById('cl-loc').value,phone:'',email:'',notes:'',created:today()};
+    db.customers.push(nc);
+    sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(e=>console.error(e));
+    refreshDatalist();
+  }
+  closeModal('modal-cust-line');
+  document.getElementById('cl-items-list').innerHTML='';
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  document.getElementById('cl-delivery').value='';
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  selectedDelivery='';
+  renderCustLines();updateSummary();toast('Customer added \u2713');
+}
+
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap');
+  const empty=document.getElementById('cust-lines-empty');
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove());
+  if(!curCustLines.length){empty.style.display='block';return;}
+  empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{
+    const profit=cl.quoted-cl.actual;
+    const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name)}</div><div style="flex:1"><div class="font-bold">${cl.name}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${cl.location}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${cl.status}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(cl.quoted)}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">\u2715</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${it.name}${it.doa?' \ud83d\udc80':''}</td><td>${fmt(it.quoted)}</td><td>${fmt(it.actual)}</td><td>${it.status}</td></tr>`).join('')}</tbody></table>`:''}`;
+    wrap.appendChild(div);
+  });
+}
+function removeCustLine(i){curCustLines.splice(i,1);renderCustLines();updateSummary();}
+
+function addSARow(){
+  const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
+  document.getElementById('sa-lines-empty').style.display='none';
+  const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
+  d.innerHTML=`<input type="text" placeholder="Item / species" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Sell €" style="width:90px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary()">\u2715</button>`;
+  wrap.appendChild(d);
+}
+function getSALines(){return[...document.querySelectorAll('.sa-row')].map(r=>({name:r.querySelector('.sa-n').value,cost:parseFloat(r.querySelector('.sa-c').value)||0,sell:parseFloat(r.querySelector('.sa-s').value)||0,supplier:r.querySelector('.sa-sup').value}));}
+function updateSummary(){
+  const cq=curCustLines.reduce((a,c)=>a+c.quoted,0);
+  const ca=curCustLines.reduce((a,c)=>a+c.actual,0);
+  const ship=parseFloat(document.getElementById('o-shipping').value)||0;
+  const other=parseFloat(document.getElementById('o-othercosts').value)||0;
+  const saC=getSALines().reduce((a,s)=>a+s.cost,0);
+  const totalA=ca+ship+other+saC;const profit=cq-totalA;
+  document.getElementById('sum-quoted').textContent=fmt(cq);
+  document.getElementById('sum-actual').textContent=fmt(totalA);
+  document.getElementById('sum-profit').textContent=fmt(profit);
+  document.getElementById('sum-profit').className='metric-val '+(profit>=0?'mv-green':'mv-red');
+}
+
+
+/* ===== STRAITS AQUATICS HOTFIX 2026-06-22: order tabs + editable customer lines ===== */
+function escHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+function num(v){return parseFloat(v)||0;}
+let editingCustLineIndex = null;
+
+function getPaidAmount(cl){return (cl && cl.payments ? cl.payments : []).reduce((a,p)=>a+num(p.amount),0);}
+function getCustomerBalance(cl){
+  if(!cl) return 0;
+  if(cl.status==='FREE' || cl.status==='SORTEO') return 0;
+  return Math.max(0, num(cl.quoted)-getPaidAmount(cl));
+}
+function isCustomerFullyPaid(cl){return getCustomerBalance(cl)<=0.01;}
+function customerPayStatusText(cl){
+  if(cl && (cl.status==='FREE'||cl.status==='SORTEO')) return cl.status;
+  return isCustomerFullyPaid(cl)?'PAID':'TO BE PAID';
+}
+function customerPayBadgeClass(cl){
+  if(cl && (cl.status==='FREE'||cl.status==='SORTEO')) return 'b-grey';
+  return isCustomerFullyPaid(cl)?'b-green':'b-red';
+}
+function getOrderPendingBalance(o){return (o.custLines||[]).reduce((s,cl)=>s+getCustomerBalance(cl),0);}
+function isOrderComplete(o){
+  if(o.manualComplete===true) return true;
+  const cls=o.custLines||[];
+  if(!cls.length) return false;
+  return cls.every(cl=>isCustomerFullyPaid(cl)) && cls.every(cl=>{
+    const items=cl.items||[];
+    return items.length===0 || items.every(it=>it.delivered===true || (it.doa && it.doaResolved));
+  }) && cls.every(cl=>(cl.items||[]).every(it=>!it.doa || it.doaResolved));
+}
+
+function updateOrderTabCounts(){
+  const completed=db.orders.filter(o=>isOrderComplete(o)).length;
+  const active=db.orders.length-completed;
+  const set=(id,val)=>{const el=document.getElementById(id); if(el)el.textContent=val;};
+  set('tab-count-active',active); set('tab-count-completed',completed); set('tab-count-all',db.orders.length);
+}
+
+function setOrderTab(tab,btn){
+  currentOrderTab=tab;
+  document.querySelectorAll('.order-tab').forEach(b=>{b.style.color='var(--text3)';b.style.borderBottomColor='transparent';});
+  const target=btn || document.getElementById('tab-'+tab);
+  if(target){target.style.color='var(--reef)';target.style.borderBottomColor='var(--reef)';}
+  renderOrders(document.getElementById('orders-search')?.value||'');
+}
+
+function renderOrders(filter=''){
+  updateOrderTabCounts();
+  const q=(filter||'').toLowerCase();
+  let rows=db.orders.filter(o=>!q || String(o.num||'').toLowerCase().includes(q) || (o.suppliers||[]).join(',').toLowerCase().includes(q) || (o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));
+  rows=rows.filter(o=> currentOrderTab==='all' ? true : currentOrderTab==='completed' ? isOrderComplete(o) : !isOrderComplete(o));
+  const tbody=document.getElementById('orders-body');
+  if(!tbody) return;
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}
+  tbody.innerHTML=[...rows].reverse().map(o=>{
+    const pClass=num(o.profit)>=0?'text-green':'text-red';
+    const margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—';
+    const circles=(o.custLines||[]).map(cl=>`<span title="${escHtml(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('');
+    const complete=isOrderComplete(o);
+    const status=complete?'<span class="badge b-green">Completed</span>':(getOrderPendingBalance(o)>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>');
+    const toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;
+    return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
+  }).join('');
+}
+function filterOrders(v){renderOrders(v);}
+
+function resetCustLineModal(){
+  editingCustLineIndex=null;
+  document.querySelector('#modal-cust-line .modal-title').textContent='Add Customer to Order';
+  document.querySelector('#modal-cust-line .modal-foot .btn-primary').textContent='Add Customer';
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin','cl-payby','cl-paymethod','cl-delivery'].forEach(id=>{const el=document.getElementById(id); if(el)el.value='';});
+  document.getElementById('cl-items-list').innerHTML='';
+  document.getElementById('cl-payments-list').innerHTML='';
+  const fs=document.getElementById('cl-free-ship'); if(fs)fs.checked=false;
+  const fsr=document.getElementById('free-ship-actual-row'); if(fsr)fsr.style.display='none';
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  selectedDelivery=''; updatePaymentTotals();
+}
+
+const _origOpenModal = openModal;
+openModal=function(id){
+  if(id==='modal-cust-line' && editingCustLineIndex===null) resetCustLineModal();
+  _origOpenModal(id);
+};
+
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false,delivered=false,doaResolved=false){
+  rowCount++; const rid='ir'+rowCount;
+  const d=document.createElement('div'); d.id=rid; d.className='mb-8';
+  d.innerHTML=`<div class="flex items-c gap-6" style="flex-wrap:wrap"><input type="text" placeholder="Item / species" value="${escHtml(item)}" style="flex:2;min-width:170px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted!==''?num(quoted):''}" style="width:95px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual!==''?num(actual):''}" style="width:95px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-delivered" ${delivered?'checked':''}> Delivered</label><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button></div>`;
+  document.getElementById('cl-items-list').appendChild(d);
+}
+
+function calcItemTotals(){
+  let q=0,a=0;
+  document.querySelectorAll('.ir-q').forEach(i=>q+=num(i.value));
+  document.querySelectorAll('.ir-a').forEach(i=>a+=num(i.value));
+  const qEl=document.getElementById('cl-quoted'), aEl=document.getElementById('cl-actual');
+  if(qEl)qEl.value=q.toFixed(2); if(aEl)aEl.value=a.toFixed(2);
+  calcCustLine(); updatePaymentTotals();
+}
+function calcCustLine(){
+  const q=num(document.getElementById('cl-quoted')?.value), a=num(document.getElementById('cl-actual')?.value);
+  const m=q>0?(((q-a)/q)*100).toFixed(1):'0.0';
+  const el=document.getElementById('cl-margin'); if(el)el.textContent=`Profit: ${fmt(q-a)} (${m}% margin)`;
+  updatePaymentTotals();
+}
+function addPaymentRow(amount='',date='',method='',note=''){
+  const id='pay'+uid(); const wrap=document.getElementById('cl-payments-list'); if(!wrap)return;
+  const d=document.createElement('div'); d.id=id; d.className='flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
+  d.innerHTML=`<input type="number" step="0.01" placeholder="Amount" value="${amount!==''?num(amount):''}" style="width:100px" class="pay-amt" oninput="updatePaymentTotals()"><input type="date" value="${escHtml(date||today())}" style="width:150px" class="pay-date"><select class="pay-method" style="width:145px">${['','Cash','Revolut','Bank Transfer','PayPal','Card','Stripe'].map(m=>`<option ${m===method?'selected':''}>${m||'Method'}</option>`).join('')}</select><input type="text" placeholder="Note" value="${escHtml(note||'')}" style="flex:1;min-width:120px" class="pay-note"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updatePaymentTotals()">✕</button>`;
+  wrap.appendChild(d); updatePaymentTotals();
+}
+function collectPayments(){return [...document.querySelectorAll('#cl-payments-list > div')].map(r=>({amount:num(r.querySelector('.pay-amt')?.value),date:r.querySelector('.pay-date')?.value||today(),method:r.querySelector('.pay-method')?.value||'',note:r.querySelector('.pay-note')?.value||''})).filter(p=>p.amount>0);}
+function updatePaymentTotals(){
+  const quoted=num(document.getElementById('cl-quoted')?.value);
+  const paid=collectPayments().reduce((a,p)=>a+p.amount,0);
+  const rem=Math.max(0,quoted-paid);
+  const pEl=document.getElementById('cl-paid-total'), rEl=document.getElementById('cl-remaining');
+  if(pEl)pEl.textContent=fmt(paid); if(rEl)rEl.textContent=fmt(rem);
+  if(rEl){rEl.className='font-bold '+(rem>0.01?'text-red':'text-green');}
+}
+function toggleFreeShipping(){const row=document.getElementById('free-ship-actual-row'); if(row)row.style.display=document.getElementById('cl-free-ship')?.checked?'block':'none';}
+
+function editCustLine(i){
+  const cl=curCustLines[i]; if(!cl)return;
+  resetCustLineModal(); editingCustLineIndex=i;
+  document.querySelector('#modal-cust-line .modal-title').textContent='Edit Customer Order';
+  document.querySelector('#modal-cust-line .modal-foot .btn-primary').textContent='Update Customer';
+  document.getElementById('cl-name').value=cl.name||'';
+  document.getElementById('cl-loc').value=cl.location||'';
+  document.getElementById('cl-delivery').value=cl.delivery||'';
+  document.getElementById('cl-quoted').value=num(cl.quoted).toFixed(2);
+  document.getElementById('cl-actual').value=num(cl.actual).toFixed(2);
+  document.getElementById('cl-payby').value=cl.payBy||'';
+  document.getElementById('cl-paymethod').value=cl.payMethod||'';
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  const opt=document.querySelector(`#dl-selector .dl-opt.${cl.delivery==='local'?'dl-local':cl.delivery==='post'?'dl-post':cl.delivery==='drop'?'dl-drop':''}`); if(opt)opt.classList.add('sel');
+  (cl.items||[]).forEach(it=>addItemRow(it.name||'',it.quoted||0,it.actual||0,it.status||'PAID',!!it.doa,!!it.delivered,!!it.doaResolved));
+  (cl.payments||[]).forEach(p=>addPaymentRow(p.amount||0,p.date||today(),p.method||'',p.note||''));
+  calcCustLine(); updatePaymentTotals(); openModal('modal-cust-line');
+}
+
+function saveCustLine(){
+  const name=document.getElementById('cl-name').value.trim();
+  if(!name){toast('Enter customer name',false);return;}
+  const delivery=document.getElementById('cl-delivery').value;
+  const payments=collectPayments();
+  const items=[]; let doaTotal=0;
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{
+    const isDOA=!!row.querySelector('.ir-doa')?.checked;
+    const actual=num(row.querySelector('.ir-a')?.value);
+    const item={name:row.querySelector('.ir-name')?.value||'',quoted:num(row.querySelector('.ir-q')?.value),actual,status:row.querySelector('.ir-s')?.value||'PAID',doa:isDOA,delivered:!!row.querySelector('.ir-delivered')?.checked,doaResolved:false};
+    if(isDOA)doaTotal+=actual;
+    items.push(item);
+  });
+  const q=num(document.getElementById('cl-quoted').value), a=num(document.getElementById('cl-actual').value);
+  const line={id:editingCustLineIndex!==null && curCustLines[editingCustLineIndex]?.id?curCustLines[editingCustLineIndex].id:uid(),name,location:document.getElementById('cl-loc').value,delivery,status:(Math.max(0,q-payments.reduce((s,p)=>s+p.amount,0))<=0.01?'PAID':'TO BE PAID'),quoted:q,actual:a,items,doaTotal,payments,payBy:document.getElementById('cl-payby').value,payMethod:document.getElementById('cl-paymethod').value};
+  if(editingCustLineIndex!==null) curCustLines[editingCustLineIndex]=line; else curCustLines.push(line);
+  if(!db.customers.find(c=>String(c.name).toLowerCase()===name.toLowerCase())){
+    const nc={id:uid(),name,location:line.location||'',phone:'',email:'',notes:'',created:today()}; db.customers.push(nc);
+    sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(console.error); refreshDatalist();
+  }
+  closeModal('modal-cust-line'); resetCustLineModal(); renderCustLines(); updateSummary(); toast(editingCustLineIndex!==null?'Customer updated ✓':'Customer added ✓');
+}
+
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap'), empty=document.getElementById('cust-lines-empty');
+  if(!wrap||!empty)return;
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove());
+  if(!curCustLines.length){empty.style.display='block';return;}
+  empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{
+    const profit=num(cl.quoted)-num(cl.actual);
+    const div=document.createElement('div'); div.className='cl-card'; div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name)}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${escHtml(cl.location)}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${getPaidAmount(cl)>0?`<span class="badge b-blue">Paid ${fmt(getPaidAmount(cl))}</span>`:''}${getCustomerBalance(cl)>0.01?`<span class="badge b-red">Balance ${fmt(getCustomerBalance(cl))}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}`;
+    wrap.appendChild(div);
+  });
+}
+function removeCustLine(i){curCustLines.splice(i,1);renderCustLines();updateSummary();}
+
+function updateSummary(){
+  const cq=curCustLines.reduce((a,c)=>a+num(c.quoted),0);
+  const ca=curCustLines.reduce((a,c)=>a+num(c.actual),0);
+  const ship=num(document.getElementById('o-shipping')?.value);
+  const other=num(document.getElementById('o-othercosts')?.value);
+  const saC=getSALines().reduce((a,s)=>a+num(s.cost),0);
+  const totalA=ca+ship+other+saC, profit=cq-totalA;
+  if(document.getElementById('sum-quoted'))document.getElementById('sum-quoted').textContent=fmt(cq);
+  if(document.getElementById('sum-actual'))document.getElementById('sum-actual').textContent=fmt(totalA);
+  const p=document.getElementById('sum-profit'); if(p){p.textContent=fmt(profit);p.className='metric-val '+(profit>=0?'mv-green':'mv-red');}
+  const d=document.getElementById('sum-doa-absorbed'); if(d)d.textContent=fmt(curCustLines.reduce((a,c)=>a+num(c.doaTotal),0));
+}
+
+async function saveOrder(){
+  const numRef=document.getElementById('o-num').value.trim(); if(!numRef){toast('Enter order number',false);return;}
+  const ship=num(document.getElementById('o-shipping').value), other=num(document.getElementById('o-othercosts').value);
+  const saLines=getSALines();
+  const cq=curCustLines.reduce((a,c)=>a+num(c.quoted),0);
+  const ca=curCustLines.reduce((a,c)=>a+num(c.actual),0);
+  const totalA=ca+ship+other+saLines.reduce((a,s)=>a+num(s.cost),0);
+  const profit=cq-totalA;
+  const doaTotal=curCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+num(it.actual),0),0);
+  const totalPendingPayment=curCustLines.reduce((a,cl)=>a+getCustomerBalance(cl),0);
+  const old=editingOrderId?db.orders.find(o=>o.id===editingOrderId):null;
+  const temp={custLines:curCustLines,manualComplete:false};
+  const manual=old && old.manualComplete && isOrderComplete(temp);
+  const row={id:editingOrderId||uid(),num:numRef,order_type:document.getElementById('o-type')?.value||'weekly',date:document.getElementById('o-date').value,suppliers:curSuppliers,shipping:ship,other_costs:other,notes:document.getElementById('o-notes').value,cust_lines:curCustLines,sa_lines:saLines,total_quoted:cq,total_actual:totalA,profit,doa_total:doaTotal,total_pending:totalPendingPayment,manual_complete:manual,created:old?.created||today()};
+  setSyncStatus('sync-busy','Saving...');
+  try{
+    if(editingOrderId){await sbUpdate('orders',editingOrderId,row); const idx=db.orders.findIndex(o=>o.id===editingOrderId); if(idx>-1)db.orders[idx]={id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created}; toast('Order updated ✓');}
+    else {await sbInsert('orders',row); db.orders.push({id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created}); toast('Order saved ✓');}
+    for(const cl of curCustLines){if(!db.customers.find(c=>String(c.name).toLowerCase()===String(cl.name).toLowerCase())){const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()}; await sbInsert('customers',nc); db.customers.push(nc);}}
+    setSyncStatus('sync-ok','✓ Synced'); editingOrderId=null; curCustLines=[]; curSuppliers=[]; renderOverview(); nav('orders');
+  }catch(e){setSyncStatus('sync-err','✗ Error'); toast('Save failed: '+e.message,false); console.error(e);}
+}
+
+function renderOverview(){
+  const tQ=db.orders.reduce((a,o)=>a+num(o.totalQuoted),0), tP=db.orders.reduce((a,o)=>a+num(o.profit),0), tD=db.orders.reduce((a,o)=>a+num(o.doaTotal),0);
+  const completed=db.orders.filter(o=>isOrderComplete(o)).length, active=db.orders.length-completed;
+  const pendingTotal=db.orders.reduce((a,o)=>a+getOrderPendingBalance(o),0)+db.credits.filter(c=>c.type==='owed').reduce((a,c)=>a+num(c.amount),0);
+  const set=(id,v)=>{const el=document.getElementById(id); if(el)el.textContent=v;};
+  set('ov-rev',fmt(tQ)); set('ov-profit',fmt(tP)); set('ov-orders',active); set('ov-custs',db.customers.length); set('ov-credits',db.credits.filter(c=>c.type==='credit').length); set('ov-pending',fmt(pendingTotal)); set('ov-doas',fmt(tD)); const ce=document.getElementById('ov-completed'); if(ce)ce.textContent=completed;
+  const l10=db.orders.slice(-10); const maxP=Math.max(...l10.map(o=>Math.abs(num(o.profit))),1); const chart=document.getElementById('ov-chart'); if(chart)chart.innerHTML=l10.length?l10.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${num(o.profit)>=0?'var(--reef)':'var(--red)'}">${fmt(Math.round(num(o.profit)))}</div><div class="bar-fill ${num(o.profit)<0?'neg':''}" style="height:${Math.round((Math.abs(num(o.profit))/maxP)*75)}px"></div><div class="bar-lbl">#${escHtml(o.num)}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';
+  const rec=[...db.orders].reverse().slice(0,5), re=document.getElementById('ov-recent'); if(re)re.innerHTML=rec.length?rec.map(o=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${escHtml(o.num)}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).map(escHtml).join(', ')}</span><span class="font-bold ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</span></div>`).join(''):'<div class="empty"><div class="ei">📦</div><p>No orders</p></div>';
+  const sp={}; db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+num(cl.quoted);})); const top=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6), tc=document.getElementById('ov-topcusts'); if(tc)tc.innerHTML=top.length?top.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="text-sm" style="flex:1">${escHtml(n)}</span><span class="font-bold">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">👥</div><p>No data</p></div>';
+  const cr=db.credits.slice(-5), cs=document.getElementById('ov-credsummary'); if(cs)cs.innerHTML=cr.length?cr.map(c=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><span class="text-sm" style="flex:1">${escHtml(c.customer)}</span><span class="badge ${c.type==='credit'?'b-amber':'b-red'}">${c.type==='credit'?'Credit':'Owes'}</span><span class="font-bold">${fmt(c.amount)}</span></div>`).join(''):'<div class="empty"><div class="ei">💳</div><p>No credits</p></div>';
+  const by={}; db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{const bal=getCustomerBalance(cl); if(bal>0.01)by[cl.name]=(by[cl.name]||0)+bal;})); db.credits.filter(c=>c.type==='owed').forEach(c=>by[c.customer]=(by[c.customer]||0)+num(c.amount)); const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]), pe=document.getElementById('ov-pending-breakdown'); if(pe)pe.innerHTML=rows.length?rows.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="font-bold" style="flex:1">${escHtml(n)}</span><span class="badge b-red">TO BE PAID</span><span class="font-bold text-red">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">✅</div><p>No pending payments</p></div>';
+  updateOrderTabCounts();
+}
+
+
+/* ===== FINAL STABILITY PATCH: customer modal, tracking, owed amounts, tabs ===== */
+function escAttr(v){return escHtml(v).replace(/`/g,'&#96;');}
+function parseOrderDateToKey(v){
+  if(!v)return'';
+  const s=String(v).trim();
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m)return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+  const d=new Date(s);return isNaN(d)?'':d.toISOString().slice(0,10);
+}
+function getPaidAmount(cl){return (cl.payments||[]).reduce((a,p)=>a+num(p.amount),0);}
+function getCustomerBalance(cl){
+  if(['FREE','SORTEO'].includes(String(cl.status||'').toUpperCase()))return 0;
+  return Math.max(0,num(cl.quoted)-getPaidAmount(cl));
+}
+function isCustomerFullyPaid(cl){return getCustomerBalance(cl)<=0.01;}
+function customerPayStatusText(cl){return isCustomerFullyPaid(cl)?'PAID':'TO BE PAID';}
+function customerPayBadgeClass(cl){return isCustomerFullyPaid(cl)?'b-green':'b-red';}
+function getOrderPendingBalance(o){return (o.custLines||[]).reduce((s,cl)=>s+getCustomerBalance(cl),0);}
+function isOrderComplete(o){
+  if(o.manualComplete===true)return true;
+  const cls=o.custLines||[]; if(!cls.length)return false;
+  const allPaid=cls.every(cl=>isCustomerFullyPaid(cl));
+  const allDelivered=cls.every(cl=>{const items=cl.items||[];return !items.length || items.every(it=>it.delivered===true || (it.doa && it.doaResolved));});
+  const noUnresolvedDOA=cls.every(cl=>(cl.items||[]).every(it=>!it.doa || it.doaResolved));
+  return allPaid && allDelivered && noUnresolvedDOA;
+}
+function setOrderTypeVisual(type){
+  type=type==='adhoc'?'adhoc':'weekly';
+  const hidden=document.getElementById('o-type'); if(hidden)hidden.value=type;
+  const weekly=document.getElementById('ot-weekly'), adhoc=document.getElementById('ot-adhoc');
+  const active=(el)=>{if(!el)return;el.style.borderColor='var(--ocean)';el.style.background='#e8f4fd';el.style.color='var(--ocean)';};
+  const inactive=(el)=>{if(!el)return;el.style.borderColor='var(--border2)';el.style.background='#f8fafc';el.style.color='var(--text3)';};
+  if(type==='weekly'){active(weekly);inactive(adhoc);}else{inactive(weekly);active(adhoc);}  
+}
+function selOrderType(type){setOrderTypeVisual(type);}
+function patchedOrderType(){return document.getElementById('o-type')?.value||'weekly';}
+function normaliseDelivery(v){
+  const s=String(v||'').trim().toLowerCase();
+  if(['local','local pick-up','local pickup','pickup','pick-up'].includes(s))return 'local';
+  if(['post','postage','shipping','posted','courier'].includes(s))return 'post';
+  if(['drop','drop ship','dropship','drop-ship','supplier direct'].includes(s))return 'drop';
+  return '';
+}
+
+function ensureTrackingField(){
+  if(document.getElementById('cl-tracking-row'))return;
+  const deliveryBlock=document.getElementById('cl-delivery')?.closest('.fg');
+  if(!deliveryBlock)return;
+  const row=document.createElement('div');
+  row.id='cl-tracking-row'; row.className='fg fg-full'; row.style.display='none'; row.style.marginTop='8px';
+  row.innerHTML='<label id="cl-tracking-label">Tracking Number / Reference</label><input type="text" id="cl-tracking" placeholder="Enter tracking number or courier reference">';
+  deliveryBlock.insertAdjacentElement('afterend',row);
+}
+function updateTrackingVisibility(){
+  ensureTrackingField();
+  const type=document.getElementById('cl-delivery')?.value||'';
+  const row=document.getElementById('cl-tracking-row'), label=document.getElementById('cl-tracking-label'), input=document.getElementById('cl-tracking');
+  if(!row)return;
+  if(type==='post'||type==='drop'){
+    row.style.display='flex';
+    if(label)label.textContent=type==='post'?'Postage Tracking Number':'Drop Ship Tracking / Reference Number';
+    if(input)input.placeholder=type==='post'?'e.g. Correos / DHL / courier tracking number':'e.g. supplier tracking, courier ref, or drop ship reference';
+  }else{row.style.display='none'; if(input)input.value='';}
+}
+function selDelivery(type,el){
+  selectedDelivery=type;
+  const hidden=document.getElementById('cl-delivery'); if(hidden)hidden.value=type;
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  if(el)el.classList.add('sel');
+  updateTrackingVisibility();
+}
+function resetCustLineModal(){
+  ensureTrackingField();
+  editingCustLineIndex=null;
+  const title=document.querySelector('#modal-cust-line .modal-title'); if(title)title.textContent='Add Customer to Order';
+  const btn=document.querySelector('#modal-cust-line .modal-foot .btn-primary'); if(btn)btn.textContent='Add Customer';
+  ['cl-name','cl-loc','cl-quoted','cl-actual','cl-margin','cl-payby','cl-paymethod','cl-delivery','cl-ship-actual','cl-tracking'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  const list=document.getElementById('cl-items-list'); if(list)list.innerHTML='';
+  const pay=document.getElementById('cl-payments-list'); if(pay)pay.innerHTML='';
+  const free=document.getElementById('cl-free-ship'); if(free)free.checked=false;
+  const fsr=document.getElementById('free-ship-actual-row'); if(fsr)fsr.style.display='none';
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  selectedDelivery=''; updateTrackingVisibility(); updatePaymentTotals();
+}
+function openCustLineModal(index=null){
+  if(typeof requireOrderEditor==='function' && !requireOrderEditor())return;
+  if(index===null||index===undefined){resetCustLineModal();openModal('modal-cust-line');return;}
+  editCustLine(index);
+}
+function addItemRow(item='',quoted='',actual='',status='PAID',doa=false,delivered=false,doaResolved=false){
+  rowCount++; const rid='ir'+rowCount;
+  const d=document.createElement('div');d.id=rid;d.className='mb-8';
+  d.innerHTML=`<div class="flex items-c gap-6" style="flex-wrap:wrap"><input type="text" placeholder="Item / species" value="${escAttr(item)}" style="flex:2;min-width:170px" class="ir-name"><input type="number" placeholder="Quoted €" value="${quoted!==''?num(quoted):''}" style="width:95px" class="ir-q" oninput="calcItemTotals()"><input type="number" placeholder="Actual €" value="${actual!==''?num(actual):''}" style="width:95px" class="ir-a" oninput="calcItemTotals()"><select class="ir-s" style="width:130px">${['PAID','PAID - CREDIT','DELIVERED','TO BE PAID','DOA','SORTEO','FREE'].map(s=>`<option ${s===status?'selected':''}>${s}</option>`).join('')}</select><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-delivered" ${delivered?'checked':''}> Delivered</label><label class="text-xs flex items-c gap-6"><input type="checkbox" class="ir-doa" ${doa?'checked':''}> DOA</label><input type="hidden" class="ir-doa-resolved" value="${doaResolved?'1':'0'}"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${rid}').remove();calcItemTotals()">✕</button></div>`;
+  document.getElementById('cl-items-list')?.appendChild(d);
+}
+function calcItemTotals(){
+  let q=0,a=0;document.querySelectorAll('.ir-q').forEach(i=>q+=num(i.value));document.querySelectorAll('.ir-a').forEach(i=>a+=num(i.value));
+  const qEl=document.getElementById('cl-quoted'),aEl=document.getElementById('cl-actual'); if(qEl)qEl.value=q.toFixed(2); if(aEl)aEl.value=a.toFixed(2);
+  calcCustLine();updatePaymentTotals();
+}
+function calcCustLine(){
+  const q=num(document.getElementById('cl-quoted')?.value);
+  const baseActual=num(document.getElementById('cl-actual')?.value);
+  const absorbed=document.getElementById('cl-free-ship')?.checked?num(document.getElementById('cl-ship-actual')?.value):0;
+  const actualTotal=baseActual+absorbed;
+  const m=q>0?(((q-actualTotal)/q)*100).toFixed(1):'0.0';
+  const el=document.getElementById('cl-margin'); if(el)el.textContent=`Profit: ${fmt(q-actualTotal)} (${m}% margin)`;
+  updatePaymentTotals();
+}
+function toggleFreeShipping(){const row=document.getElementById('free-ship-actual-row');if(row)row.style.display=document.getElementById('cl-free-ship')?.checked?'block':'none';calcCustLine();}
+function addPaymentRow(amount='',date='',method='',note=''){
+  const id='pay'+uid(); const wrap=document.getElementById('cl-payments-list'); if(!wrap)return;
+  const d=document.createElement('div'); d.id=id; d.className='flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
+  d.innerHTML=`<input type="number" step="0.01" placeholder="Amount" value="${amount!==''?num(amount):''}" style="width:100px" class="pay-amt" oninput="updatePaymentTotals()"><input type="date" value="${escAttr(date||today())}" style="width:150px" class="pay-date"><select class="pay-method" style="width:145px">${['','Cash','Revolut','Bank Transfer','PayPal','Card','Stripe'].map(m=>`<option ${m===method?'selected':''}>${m||'Method'}</option>`).join('')}</select><input type="text" placeholder="Note" value="${escAttr(note||'')}" style="flex:1;min-width:120px" class="pay-note"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updatePaymentTotals()">✕</button>`;
+  wrap.appendChild(d);updatePaymentTotals();
+}
+function collectPayments(){return [...document.querySelectorAll('#cl-payments-list > div')].map(r=>({amount:num(r.querySelector('.pay-amt')?.value),date:r.querySelector('.pay-date')?.value||today(),method:r.querySelector('.pay-method')?.value||'',note:r.querySelector('.pay-note')?.value||''})).filter(p=>p.amount>0);}
+function updatePaymentTotals(){
+  const quoted=num(document.getElementById('cl-quoted')?.value),paid=collectPayments().reduce((a,p)=>a+p.amount,0),rem=Math.max(0,quoted-paid);
+  const pEl=document.getElementById('cl-paid-total'),rEl=document.getElementById('cl-remaining'); if(pEl)pEl.textContent=fmt(paid); if(rEl){rEl.textContent=fmt(rem);rEl.className='font-bold '+(rem>0.01?'text-red':'text-green');}
+}
+function editCustLine(i){
+  const cl=curCustLines[i];
+  if(!cl){toast('Could not find this customer line to edit',false);return;}
+  resetCustLineModal();
+  editingCustLineIndex=i;
+
+  const title=document.querySelector('#modal-cust-line .modal-title');
+  if(title)title.textContent='Edit Customer Order';
+  const btn=document.querySelector('#modal-cust-line .modal-foot .btn-primary');
+  if(btn)btn.textContent='Update Customer';
+
+  const delivery=normaliseDelivery(cl.delivery);
+  const setVal=(id,val)=>{const el=document.getElementById(id); if(el)el.value=val??'';};
+  setVal('cl-name',cl.name||'');
+  setVal('cl-loc',cl.location||'');
+  setVal('cl-delivery',delivery);
+
+  const absorbed=num(cl.actualShippingCost);
+  const baseActual=(cl.actualBase!==undefined)?num(cl.actualBase):(cl.freeShipping?Math.max(0,num(cl.actual)-absorbed):num(cl.actual));
+  setVal('cl-quoted',num(cl.quoted).toFixed(2));
+  setVal('cl-actual',baseActual.toFixed(2));
+  setVal('cl-payby',cl.payBy||'');
+  setVal('cl-paymethod',cl.payMethod||'');
+
+  const free=document.getElementById('cl-free-ship');
+  if(free)free.checked=!!cl.freeShipping;
+  setVal('cl-ship-actual',cl.actualShippingCost||'');
+
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  const cls=delivery==='local'?'dl-local':delivery==='post'?'dl-post':delivery==='drop'?'dl-drop':'';
+  if(cls){
+    const opt=document.querySelector(`#dl-selector .dl-opt.${cls}`);
+    if(opt)opt.classList.add('sel');
+  }
+
+  ensureTrackingField();
+  const tr=document.getElementById('cl-tracking');
+  if(tr)tr.value=cl.trackingNumber||cl.tracking_number||'';
+  updateTrackingVisibility();
+
+  (cl.items||[]).forEach(it=>addItemRow(it.name||'',it.quoted||0,it.actual||0,it.status||'PAID',!!it.doa,!!it.delivered,!!it.doaResolved));
+  (cl.payments||[]).forEach(p=>addPaymentRow(p.amount||0,p.date||today(),p.method||'',p.note||''));
+
+  toggleFreeShipping();
+  calcCustLine();
+  updatePaymentTotals();
+  openModal('modal-cust-line');
+}
+
+async function persistCurrentEditingOrderQuietly(){
+  if(!editingOrderId)return;
+  const old=db.orders.find(o=>o.id===editingOrderId); if(!old)return;
+  const ship=num(document.getElementById('o-shipping')?.value), other=num(document.getElementById('o-othercosts')?.value), saLines=getSALines();
+  const cq=curCustLines.reduce((a,c)=>a+num(c.quoted),0), ca=curCustLines.reduce((a,c)=>a+num(c.actual),0);
+  const totalA=ca+ship+other+saLines.reduce((a,s)=>a+num(s.cost),0), profit=cq-totalA;
+  const doaTotal=curCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+num(it.actual),0),0);
+  const totalPendingPayment=curCustLines.reduce((a,cl)=>a+getCustomerBalance(cl),0);
+  const manual=old.manualComplete && isOrderComplete({custLines:curCustLines,manualComplete:false});
+  const row={num:document.getElementById('o-num')?.value||old.num,order_type:patchedOrderType(),date:document.getElementById('o-date')?.value||old.date,suppliers:curSuppliers,shipping:ship,other_costs:other,notes:document.getElementById('o-notes')?.value||'',cust_lines:curCustLines,sa_lines:saLines,total_quoted:cq,total_actual:totalA,profit,doa_total:doaTotal,total_pending:totalPendingPayment,manual_complete:manual};
+  await sbUpdate('orders',editingOrderId,row);
+  Object.assign(old,{num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual});
+  setSyncStatus('sync-ok','✓ Synced');
+}
+async function saveCustLine(){
+  const name=document.getElementById('cl-name').value.trim(); if(!name){toast('Enter customer name',false);return;}
+  const payments=collectPayments(), items=[]; let doaTotal=0;
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{const isDOA=!!row.querySelector('.ir-doa')?.checked;const actual=num(row.querySelector('.ir-a')?.value);if(isDOA)doaTotal+=actual;items.push({name:row.querySelector('.ir-name')?.value||'',quoted:num(row.querySelector('.ir-q')?.value),actual,status:row.querySelector('.ir-s')?.value||'PAID',doa:isDOA,delivered:!!row.querySelector('.ir-delivered')?.checked,doaResolved:row.querySelector('.ir-doa-resolved')?.value==='1'});});
+  const quoted=num(document.getElementById('cl-quoted')?.value),baseActual=num(document.getElementById('cl-actual')?.value),free=!!document.getElementById('cl-free-ship')?.checked,shipCost=free?num(document.getElementById('cl-ship-actual')?.value):0,actualTotal=baseActual+shipCost;
+  const delivery=normaliseDelivery(document.getElementById('cl-delivery')?.value||''), tracking=(delivery==='post'||delivery==='drop')?(document.getElementById('cl-tracking')?.value.trim()||''):'';
+  const paid=payments.reduce((s,p)=>s+p.amount,0);
+  const line={id:(editingCustLineIndex!==null&&curCustLines[editingCustLineIndex]?.id)?curCustLines[editingCustLineIndex].id:uid(),name,location:document.getElementById('cl-loc')?.value||'',delivery,status:Math.max(0,quoted-paid)<=0.01?'PAID':'TO BE PAID',quoted,actual:actualTotal,actualBase:baseActual,items,doaTotal,payments,payBy:document.getElementById('cl-payby')?.value||'',payMethod:document.getElementById('cl-paymethod')?.value||'',freeShipping:free,actualShippingCost:shipCost,trackingNumber:tracking,tracking_number:tracking};
+  const wasEditing=editingCustLineIndex!==null;
+  if(wasEditing)curCustLines[editingCustLineIndex]=line; else curCustLines.push(line);
+  if(!db.customers.find(c=>String(c.name).toLowerCase()===name.toLowerCase())){const nc={id:uid(),name,location:line.location||'',phone:'',email:'',notes:'',created:today()};db.customers.push(nc);sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(console.error);refreshDatalist();}
+  closeModal('modal-cust-line'); editingCustLineIndex=null; resetCustLineModal(); renderCustLines(); updateSummary();
+  if(editingOrderId){try{setSyncStatus('sync-busy','Saving...');await persistCurrentEditingOrderQuietly();renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');toast(wasEditing?'Customer updated ✓':'Customer added ✓');}catch(e){setSyncStatus('sync-err','✗ Error');toast('Customer updated locally, but save failed: '+e.message,false);console.error(e);}}
+  else toast(wasEditing?'Customer updated ✓':'Customer added ✓');
+}
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap'),empty=document.getElementById('cust-lines-empty'); if(!wrap||!empty)return;
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove()); if(!curCustLines.length){empty.style.display='block';return;} empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual),tracking=cl.trackingNumber||cl.tracking_number||'';const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name)}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${escHtml(cl.location)}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${getPaidAmount(cl)>0?`<span class="badge b-blue">Paid ${fmt(getPaidAmount(cl))}</span>`:''}${getCustomerBalance(cl)>0.01?`<span class="badge b-red">Balance ${fmt(getCustomerBalance(cl))}</span>`:''}${tracking?`<span class="badge b-grey">📦 ${escHtml(tracking)}</span>`:''}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}`;
+    wrap.appendChild(div);});
+}
+function updateSummary(){
+  const cq=curCustLines.reduce((a,c)=>a+num(c.quoted),0),ca=curCustLines.reduce((a,c)=>a+num(c.actual),0),ship=num(document.getElementById('o-shipping')?.value),other=num(document.getElementById('o-othercosts')?.value),saC=getSALines().reduce((a,s)=>a+num(s.cost),0),totalA=ca+ship+other+saC,profit=cq-totalA;
+  if(document.getElementById('sum-quoted'))document.getElementById('sum-quoted').textContent=fmt(cq); if(document.getElementById('sum-actual'))document.getElementById('sum-actual').textContent=fmt(totalA); const p=document.getElementById('sum-profit'); if(p){p.textContent=fmt(profit);p.className='metric-val '+(profit>=0?'mv-green':'mv-red');} const d=document.getElementById('sum-doa-absorbed'); if(d)d.textContent=fmt(curCustLines.reduce((a,c)=>a+num(c.doaTotal),0));
+}
+function ensureOrderTableHeader(){const head=document.querySelector('#page-orders table thead tr');if(head&&!head.dataset.owedPatch){head.innerHTML='<th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>Owed</th><th>Status</th><th>Actions</th>';head.dataset.owedPatch='1';}}
+function renderOrders(filter=''){
+  ensureOrderTableHeader();updateOrderTabCounts();const q=(filter||'').toLowerCase();let rows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));rows=rows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));const tbody=document.getElementById('orders-body');if(!tbody)return;if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}tbody.innerHTML=[...rows].reverse().map(o=>{const pClass=num(o.profit)>=0?'text-green':'text-red',margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—',owed=getOrderPendingBalance(o);const circles=(o.custLines||[]).map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('');const complete=isOrderComplete(o),status=complete?'<span class="badge b-green">Completed</span>':(owed>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>'),toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;}).join('');
+}
+function renderOverview(){
+  const tQ=db.orders.reduce((a,o)=>a+num(o.totalQuoted),0),tP=db.orders.reduce((a,o)=>a+num(o.profit),0),tD=db.orders.reduce((a,o)=>a+num(o.doaTotal),0),completed=db.orders.filter(o=>isOrderComplete(o)).length,active=db.orders.length-completed,pendingTotal=db.orders.reduce((a,o)=>a+getOrderPendingBalance(o),0)+db.credits.filter(c=>c.type==='owed').reduce((a,c)=>a+num(c.amount),0);const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};set('ov-rev',fmt(tQ));set('ov-profit',fmt(tP));set('ov-orders',active);set('ov-custs',db.customers.length);set('ov-credits',db.credits.filter(c=>c.type==='credit').length);set('ov-pending',fmt(pendingTotal));set('ov-doas',fmt(tD));const ce=document.getElementById('ov-completed');if(ce)ce.textContent=completed;const todayKey=today();set('ov-today-profit',fmt(db.orders.filter(o=>parseOrderDateToKey(o.date||o.created)===todayKey).reduce((a,o)=>a+num(o.profit),0)));const chartOrders=db.orders.slice(-4),maxP=Math.max(...chartOrders.map(o=>Math.abs(num(o.profit))),1),chart=document.getElementById('ov-chart');if(chart)chart.innerHTML=chartOrders.length?chartOrders.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${num(o.profit)>=0?'var(--reef)':'var(--red)'}">${fmt(Math.round(num(o.profit)))}</div><div class="bar-fill ${num(o.profit)<0?'neg':''}" style="height:${Math.round((Math.abs(num(o.profit))/maxP)*75)}px"></div><div class="bar-lbl">#${escHtml(o.num)}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';const rec=[...db.orders].reverse().slice(0,5),re=document.getElementById('ov-recent');if(re)re.innerHTML=rec.length?rec.map(o=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${escHtml(o.num)}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).map(escHtml).join(', ')}</span><span class="font-bold ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</span></div>`).join(''):'<div class="empty"><div class="ei">📦</div><p>No orders</p></div>';const sp={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+num(cl.quoted);}));const top=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6),tc=document.getElementById('ov-topcusts');if(tc)tc.innerHTML=top.length?top.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="text-sm" style="flex:1">${escHtml(n)}</span><span class="font-bold">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">👥</div><p>No data</p></div>';const cr=db.credits.slice(-5),cs=document.getElementById('ov-credsummary');if(cs)cs.innerHTML=cr.length?cr.map(c=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><span class="text-sm" style="flex:1">${escHtml(c.customer)}</span><span class="badge ${c.type==='credit'?'b-amber':'b-red'}">${c.type==='credit'?'Credit':'Owes'}</span><span class="font-bold">${fmt(c.amount)}</span></div>`).join(''):'<div class="empty"><div class="ei">💳</div><p>No credits</p></div>';const by={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{const bal=getCustomerBalance(cl);if(bal>0.01)by[cl.name]=(by[cl.name]||0)+bal;}));db.credits.filter(c=>c.type==='owed').forEach(c=>by[c.customer]=(by[c.customer]||0)+num(c.amount));const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]),pe=document.getElementById('ov-pending-breakdown');if(pe)pe.innerHTML=rows.length?rows.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="font-bold" style="flex:1">${escHtml(n)}</span><span class="badge b-red">TO BE PAID</span><span class="font-bold text-red">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">✅</div><p>No pending payments</p></div>';updateOrderTabCounts();
+}
+
+
+
+/* ===== TRACK BUTTON PATCH: view/edit/order list only ===== */
+function getTrackingValue(cl){
+  return String((cl&&(
+    cl.trackingUrl || cl.tracking_url || cl.trackingNumber || cl.tracking_number || cl.tracking || cl.trackingRef || cl.tracking_ref
+  )) || '').trim();
+}
+function isTrackingUrl(v){return /^https?:\/\//i.test(String(v||'').trim());}
+function openTrackingUrl(v){
+  const url=String(v||'').trim();
+  if(!isTrackingUrl(url)){toast('No valid tracking URL found for this order',false);return;}
+  window.open(url,'_blank','noopener,noreferrer');
+}
+function openTrackingForOrderCustomer(orderId,idx){
+  const o=db.orders.find(x=>x.id===orderId); if(!o)return;
+  const cl=(o.custLines||[])[idx]; if(!cl)return;
+  openTrackingUrl(getTrackingValue(cl));
+}
+function openTrackingForCurrentCustomer(idx){
+  const cl=(curCustLines||[])[idx]; if(!cl)return;
+  openTrackingUrl(getTrackingValue(cl));
+}
+function trackingDisplayHtml(cl,mode,orderId,idx){
+  const t=getTrackingValue(cl); if(!t)return '';
+  if(isTrackingUrl(t)){
+    if(mode==='order')return `<button class="btn btn-sec btn-xs" onclick="openTrackingForOrderCustomer('${orderId}',${idx})">Track</button>`;
+    if(mode==='current')return `<button class="btn btn-sec btn-xs" onclick="openTrackingForCurrentCustomer(${idx})">Track</button>`;
+    return `<button class="btn btn-sec btn-xs" onclick="openTrackingUrl('${escAttr(t)}')">Track</button>`;
+  }
+  return `<span class="badge b-grey">📦 ${escHtml(t)}</span>`;
+}
+
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap'),empty=document.getElementById('cust-lines-empty'); if(!wrap||!empty)return;
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove()); if(!curCustLines.length){empty.style.display='block';return;} empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual),trackingHtml=trackingDisplayHtml(cl,'current',null,i);const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name)}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${escHtml(cl.location)}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${getPaidAmount(cl)>0?`<span class="badge b-blue">Paid ${fmt(getPaidAmount(cl))}</span>`:''}${getCustomerBalance(cl)>0.01?`<span class="badge b-red">Balance ${fmt(getCustomerBalance(cl))}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}`;
+    wrap.appendChild(div);});
+}
+
+function renderOrders(filter=''){
+  ensureOrderTableHeader();updateOrderTabCounts();const q=(filter||'').toLowerCase();let rows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));rows=rows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));const tbody=document.getElementById('orders-body');if(!tbody)return;if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}tbody.innerHTML=[...rows].reverse().map(o=>{const pClass=num(o.profit)>=0?'text-green':'text-red',margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—',owed=getOrderPendingBalance(o);const custLines=o.custLines||[];const customerCell=custLines.length===1?`<div class="flex items-c gap-8"><span title="${escAttr(custLines[0].name)}${custLines[0].delivery?' — '+dlLabel(custLines[0].delivery):''}" class="cust-init ${dlClass(custLines[0].delivery)}" style="width:24px;height:24px;font-size:9px;border-width:1.5px">${inits(custLines[0].name||'')}</span><span class="font-bold text-sm">${escHtml(custLines[0].name||'—')}</span></div>`:custLines.map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('')+(custLines.length?`<span class="text-xs text-muted" style="margin-left:10px">${custLines.length}</span>`:'');const complete=isOrderComplete(o),status=complete?'<span class="badge b-green">Completed</span>':(owed>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>'),toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;const trackBtn=(custLines.length===1&&isTrackingUrl(getTrackingValue(custLines[0])))?trackingDisplayHtml(custLines[0],'order',o.id,0):'';return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${trackBtn}${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;}).join('');
+}
+
+function viewOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  document.getElementById('od-title').textContent=`Order #${o.num} — ${(o.suppliers||[]).join(', ')}`;
+  document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${escHtml(o.date||'—')}</div></div><div><div class="ostat-lbl">Quoted</div><div class="ostat-val text-green">${fmt(num(o.totalQuoted))}</div></div><div><div class="ostat-lbl">Actual Cost</div><div class="ostat-val text-amber">${fmt(num(o.totalActual))}</div></div><div><div class="ostat-lbl">Profit</div><div class="ostat-val ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</div></div><div><div class="ostat-lbl">Shipping</div><div class="ostat-val">${fmt(num(o.shipping||0))}</div></div>${num(o.doaTotal)?`<div><div class="ostat-lbl">DOAs</div><div class="ostat-val text-red">${fmt(num(o.doaTotal))}</div></div>`:''}`;
+  let html=(o.custLines||[]).map((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual);const trackingHtml=trackingDisplayHtml(cl,'order',o.id,i);return`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name||'')}${cl.location?` <span class="text-xs text-muted">(${escHtml(cl.location)})</span>`:''}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap"><span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div></div>${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'—')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}</div>`;}).join('');
+  if((o.saLines||[]).length)html+=`<div style="padding:10px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;margin-bottom:12px"><div class="font-bold mb-8">🐠 Straits Aquatics Stock</div><table class="itbl"><thead><tr><th>Item</th><th>Cost</th><th>Sell</th><th>Supplier</th></tr></thead><tbody>${o.saLines.map(s=>`<tr><td>${escHtml(s.name||'')}</td><td>${fmt(num(s.cost))}</td><td>${fmt(num(s.sell))}</td><td>${escHtml(s.supplier||'—')}</td></tr>`).join('')}</tbody></table></div>`;
+  if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${escHtml(o.notes)}</p>`;
+  document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No items.</p>';
+  document.getElementById('od-del-btn').onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+  openModal('modal-order-detail');
+}
+/* ===== END TRACK BUTTON PATCH ===== */
+
+</script>
+</body>
+</html>
