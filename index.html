@@ -1868,23 +1868,6 @@ function updateSummary(){
 })();
 /* ===== END STRAITS AQUATICS STABLE PATCH ===== */
 
-
-
-// Start the dashboard only after the whole script and DOM have loaded.
-// This prevents loadAll() from running before render functions are available.
-async function startApp(){
-  updateClock();
-  setInterval(updateClock,1000);
-  const ok = await validateCurrentSession();
-  if(ok) loadAll();
-}
-
-if(document.readyState === 'loading'){
-  document.addEventListener('DOMContentLoaded', startApp);
-} else {
-  startApp();
-}
-
 </script>
 </body>
 </html>
