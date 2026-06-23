@@ -358,7 +358,7 @@ textarea{resize:vertical;min-height:60px}
 <!-- CREDITS -->
 <div id="page-credits" class="page">
   <div class="section-hd"><div class="section-title">Credits & Amounts Owed</div>
-    <button class="btn btn-primary" onclick="startNewCredit()">+ Record Entry</button></div>
+    <button class="btn btn-primary" onclick="openModal('modal-credit')">+ Record Entry</button></div>
   <div class="two-col">
     <div class="card"><div class="card-head"><div class="card-title">Customer Credits (held with us)</div></div>
       <div class="card-body" id="cred-positive"><div class="empty"><div class="ei">💳</div><p>None</p></div></div></div>
@@ -542,7 +542,7 @@ textarea{resize:vertical;min-height:60px}
 
 <div class="modal-ov" id="modal-credit">
   <div class="modal">
-    <div class="modal-head"><div class="modal-title" id="credit-modal-title">Record Credit / Debt</div><button class="modal-close" onclick="closeModal('modal-credit')">✕</button></div>
+    <div class="modal-head"><div class="modal-title">Record Credit / Debt</div><button class="modal-close" onclick="closeModal('modal-credit')">✕</button></div>
     <div class="modal-body">
       <div class="form-grid">
         <div class="fg"><label>Customer</label>
@@ -563,7 +563,7 @@ textarea{resize:vertical;min-height:60px}
     </div>
     <div class="modal-foot">
       <button class="btn btn-sec" onclick="closeModal('modal-credit')">Cancel</button>
-      <button class="btn btn-primary" id="credit-save-btn" onclick="saveCredit()">Save</button>
+      <button class="btn btn-primary" onclick="saveCredit()">Save</button>
     </div>
   </div>
 </div>
@@ -632,7 +632,7 @@ async function sbDelete(table, id){
 
 // ===== LOCAL CACHE =====
 let db = {orders:[], customers:[], credits:[], prices:[]};
-let curSuppliers=[], curCustLines=[], editingOrderId=null, selectedDelivery='', editingCreditId=null;
+let curSuppliers=[], curCustLines=[], editingOrderId=null, selectedDelivery='';
 
 // ===== SYNC STATUS =====
 function setSyncStatus(state, msg){
@@ -928,7 +928,7 @@ function renderOrders(filter=''){
     const pClass=o.profit>=0?'text-green':'text-red';
     const margin=o.totalQuoted?((o.profit/o.totalQuoted)*100).toFixed(0)+'%':'\u2014';
     const circles=(o.custLines||[]).map(cl=>`<span title="${cl.name}${cl.delivery?' \u2014 '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name)}</span>`).join('');
-    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'\u2014'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${o.doaTotal>0?`<span class="badge b-red">\u20ac${o.doaTotal.toFixed(0)}</span>`:'\u2014'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">\u2715</button></div></td></tr>`;
+    return`<tr><td><span class="badge b-blue">#${o.num}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${s}</span>`).join(' ')}</td><td>${o.date||'\u2014'}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(o.totalQuoted)}</td><td class="text-muted">${fmt(o.totalActual)}</td><td class="font-bold ${pClass}">${fmt(o.profit)} <span class="text-xs text-muted">(${margin})</span></td><td>${o.doaTotal>0?`<span class="badge b-red">\u20ac${o.doaTotal.toFixed(0)}</span>`:'\u2014'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">\u2715</button></div></td></tr>`;
   }).join('');
 }
 function filterOrders(v){renderOrders(v);}
@@ -992,70 +992,27 @@ async function delCust(id){
 }
 
 // ===== CREDITS =====
-function startNewCredit(){
-  editingCreditId=null;
-  const title=document.getElementById('credit-modal-title'); if(title) title.textContent='Record Credit / Debt';
-  const btn=document.getElementById('credit-save-btn'); if(btn) btn.textContent='Save';
-  ['cr-cust','cr-amount','cr-order','cr-reason'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
-  const type=document.getElementById('cr-type'); if(type) type.value='credit';
-  const date=document.getElementById('cr-date'); if(date) date.value=today();
-  openModal('modal-credit');
-}
-function editCredit(id){
-  const c=db.credits.find(x=>x.id===id); if(!c){toast('Credit entry not found',false);return;}
-  editingCreditId=id;
-  const title=document.getElementById('credit-modal-title'); if(title) title.textContent='Edit Credit / Debt';
-  const btn=document.getElementById('credit-save-btn'); if(btn) btn.textContent='Update Entry';
-  document.getElementById('cr-cust').value=c.customer||'';
-  document.getElementById('cr-type').value=c.type||'credit';
-  document.getElementById('cr-amount').value=(parseFloat(c.amount)||0).toFixed(2);
-  document.getElementById('cr-order').value=c.order||c.order_num||'';
-  document.getElementById('cr-reason').value=c.reason||'';
-  document.getElementById('cr-date').value=c.date||today();
-  openModal('modal-credit');
-}
 async function saveCredit(){
   const cust=document.getElementById('cr-cust').value.trim();
   const amt=parseFloat(document.getElementById('cr-amount').value)||0;
   if(!cust||!amt){toast('Fill in customer and amount',false);return;}
-  const nc={
-    customer:cust,
-    type:document.getElementById('cr-type').value,
-    amount:amt,
-    reason:document.getElementById('cr-reason').value,
-    order_num:document.getElementById('cr-order').value,
-    date:document.getElementById('cr-date').value||today()
-  };
-  try{
-    if(editingCreditId){
-      await sbUpdate('credits',editingCreditId,nc);
-      db.credits=db.credits.map(c=>c.id===editingCreditId?{...c,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,order_num:nc.order_num,date:nc.date}:c);
-      toast('Credit updated ✓');
-    }else{
-      nc.id=uid();
-      await sbInsert('credits',nc);
-      db.credits.push({id:nc.id,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,order_num:nc.order_num,date:nc.date});
-      toast('Saved ✓');
-    }
-    editingCreditId=null;
-    closeModal('modal-credit');
-    renderCredits();renderCustomers();renderOverview();
-  }
-  catch(e){console.error(e);toast(editingCreditId?'Update failed':'Save failed',false);}
+  const nc={id:uid(),customer:cust,type:document.getElementById('cr-type').value,amount:amt,reason:document.getElementById('cr-reason').value,order_num:document.getElementById('cr-order').value,date:document.getElementById('cr-date').value};
+  try{await sbInsert('credits',nc);db.credits.push({id:nc.id,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,date:nc.date});closeModal('modal-credit');renderCredits();renderOverview();toast('Saved \u2713');}
+  catch(e){toast('Save failed',false);}
 }
 function renderCredits(){
   const grp=(arr)=>{const g={};arr.forEach(c=>{g[c.customer]=(g[c.customer]||0)+c.amount;});return g;};
   const pos=grp(db.credits.filter(c=>c.type==='credit'));const neg=grp(db.credits.filter(c=>c.type==='owed'));
-  const html=(obj,cls)=>Object.keys(obj).length?Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([n,a])=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="font-bold" style="flex:1">${n}</span><span class="${cls}">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">💳</div><p>None</p></div>';
+  const html=(obj,cls)=>Object.keys(obj).length?Object.entries(obj).sort((a,b)=>b[1]-a[1]).map(([n,a])=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="font-bold" style="flex:1">${n}</span><span class="${cls}">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">\ud83d\udcb3</div><p>None</p></div>';
   document.getElementById('cred-positive').innerHTML=html(pos,'text-amber font-bold');
   document.getElementById('cred-negative').innerHTML=html(neg,'text-blue font-bold');
   const tbody=document.getElementById('credits-body');
-  if(!db.credits.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">💳</div><p>No entries</p></div></td></tr>';return;}
-  tbody.innerHTML=[...db.credits].reverse().map(c=>`<tr><td class="font-bold">${c.customer}</td><td><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes us'}</span></td><td class="font-bold">${fmt(c.amount)}</td><td>${c.reason||'—'}</td><td>${c.date||'—'}</td><td>${(c.order||c.order_num)?`#${c.order||c.order_num}`:'—'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="editCredit('${c.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="delCredit('${c.id}')">✕</button></div></td></tr>`).join('');
+  if(!db.credits.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">\ud83d\udcb3</div><p>No entries</p></div></td></tr>';return;}
+  tbody.innerHTML=[...db.credits].reverse().map(c=>`<tr><td class="font-bold">${c.customer}</td><td><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes us'}</span></td><td class="font-bold">${fmt(c.amount)}</td><td>${c.reason||'\u2014'}</td><td>${c.date||'\u2014'}</td><td>${c.order?`#${c.order}`:'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCredit('${c.id}')">\u2715</button></td></tr>`).join('');
 }
 async function delCredit(id){
   if(!confirm('Delete?'))return;
-  try{await sbDelete('credits',id);db.credits=db.credits.filter(c=>c.id!==id);renderCredits();renderCustomers();renderOverview();}
+  try{await sbDelete('credits',id);db.credits=db.credits.filter(c=>c.id!==id);renderCredits();}
   catch(e){toast('Delete failed',false);}
 }
 
@@ -2006,11 +1963,69 @@ function updateSummary(){
 }
 function ensureOrderTableHeader(){const head=document.querySelector('#page-orders table thead tr');if(head&&!head.dataset.owedPatch){head.innerHTML='<th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Quoted</th><th>Actual</th><th>Profit</th><th>Owed</th><th>Status</th><th>Actions</th>';head.dataset.owedPatch='1';}}
 function renderOrders(filter=''){
-  ensureOrderTableHeader();updateOrderTabCounts();const q=(filter||'').toLowerCase();let rows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));rows=rows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));const tbody=document.getElementById('orders-body');if(!tbody)return;if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}tbody.innerHTML=[...rows].reverse().map(o=>{const pClass=num(o.profit)>=0?'text-green':'text-red',margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—',owed=getOrderPendingBalance(o);const custLines=o.custLines||[];const customerCell=custLines.length===1?`<div class="flex items-c gap-8"><span title="${escAttr(custLines[0].name)}${custLines[0].delivery?' — '+dlLabel(custLines[0].delivery):''}" class="cust-init ${dlClass(custLines[0].delivery)}" style="width:24px;height:24px;font-size:9px;border-width:1.5px">${inits(custLines[0].name||'')}</span><span class="font-bold text-sm">${escHtml(custLines[0].name||'—')}</span></div>`:custLines.map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('');const complete=isOrderComplete(o),status=complete?'<span class="badge b-green">Completed</span>':(owed>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>'),toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;}).join('');
+  ensureOrderTableHeader();updateOrderTabCounts();const q=(filter||'').toLowerCase();let rows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));rows=rows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));const tbody=document.getElementById('orders-body');if(!tbody)return;if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}tbody.innerHTML=[...rows].reverse().map(o=>{const pClass=num(o.profit)>=0?'text-green':'text-red',margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—',owed=getOrderPendingBalance(o);const circles=(o.custLines||[]).map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('');const complete=isOrderComplete(o),status=complete?'<span class="badge b-green">Completed</span>':(owed>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>'),toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${circles}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;}).join('');
 }
 function renderOverview(){
   const tQ=db.orders.reduce((a,o)=>a+num(o.totalQuoted),0),tP=db.orders.reduce((a,o)=>a+num(o.profit),0),tD=db.orders.reduce((a,o)=>a+num(o.doaTotal),0),completed=db.orders.filter(o=>isOrderComplete(o)).length,active=db.orders.length-completed,pendingTotal=db.orders.reduce((a,o)=>a+getOrderPendingBalance(o),0)+db.credits.filter(c=>c.type==='owed').reduce((a,c)=>a+num(c.amount),0);const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};set('ov-rev',fmt(tQ));set('ov-profit',fmt(tP));set('ov-orders',active);set('ov-custs',db.customers.length);set('ov-credits',db.credits.filter(c=>c.type==='credit').length);set('ov-pending',fmt(pendingTotal));set('ov-doas',fmt(tD));const ce=document.getElementById('ov-completed');if(ce)ce.textContent=completed;const todayKey=today();set('ov-today-profit',fmt(db.orders.filter(o=>parseOrderDateToKey(o.date||o.created)===todayKey).reduce((a,o)=>a+num(o.profit),0)));const chartOrders=db.orders.slice(-4),maxP=Math.max(...chartOrders.map(o=>Math.abs(num(o.profit))),1),chart=document.getElementById('ov-chart');if(chart)chart.innerHTML=chartOrders.length?chartOrders.map(o=>`<div class="bar-item"><div class="bar-v" style="color:${num(o.profit)>=0?'var(--reef)':'var(--red)'}">${fmt(Math.round(num(o.profit)))}</div><div class="bar-fill ${num(o.profit)<0?'neg':''}" style="height:${Math.round((Math.abs(num(o.profit))/maxP)*75)}px"></div><div class="bar-lbl">#${escHtml(o.num)}</div></div>`).join(''):'<div class="empty" style="width:100%"><p>No orders yet</p></div>';const rec=[...db.orders].reverse().slice(0,5),re=document.getElementById('ov-recent');if(re)re.innerHTML=rec.length?rec.map(o=>`<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${escHtml(o.num)}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).map(escHtml).join(', ')}</span><span class="font-bold ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</span></div>`).join(''):'<div class="empty"><div class="ei">📦</div><p>No orders</p></div>';const sp={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{sp[cl.name]=(sp[cl.name]||0)+num(cl.quoted);}));const top=Object.entries(sp).sort((a,b)=>b[1]-a[1]).slice(0,6),tc=document.getElementById('ov-topcusts');if(tc)tc.innerHTML=top.length?top.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="text-sm" style="flex:1">${escHtml(n)}</span><span class="font-bold">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">👥</div><p>No data</p></div>';const cr=db.credits.slice(-5),cs=document.getElementById('ov-credsummary');if(cs)cs.innerHTML=cr.length?cr.map(c=>`<div class="flex items-c gap-8" style="padding:5px 0;border-bottom:1px solid var(--border)"><span class="text-sm" style="flex:1">${escHtml(c.customer)}</span><span class="badge ${c.type==='credit'?'b-amber':'b-red'}">${c.type==='credit'?'Credit':'Owes'}</span><span class="font-bold">${fmt(c.amount)}</span></div>`).join(''):'<div class="empty"><div class="ei">💳</div><p>No credits</p></div>';const by={};db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{const bal=getCustomerBalance(cl);if(bal>0.01)by[cl.name]=(by[cl.name]||0)+bal;}));db.credits.filter(c=>c.type==='owed').forEach(c=>by[c.customer]=(by[c.customer]||0)+num(c.amount));const rows=Object.entries(by).sort((a,b)=>b[1]-a[1]),pe=document.getElementById('ov-pending-breakdown');if(pe)pe.innerHTML=rows.length?rows.map(([n,a])=>`<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(n)}</div><span class="font-bold" style="flex:1">${escHtml(n)}</span><span class="badge b-red">TO BE PAID</span><span class="font-bold text-red">${fmt(a)}</span></div>`).join(''):'<div class="empty"><div class="ei">✅</div><p>No pending payments</p></div>';updateOrderTabCounts();
 }
+
+
+
+/* ===== TRACK BUTTON PATCH: view/edit/order list only ===== */
+function getTrackingValue(cl){
+  return String((cl&&(
+    cl.trackingUrl || cl.tracking_url || cl.trackingNumber || cl.tracking_number || cl.tracking || cl.trackingRef || cl.tracking_ref
+  )) || '').trim();
+}
+function isTrackingUrl(v){return /^https?:\/\//i.test(String(v||'').trim());}
+function openTrackingUrl(v){
+  const url=String(v||'').trim();
+  if(!isTrackingUrl(url)){toast('No valid tracking URL found for this order',false);return;}
+  window.open(url,'_blank','noopener,noreferrer');
+}
+function openTrackingForOrderCustomer(orderId,idx){
+  const o=db.orders.find(x=>x.id===orderId); if(!o)return;
+  const cl=(o.custLines||[])[idx]; if(!cl)return;
+  openTrackingUrl(getTrackingValue(cl));
+}
+function openTrackingForCurrentCustomer(idx){
+  const cl=(curCustLines||[])[idx]; if(!cl)return;
+  openTrackingUrl(getTrackingValue(cl));
+}
+function trackingDisplayHtml(cl,mode,orderId,idx){
+  const t=getTrackingValue(cl); if(!t)return '';
+  if(isTrackingUrl(t)){
+    if(mode==='order')return `<button class="btn btn-sec btn-xs" onclick="openTrackingForOrderCustomer('${orderId}',${idx})">Track</button>`;
+    if(mode==='current')return `<button class="btn btn-sec btn-xs" onclick="openTrackingForCurrentCustomer(${idx})">Track</button>`;
+    return `<button class="btn btn-sec btn-xs" onclick="openTrackingUrl('${escAttr(t)}')">Track</button>`;
+  }
+  return `<span class="badge b-grey">📦 ${escHtml(t)}</span>`;
+}
+
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap'),empty=document.getElementById('cust-lines-empty'); if(!wrap||!empty)return;
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove()); if(!curCustLines.length){empty.style.display='block';return;} empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual),trackingHtml=trackingDisplayHtml(cl,'current',null,i);const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name)}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${escHtml(cl.location)}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${getPaidAmount(cl)>0?`<span class="badge b-blue">Paid ${fmt(getPaidAmount(cl))}</span>`:''}${getCustomerBalance(cl)>0.01?`<span class="badge b-red">Balance ${fmt(getCustomerBalance(cl))}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${cl.items&&cl.items.length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}`;
+    wrap.appendChild(div);});
+}
+
+function renderOrders(filter=''){
+  ensureOrderTableHeader();updateOrderTabCounts();const q=(filter||'').toLowerCase();let rows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));rows=rows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));const tbody=document.getElementById('orders-body');if(!tbody)return;if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';return;}tbody.innerHTML=[...rows].reverse().map(o=>{const pClass=num(o.profit)>=0?'text-green':'text-red',margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—',owed=getOrderPendingBalance(o);const custLines=o.custLines||[];const customerCell=custLines.length===1?`<div class="flex items-c gap-8"><span title="${escAttr(custLines[0].name)}${custLines[0].delivery?' — '+dlLabel(custLines[0].delivery):''}" class="cust-init ${dlClass(custLines[0].delivery)}" style="width:24px;height:24px;font-size:9px;border-width:1.5px">${inits(custLines[0].name||'')}</span><span class="font-bold text-sm">${escHtml(custLines[0].name||'—')}</span></div>`:custLines.map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('')+(custLines.length?`<span class="text-xs text-muted" style="margin-left:10px">${custLines.length}</span>`:'');const complete=isOrderComplete(o),status=complete?'<span class="badge b-green">Completed</span>':(owed>0.01?'<span class="badge b-red">Active</span>':'<span class="badge b-amber">Pending delivery</span>'),toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;const trackBtn=(custLines.length===1&&isTrackingUrl(getTrackingValue(custLines[0])))?trackingDisplayHtml(custLines[0],'order',o.id,0):'';return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${trackBtn}${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;}).join('');
+}
+
+function viewOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  document.getElementById('od-title').textContent=`Order #${o.num} — ${(o.suppliers||[]).join(', ')}`;
+  document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${escHtml(o.date||'—')}</div></div><div><div class="ostat-lbl">Quoted</div><div class="ostat-val text-green">${fmt(num(o.totalQuoted))}</div></div><div><div class="ostat-lbl">Actual Cost</div><div class="ostat-val text-amber">${fmt(num(o.totalActual))}</div></div><div><div class="ostat-lbl">Profit</div><div class="ostat-val ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</div></div><div><div class="ostat-lbl">Shipping</div><div class="ostat-val">${fmt(num(o.shipping||0))}</div></div>${num(o.doaTotal)?`<div><div class="ostat-lbl">DOAs</div><div class="ostat-val text-red">${fmt(num(o.doaTotal))}</div></div>`:''}`;
+  let html=(o.custLines||[]).map((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual);const trackingHtml=trackingDisplayHtml(cl,'order',o.id,i);return`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name||'')}${cl.location?` <span class="text-xs text-muted">(${escHtml(cl.location)})</span>`:''}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap"><span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div></div>${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${cl.items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'—')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}</div>`;}).join('');
+  if((o.saLines||[]).length)html+=`<div style="padding:10px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;margin-bottom:12px"><div class="font-bold mb-8">🐠 Straits Aquatics Stock</div><table class="itbl"><thead><tr><th>Item</th><th>Cost</th><th>Sell</th><th>Supplier</th></tr></thead><tbody>${o.saLines.map(s=>`<tr><td>${escHtml(s.name||'')}</td><td>${fmt(num(s.cost))}</td><td>${fmt(num(s.sell))}</td><td>${escHtml(s.supplier||'—')}</td></tr>`).join('')}</tbody></table></div>`;
+  if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${escHtml(o.notes)}</p>`;
+  document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No items.</p>';
+  document.getElementById('od-del-btn').onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+  openModal('modal-order-detail');
+}
+/* ===== END TRACK BUTTON PATCH ===== */
 
 </script>
 </body>
