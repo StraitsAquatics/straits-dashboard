@@ -2201,6 +2201,218 @@ function viewOrder(id){
 }
 /* ===== END CUSTOMER ITEM TOTALS PATCH ===== */
 
+
+
+/* ===== CUSTOMER CREDIT PAYMENT + TODAY PROFIT COLOUR PATCH 2026-06-24 ===== */
+function isCustomerCreditMethod(method){
+  const s=String(method||'').trim().toLowerCase();
+  return ['customer credit','store credit','use customer credit','credit'].includes(s);
+}
+function getCustomerCreditBalance(customer){
+  const name=String(customer||'').trim().toLowerCase();
+  if(!name)return 0;
+  return db.credits.filter(c=>String(c.customer||'').trim().toLowerCase()===name && c.type==='credit').reduce((a,c)=>a+num(c.amount),0);
+}
+function customerCreditReason(orderNum){
+  return `Credit applied to order #${orderNum||document.getElementById('o-num')?.value||''}`.trim();
+}
+function ensureCreditInfoBox(){
+  if(document.getElementById('customer-credit-info'))return;
+  const paymentsList=document.getElementById('cl-payments-list');
+  if(!paymentsList)return;
+  const box=document.createElement('div');
+  box.id='customer-credit-info';
+  box.className='text-sm';
+  box.style.cssText='display:none;margin:6px 0 8px 0;padding:8px 10px;border-radius:6px;background:#f8fafc;border:1px solid var(--border);';
+  paymentsList.insertAdjacentElement('beforebegin', box);
+}
+function updateCustomerCreditInfo(){
+  ensureCreditInfoBox();
+  const box=document.getElementById('customer-credit-info'); if(!box)return;
+  const customer=document.getElementById('cl-name')?.value||'';
+  const hasCreditPayment=[...document.querySelectorAll('#cl-payments-list .pay-method')].some(s=>isCustomerCreditMethod(s.value));
+  if(!hasCreditPayment){box.style.display='none';return;}
+  const balance=getCustomerCreditBalance(customer);
+  const existingInThisModal=[...document.querySelectorAll('#cl-payments-list > div')].reduce((sum,row)=>{
+    const method=row.querySelector('.pay-method')?.value||'';
+    const ledgerId=row.querySelector('.pay-credit-ledger-id')?.value||'';
+    if(isCustomerCreditMethod(method) && ledgerId)return sum+num(row.querySelector('.pay-amt')?.value);
+    return sum;
+  },0);
+  const availableForEdit=balance+existingInThisModal;
+  const colour=availableForEdit>0.01?'var(--green)':'var(--red)';
+  box.style.display='block';
+  box.innerHTML=`Available customer credit for <strong>${escHtml(customer||'this customer')}</strong>: <strong style="color:${colour}">${fmt(availableForEdit)}</strong><br><span class="text-muted">Select <strong>Customer Credit</strong> as the payment method to deduct from their credit balance.</span>`;
+}
+function handlePaymentMethodChange(sel){
+  updateCustomerCreditInfo();
+  updatePaymentTotals();
+}
+
+function addPaymentRow(amount='',date='',method='',note='',meta={}){
+  const id='pay'+uid(); const wrap=document.getElementById('cl-payments-list'); if(!wrap)return;
+  if(meta===null||typeof meta!=='object')meta={};
+  const ledgerId=meta.creditLedgerId||meta.credit_ledger_id||meta.creditEntryId||meta.credit_entry_id||'';
+  const paymentId=meta.creditPaymentId||meta.credit_payment_id||meta.id||uid();
+  const methods=['','Cash','Revolut','Bank Transfer','PayPal','Card','Stripe','Customer Credit'];
+  const d=document.createElement('div'); d.id=id; d.className='flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
+  d.innerHTML=`<input type="number" step="0.01" placeholder="Amount" value="${amount!==''?num(amount):''}" style="width:100px" class="pay-amt" oninput="updatePaymentTotals();updateCustomerCreditInfo()"><input type="date" value="${escAttr(date||today())}" style="width:150px" class="pay-date"><select class="pay-method" style="width:160px" onchange="handlePaymentMethodChange(this)">${methods.map(m=>`<option ${m===method?'selected':''}>${m||'Method'}</option>`).join('')}</select><input type="text" placeholder="Note" value="${escAttr(note||'')}" style="flex:1;min-width:120px" class="pay-note"><input type="hidden" class="pay-credit-ledger-id" value="${escAttr(ledgerId)}"><input type="hidden" class="pay-credit-payment-id" value="${escAttr(paymentId)}"><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updatePaymentTotals();updateCustomerCreditInfo()">✕</button>`;
+  wrap.appendChild(d); updatePaymentTotals(); updateCustomerCreditInfo();
+}
+function collectPayments(){
+  return [...document.querySelectorAll('#cl-payments-list > div')].map(r=>{
+    const method=r.querySelector('.pay-method')?.value||'';
+    const p={amount:num(r.querySelector('.pay-amt')?.value),date:r.querySelector('.pay-date')?.value||today(),method,note:r.querySelector('.pay-note')?.value||''};
+    const ledgerId=r.querySelector('.pay-credit-ledger-id')?.value||'';
+    const paymentId=r.querySelector('.pay-credit-payment-id')?.value||'';
+    if(isCustomerCreditMethod(method)){
+      p.creditApplied=true;
+      p.creditLedgerId=ledgerId;
+      p.credit_ledger_id=ledgerId;
+      p.creditPaymentId=paymentId||uid();
+      p.credit_payment_id=p.creditPaymentId;
+    }
+    return p;
+  }).filter(p=>p.amount>0);
+}
+function updatePaymentTotals(){
+  const quoted=num(document.getElementById('cl-quoted')?.value), paid=collectPayments().reduce((a,p)=>a+p.amount,0), rem=Math.max(0,quoted-paid);
+  const pEl=document.getElementById('cl-paid-total'), rEl=document.getElementById('cl-remaining');
+  if(pEl)pEl.textContent=fmt(paid);
+  if(rEl){rEl.textContent=fmt(rem);rEl.className='font-bold '+(rem>0.01?'text-red':'text-green');}
+  updateCustomerCreditInfo();
+}
+
+async function upsertCreditLedgerEntry(payment,line,orderNum){
+  const amount=-Math.abs(num(payment.amount));
+  const reason=payment.note&&payment.note.trim()?`Customer credit used - ${payment.note.trim()}`:customerCreditReason(orderNum);
+  const payload={customer:line.name,type:'credit',amount,reason,order_num:String(orderNum||''),date:payment.date||today()};
+  if(payment.creditLedgerId){
+    try{
+      await sbUpdate('credits', payment.creditLedgerId, payload);
+      const idx=db.credits.findIndex(c=>c.id===payment.creditLedgerId);
+      if(idx>-1)Object.assign(db.credits[idx],{id:payment.creditLedgerId,customer:payload.customer,type:'credit',amount:payload.amount,reason:payload.reason,order:payload.order_num,date:payload.date});
+      else db.credits.push({id:payment.creditLedgerId,customer:payload.customer,type:'credit',amount:payload.amount,reason:payload.reason,order:payload.order_num,date:payload.date});
+      return payment.creditLedgerId;
+    }catch(e){
+      console.warn('Existing credit ledger update failed; creating a new ledger entry instead',e);
+    }
+  }
+  const id=uid();
+  await sbInsert('credits',{id,...payload});
+  db.credits.push({id,customer:payload.customer,type:'credit',amount:payload.amount,reason:payload.reason,order:payload.order_num,date:payload.date});
+  return id;
+}
+async function removeCreditLedgerEntry(id){
+  if(!id)return;
+  try{await sbDelete('credits',id);}catch(e){console.warn('Could not remove old credit ledger entry',id,e);}
+  db.credits=db.credits.filter(c=>c.id!==id);
+}
+async function syncCreditPaymentsForLine(line,oldLine,orderNum){
+  const oldCreditPayments=(oldLine?.payments||[]).filter(p=>isCustomerCreditMethod(p.method)&&num(p.amount)>0);
+  const oldCreditIds=new Set(oldCreditPayments.map(p=>p.creditLedgerId||p.credit_ledger_id||p.creditEntryId||p.credit_entry_id).filter(Boolean));
+  const oldCreditAmount=oldCreditPayments.reduce((s,p)=>s+num(p.amount),0);
+  const newCreditPayments=(line.payments||[]).filter(p=>isCustomerCreditMethod(p.method)&&num(p.amount)>0);
+  const desiredCreditAmount=newCreditPayments.reduce((s,p)=>s+num(p.amount),0);
+  const available=getCustomerCreditBalance(line.name)+oldCreditAmount;
+  if(desiredCreditAmount>available+0.01){
+    throw new Error(`${line.name} only has ${fmt(available)} available credit. You tried to apply ${fmt(desiredCreditAmount)}.`);
+  }
+  for(const p of newCreditPayments){
+    p.creditApplied=true;
+    p.creditPaymentId=p.creditPaymentId||p.credit_payment_id||uid();
+    p.credit_payment_id=p.creditPaymentId;
+    const existingId=p.creditLedgerId||p.credit_ledger_id||p.creditEntryId||p.credit_entry_id||'';
+    if(existingId)oldCreditIds.delete(existingId);
+    p.creditLedgerId=existingId;
+    const ledgerId=await upsertCreditLedgerEntry(p,line,orderNum);
+    p.creditLedgerId=ledgerId;
+    p.credit_ledger_id=ledgerId;
+  }
+  for(const id of oldCreditIds)await removeCreditLedgerEntry(id);
+}
+async function syncCreditPaymentsForOrderLines(lines,oldLines,orderNum){
+  const oldById={};(oldLines||[]).forEach(cl=>{if(cl.id)oldById[cl.id]=cl;});
+  for(const line of lines){await syncCreditPaymentsForLine(line,oldById[line.id],orderNum);}
+}
+
+function editCustLine(i){
+  const cl=curCustLines[i];
+  if(!cl){toast('Could not find this customer line to edit',false);return;}
+  resetCustLineModal();
+  editingCustLineIndex=i;
+  const title=document.querySelector('#modal-cust-line .modal-title'); if(title)title.textContent='Edit Customer Order';
+  const btn=document.querySelector('#modal-cust-line .modal-foot .btn-primary'); if(btn)btn.textContent='Update Customer';
+  const delivery=normaliseDelivery(cl.delivery);
+  const setVal=(id,val)=>{const el=document.getElementById(id); if(el)el.value=val??'';};
+  setVal('cl-name',cl.name||''); setVal('cl-loc',cl.location||''); setVal('cl-delivery',delivery);
+  const absorbed=num(cl.actualShippingCost);
+  const baseActual=(cl.actualBase!==undefined)?num(cl.actualBase):(cl.freeShipping?Math.max(0,num(cl.actual)-absorbed):num(cl.actual));
+  setVal('cl-quoted',num(cl.quoted).toFixed(2)); setVal('cl-actual',baseActual.toFixed(2)); setVal('cl-payby',cl.payBy||''); setVal('cl-paymethod',cl.payMethod||'');
+  const free=document.getElementById('cl-free-ship'); if(free)free.checked=!!cl.freeShipping; setVal('cl-ship-actual',cl.actualShippingCost||'');
+  document.querySelectorAll('#dl-selector .dl-opt').forEach(o=>o.classList.remove('sel'));
+  const cls=delivery==='local'?'dl-local':delivery==='post'?'dl-post':delivery==='drop'?'dl-drop':''; if(cls){const opt=document.querySelector(`#dl-selector .dl-opt.${cls}`); if(opt)opt.classList.add('sel');}
+  ensureTrackingField(); const tr=document.getElementById('cl-tracking'); if(tr)tr.value=cl.trackingNumber||cl.tracking_number||''; updateTrackingVisibility();
+  (cl.items||[]).forEach(it=>addItemRow(it.name||'',it.quoted||0,it.actual||0,it.status||'PAID',!!it.doa,!!it.delivered,!!it.doaResolved));
+  (cl.payments||[]).forEach(p=>addPaymentRow(p.amount||0,p.date||today(),p.method||'',p.note||'',p));
+  toggleFreeShipping(); calcCustLine(); updatePaymentTotals(); updateCustomerCreditInfo(); openModal('modal-cust-line');
+}
+
+async function saveCustLine(){
+  const name=document.getElementById('cl-name').value.trim(); if(!name){toast('Enter customer name',false);return;}
+  const oldLine=(editingCustLineIndex!==null&&curCustLines[editingCustLineIndex])?JSON.parse(JSON.stringify(curCustLines[editingCustLineIndex])):null;
+  const payments=collectPayments(), items=[]; let doaTotal=0;
+  document.querySelectorAll('#cl-items-list > div').forEach(row=>{const isDOA=!!row.querySelector('.ir-doa')?.checked;const actual=num(row.querySelector('.ir-a')?.value);if(isDOA)doaTotal+=actual;items.push({name:row.querySelector('.ir-name')?.value||'',quoted:num(row.querySelector('.ir-q')?.value),actual,status:row.querySelector('.ir-s')?.value||'PAID',doa:isDOA,delivered:!!row.querySelector('.ir-delivered')?.checked,doaResolved:row.querySelector('.ir-doa-resolved')?.value==='1'});});
+  const quoted=num(document.getElementById('cl-quoted')?.value),baseActual=num(document.getElementById('cl-actual')?.value),free=!!document.getElementById('cl-free-ship')?.checked,shipCost=free?num(document.getElementById('cl-ship-actual')?.value):0,actualTotal=baseActual+shipCost;
+  const delivery=normaliseDelivery(document.getElementById('cl-delivery')?.value||''), tracking=(delivery==='post'||delivery==='drop')?(document.getElementById('cl-tracking')?.value.trim()||''):'';
+  const paid=payments.reduce((s,p)=>s+p.amount,0);
+  const line={id:(editingCustLineIndex!==null&&curCustLines[editingCustLineIndex]?.id)?curCustLines[editingCustLineIndex].id:uid(),name,location:document.getElementById('cl-loc')?.value||'',delivery,status:Math.max(0,quoted-paid)<=0.01?'PAID':'TO BE PAID',quoted,actual:actualTotal,actualBase:baseActual,items,doaTotal,payments,payBy:document.getElementById('cl-payby')?.value||'',payMethod:document.getElementById('cl-paymethod')?.value||'',freeShipping:free,actualShippingCost:shipCost,trackingNumber:tracking,tracking_number:tracking};
+  const wasEditing=editingCustLineIndex!==null;
+  try{
+    if(editingOrderId)await syncCreditPaymentsForLine(line,oldLine,document.getElementById('o-num')?.value||'');
+  }catch(e){toast(e.message||'Credit could not be applied',false);return;}
+  if(wasEditing)curCustLines[editingCustLineIndex]=line; else curCustLines.push(line);
+  if(!db.customers.find(c=>String(c.name).toLowerCase()===name.toLowerCase())){const nc={id:uid(),name,location:line.location||'',phone:'',email:'',notes:'',created:today()};db.customers.push(nc);sbInsert('customers',{id:nc.id,name:nc.name,location:nc.location,phone:'',email:'',notes:'',created:nc.created}).catch(console.error);refreshDatalist();}
+  closeModal('modal-cust-line'); editingCustLineIndex=null; resetCustLineModal(); renderCustLines(); updateSummary(); renderCredits();
+  if(editingOrderId){try{setSyncStatus('sync-busy','Saving...');await persistCurrentEditingOrderQuietly();renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');toast(wasEditing?'Customer updated ✓':'Customer added ✓');}catch(e){setSyncStatus('sync-err','✗ Error');toast('Customer updated locally, but save failed: '+e.message,false);console.error(e);}}
+  else toast(wasEditing?'Customer updated ✓':'Customer added ✓');
+}
+
+async function saveOrder(){
+  const numRef=document.getElementById('o-num').value.trim(); if(!numRef){toast('Enter order number',false);return;}
+  const old=editingOrderId?db.orders.find(o=>o.id===editingOrderId):null;
+  try{await syncCreditPaymentsForOrderLines(curCustLines,old?.custLines||[],numRef);}catch(e){toast(e.message||'Credit could not be applied',false);return;}
+  const ship=num(document.getElementById('o-shipping').value), other=num(document.getElementById('o-othercosts').value);
+  const saLines=getSALines();
+  const cq=curCustLines.reduce((a,c)=>a+num(c.quoted),0);
+  const ca=curCustLines.reduce((a,c)=>a+num(c.actual),0);
+  const totalA=ca+ship+other+saLines.reduce((a,s)=>a+num(s.cost),0);
+  const profit=cq-totalA;
+  const doaTotal=curCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+num(it.actual),0),0);
+  const totalPendingPayment=curCustLines.reduce((a,cl)=>a+getCustomerBalance(cl),0);
+  const temp={custLines:curCustLines,manualComplete:false};
+  const manual=old && old.manualComplete && isOrderComplete(temp);
+  const row={id:editingOrderId||uid(),num:numRef,order_type:document.getElementById('o-type')?.value||'weekly',date:document.getElementById('o-date').value,suppliers:curSuppliers,shipping:ship,other_costs:other,notes:document.getElementById('o-notes').value,cust_lines:curCustLines,sa_lines:saLines,total_quoted:cq,total_actual:totalA,profit,doa_total:doaTotal,total_pending:totalPendingPayment,manual_complete:manual,created:old?.created||today()};
+  setSyncStatus('sync-busy','Saving...');
+  try{
+    if(editingOrderId){await sbUpdate('orders',editingOrderId,row); const idx=db.orders.findIndex(o=>o.id===editingOrderId); if(idx>-1)db.orders[idx]={id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created}; toast('Order updated ✓');}
+    else {await sbInsert('orders',row); db.orders.push({id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:curCustLines,saLines,totalQuoted:cq,totalActual:totalA,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created}); toast('Order saved ✓');}
+    for(const cl of curCustLines){if(!db.customers.find(c=>String(c.name).toLowerCase()===String(cl.name).toLowerCase())){const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()}; await sbInsert('customers',nc); db.customers.push(nc);}}
+    setSyncStatus('sync-ok','✓ Synced'); editingOrderId=null; curCustLines=[]; curSuppliers=[]; renderCredits(); renderOverview(); nav('orders');
+  }catch(e){setSyncStatus('sync-err','✗ Error'); toast('Save failed: '+e.message,false); console.error(e);}
+}
+
+const _renderOverviewBeforeCreditPatch = renderOverview;
+renderOverview=function(){
+  _renderOverviewBeforeCreditPatch();
+  const todayKey=today();
+  const todayProfit=db.orders.filter(o=>parseOrderDateToKey(o.date||o.created)===todayKey).reduce((a,o)=>a+num(o.profit),0);
+  const el=document.getElementById('ov-today-profit');
+  if(el){el.textContent=fmt(todayProfit);el.className='metric-val '+(todayProfit<0?'mv-red':'mv-green');}
+};
+
+/* ===== END CUSTOMER CREDIT PAYMENT + TODAY PROFIT COLOUR PATCH ===== */
+
 </script>
 </body>
 </html>
