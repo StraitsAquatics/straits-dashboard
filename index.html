@@ -783,7 +783,12 @@ tr:hover td{
 <!-- PRICES -->
 <div id="page-prices" class="page">
   <div class="section-hd"><div class="section-title">Species Price List</div>
-    <button class="btn btn-primary" onclick="openModal('modal-add-price')">+ Add Species</button></div>
+    <div class="flex gap-8" style="flex-wrap:wrap">
+      <button class="btn btn-sec" onclick="exportPriceListExcel()">⬇ Export Excel</button>
+      <button class="btn btn-sec" onclick="triggerPriceImport()">⬆ Import Excel</button>
+      <input type="file" id="price-import-file" accept=".xlsx,.xls" style="display:none" onchange="importPriceListExcel(this)">
+      <button class="btn btn-primary" onclick="openModal('modal-add-price')">+ Add Species</button>
+    </div></div>
   <input type="text" id="price-search" placeholder="🔍 Search species, category..." oninput="filterPrices(this.value)"
     style="width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-size:13px;margin-bottom:12px">
   <div class="card"><div class="tbl-wrap">
@@ -1004,6 +1009,7 @@ tr:hover td{
 
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 
 // ===== SUPABASE CONFIG =====
@@ -1443,6 +1449,107 @@ async function delPrice(id){
   if(!confirm('Remove?'))return;
   try{await sbDelete('prices',id);db.prices=db.prices.filter(p=>p.id!==id);renderPrices();}
   catch(e){toast('Delete failed',false);}
+}
+
+
+// ===== PRICE LIST EXCEL IMPORT / EXPORT =====
+function priceListWorkbookReady(){
+  if(window.XLSX) return true;
+  toast('Excel tools are still loading. Try again in a few seconds.', false);
+  return false;
+}
+function exportPriceListExcel(){
+  if(!priceListWorkbookReady()) return;
+  const rows=[...db.prices].sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(p=>({
+    ID:p.id||'',
+    'Species / Item':p.name||'',
+    Category:p.cat||'',
+    'Wild (€)':p.wild?num(p.wild):'',
+    'Captive (€)':p.capt?num(p.capt):'',
+    Supplier:p.sup||'',
+    Notes:p.notes||''
+  }));
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[
+    {wch:18},{wch:42},{wch:16},{wch:12},{wch:12},{wch:24},{wch:36}
+  ];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Price List');
+  XLSX.writeFile(wb,`Straits_Aquatics_Price_List_${today()}.xlsx`);
+}
+function triggerPriceImport(){
+  const inp=document.getElementById('price-import-file');
+  if(inp) inp.click();
+}
+function priceText(v){
+  return String(v ?? '').trim();
+}
+function priceColumn(row, keys){
+  for(const k of keys){
+    if(Object.prototype.hasOwnProperty.call(row,k) && row[k]!==null && row[k]!==undefined && String(row[k]).trim()!=='') return row[k];
+  }
+  return '';
+}
+function priceMoney(v){
+  if(v===null||v===undefined||String(v).trim()==='') return 0;
+  if(typeof v==='number') return v;
+  return parseFloat(String(v).replace(/[€£$,\s]/g,''))||0;
+}
+async function importPriceListExcel(input){
+  const file=input.files && input.files[0];
+  input.value='';
+  if(!file) return;
+  if(!priceListWorkbookReady()) return;
+  if(!confirm('Import this Excel price list? Existing species with the same ID or name will be updated. New rows will be added. Rows removed from Excel will not be deleted from the database.')) return;
+  try{
+    setSyncStatus('sync-busy','⏳ Importing...');
+    const data=await file.arrayBuffer();
+    const wb=XLSX.read(data,{type:'array'});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    const raw=XLSX.utils.sheet_to_json(ws,{defval:''});
+    const rows=raw.map(r=>{
+      const name=priceText(priceColumn(r,['Species / Item','Species','Item','Name']));
+      if(!name) return null;
+      const id=priceText(priceColumn(r,['ID','Id','id']));
+      return {
+        id:id||uid(),
+        name,
+        cat:priceText(priceColumn(r,['Category','Cat'])),
+        wild:priceMoney(priceColumn(r,['Wild (€)','Wild','Wild Price','Wild Price (€)'])),
+        capt:priceMoney(priceColumn(r,['Captive (€)','Captive','Captive Price','Captive Price (€)'])),
+        sup:priceText(priceColumn(r,['Supplier','Sup'])),
+        notes:priceText(priceColumn(r,['Notes','Note']))
+      };
+    }).filter(Boolean);
+    if(!rows.length){toast('No valid species rows found',false);setSyncStatus('sync-ok','✓ Synced');return;}
+    let added=0,updated=0,failed=0;
+    for(const row of rows){
+      const existing=db.prices.find(p=>p.id===row.id)||db.prices.find(p=>(p.name||'').toLowerCase()===row.name.toLowerCase());
+      const payload={name:row.name,cat:row.cat,wild:row.wild,capt:row.capt,sup:row.sup,notes:row.notes};
+      try{
+        if(existing){
+          await sbUpdate('prices',existing.id,payload);
+          Object.assign(existing,payload);
+          updated++;
+        }else{
+          await sbInsert('prices',row);
+          db.prices.push(row);
+          added++;
+        }
+      }catch(e){
+        failed++;
+        console.error('Price import row failed:',row,e);
+      }
+    }
+    db.prices.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    renderPrices(document.getElementById('price-search')?.value||'');
+    setSyncStatus('sync-ok','✓ Synced');
+    toast(`Price list imported: ${updated} updated, ${added} added${failed?`, ${failed} failed`:''}`, failed===0);
+  }catch(e){
+    setSyncStatus('sync-err','✗ Import failed');
+    toast('Import failed: '+e.message,false);
+    console.error(e);
+  }
 }
 
 // ===== SUPPLIERS =====
