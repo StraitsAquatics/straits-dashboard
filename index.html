@@ -2162,6 +2162,45 @@ window.addEventListener('DOMContentLoaded', function(){
 
 /* ===== END ORDER MANAGER STATUS FILTER PATCH ===== */
 
+
+/* ===== CUSTOMER ITEM TOTALS PATCH 2026-06-24: display-only, no database changes ===== */
+function customerItemsTableHtml(cl, includeDeliveredColumn=true){
+  const items = cl && cl.items ? cl.items : [];
+  if(!items.length) return '';
+  const quotedTotal = num(cl.quoted);
+  const actualTotal = num(cl.actual);
+  const profit = quotedTotal - actualTotal;
+  const deliveredHead = includeDeliveredColumn ? '<th>Delivered</th>' : '';
+  const deliveredCells = includeDeliveredColumn ? `<td>${''}</td>` : '';
+  const itemRows = items.map(it=>`<tr class="${it.doa?'doa':''}"><td>${escHtml(it.name||'—')}${it.doa?' 💀':''}</td><td>${fmt(num(it.quoted))}</td><td>${fmt(num(it.actual))}</td><td>${escHtml(it.status||'')}</td>${includeDeliveredColumn?`<td>${it.delivered?'✓':'—'}</td>`:''}</tr>`).join('');
+  const footerColspan = includeDeliveredColumn ? 2 : 1;
+  const outstanding = getCustomerBalance(cl);
+  const totalRow = `<tr style="background:#f8fafc;font-weight:800;border-top:2px solid var(--border)"><td>Total</td><td>${fmt(quotedTotal)}</td><td>${fmt(actualTotal)}</td><td colspan="${footerColspan}"><span class="${profit>=0?'text-green':'text-red'}">Profit ${fmt(profit)}</span></td></tr>`;
+  const owedRow = outstanding>0.01 ? `<tr style="background:#fff5f5;font-weight:800"><td colspan="3" class="text-red">Outstanding balance / customer owes</td><td colspan="${footerColspan}"><span class="text-red">${fmt(outstanding)}</span></td></tr>` : '';
+  return `<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Actual</th><th>Status</th>${deliveredHead}</tr></thead><tbody>${itemRows}${totalRow}${owedRow}</tbody></table>`;
+}
+
+function renderCustLines(){
+  const wrap=document.getElementById('cust-lines-wrap'),empty=document.getElementById('cust-lines-empty'); if(!wrap||!empty)return;
+  wrap.querySelectorAll('.cl-card').forEach(e=>e.remove()); if(!curCustLines.length){empty.style.display='block';return;} empty.style.display='none';
+  curCustLines.forEach((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual),trackingHtml=trackingDisplayHtml(cl,'current',null,i);const div=document.createElement('div');div.className='cl-card';div.style.cssText='border-top:1px solid var(--border);padding:11px 15px';
+    div.innerHTML=`<div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name)}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap">${cl.location?`<span class="text-xs text-muted">${escHtml(cl.location)}</span>`:''}<span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${getPaidAmount(cl)>0?`<span class="badge b-blue">Paid ${fmt(getPaidAmount(cl))}</span>`:''}${getCustomerBalance(cl)>0.01?`<span class="badge b-red">Balance ${fmt(getCustomerBalance(cl))}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div><button class="btn btn-sec btn-xs" onclick="editCustLine(${i})">Edit</button><button class="btn btn-danger btn-xs" onclick="removeCustLine(${i})">✕</button></div>${customerItemsTableHtml(cl,true)}`;
+    wrap.appendChild(div);});
+}
+
+function viewOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  document.getElementById('od-title').textContent=`Order #${o.num} — ${(o.suppliers||[]).join(', ')}`;
+  document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${escHtml(o.date||'—')}</div></div><div><div class="ostat-lbl">Quoted</div><div class="ostat-val text-green">${fmt(num(o.totalQuoted))}</div></div><div><div class="ostat-lbl">Actual Cost</div><div class="ostat-val text-amber">${fmt(num(o.totalActual))}</div></div><div><div class="ostat-lbl">Profit</div><div class="ostat-val ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</div></div><div><div class="ostat-lbl">Shipping</div><div class="ostat-val">${fmt(num(o.shipping||0))}</div></div>${num(o.doaTotal)?`<div><div class="ostat-lbl">DOAs</div><div class="ostat-val text-red">${fmt(num(o.doaTotal))}</div></div>`:''}`;
+  let html=(o.custLines||[]).map((cl,i)=>{const profit=num(cl.quoted)-num(cl.actual);const trackingHtml=trackingDisplayHtml(cl,'order',o.id,i);return`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${dlClass(cl.delivery)}">${inits(cl.name||'')}</div><div style="flex:1"><div class="font-bold">${escHtml(cl.name||'')}${cl.location?` <span class="text-xs text-muted">(${escHtml(cl.location)})</span>`:''}</div><div class="flex gap-6 items-c mt-8" style="flex-wrap:wrap"><span class="badge ${customerPayBadgeClass(cl)}">${customerPayStatusText(cl)}</span>${cl.delivery?`<span class="badge ${dlBadge(cl.delivery)}">${dlLabel(cl.delivery)}</span>`:''}${trackingHtml}</div></div><div class="text-right"><div class="font-bold">${fmt(num(cl.quoted))}</div><div class="text-xs ${profit>=0?'text-green':'text-red'}">${fmt(profit)}</div></div></div>${customerItemsTableHtml(cl,true)}</div>`;}).join('');
+  if((o.saLines||[]).length)html+=`<div style="padding:10px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;margin-bottom:12px"><div class="font-bold mb-8">🐠 Straits Aquatics Stock</div><table class="itbl"><thead><tr><th>Item</th><th>Cost</th><th>Sell</th><th>Supplier</th></tr></thead><tbody>${o.saLines.map(s=>`<tr><td>${escHtml(s.name||'')}</td><td>${fmt(num(s.cost))}</td><td>${fmt(num(s.sell))}</td><td>${escHtml(s.supplier||'—')}</td></tr>`).join('')}</tbody></table></div>`;
+  if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${escHtml(o.notes)}</p>`;
+  document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No items.</p>';
+  document.getElementById('od-del-btn').onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+  openModal('modal-order-detail');
+}
+/* ===== END CUSTOMER ITEM TOTALS PATCH ===== */
+
 </script>
 </body>
 </html>
