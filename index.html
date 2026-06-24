@@ -2413,6 +2413,91 @@ renderOverview=function(){
 
 /* ===== END CUSTOMER CREDIT PAYMENT + TODAY PROFIT COLOUR PATCH ===== */
 
+
+/* ===== CUSTOMER CREDIT RESTORE ON ORDER DELETE/CANCEL PATCH 2026-06-24 ===== */
+function creditLedgerIdsFromPayment(payment, customerName, orderNum){
+  const ids=[];
+  const explicit=[payment.creditLedgerId,payment.credit_ledger_id,payment.creditEntryId,payment.credit_entry_id].filter(Boolean);
+  explicit.forEach(id=>ids.push(String(id)));
+  if(!explicit.length){
+    const amount=Math.abs(num(payment.amount));
+    const customer=String(customerName||'').trim().toLowerCase();
+    const order=String(orderNum||'').trim();
+    const match=db.credits.find(c=>
+      String(c.customer||'').trim().toLowerCase()===customer &&
+      c.type==='credit' &&
+      Math.abs(num(c.amount)+amount)<=0.01 &&
+      String(c.order||c.order_num||'').trim()===order
+    );
+    if(match&&match.id)ids.push(String(match.id));
+  }
+  return ids;
+}
+function creditLedgerIdsFromOrder(order){
+  const ids=new Set();
+  (order?.custLines||[]).forEach(cl=>{
+    (cl.payments||[]).forEach(p=>{
+      if(isCustomerCreditMethod(p.method)||p.creditApplied||p.credit_applied){
+        creditLedgerIdsFromPayment(p,cl.name,order.num).forEach(id=>ids.add(id));
+      }
+    });
+  });
+  return [...ids];
+}
+async function removeCreditLedgerEntriesStrict(ids){
+  const unique=[...new Set((ids||[]).filter(Boolean).map(String))];
+  for(const id of unique){
+    await sbDelete('credits',id);
+    db.credits=db.credits.filter(c=>String(c.id)!==String(id));
+  }
+}
+
+async function deleteOrder(id){
+  const o=db.orders.find(x=>x.id===id);
+  if(!o){toast('Order not found',false);return;}
+  const creditLedgerIds=creditLedgerIdsFromOrder(o);
+  const msg=creditLedgerIds.length
+    ? 'Delete/cancel this order? Any Customer Credit used on this order will be returned to the customer credit balance.'
+    : 'Delete this order? This cannot be undone.';
+  if(!confirm(msg))return;
+  setSyncStatus('sync-busy','Deleting...');
+  try{
+    if(creditLedgerIds.length)await removeCreditLedgerEntriesStrict(creditLedgerIds);
+    await sbDelete('orders',id);
+    db.orders=db.orders.filter(order=>order.id!==id);
+    setSyncStatus('sync-ok','✓ Synced');
+    renderCredits();
+    renderOverview();
+    renderOrders(document.getElementById('orders-search')?.value||'');
+    toast(creditLedgerIds.length?'Order deleted and customer credit restored ✓':'Order deleted');
+  }catch(e){
+    setSyncStatus('sync-err','✗ Error');
+    toast('Delete failed: '+(e.message||e),false);
+    console.error(e);
+  }
+}
+
+async function syncCreditPaymentsForOrderLines(lines,oldLines,orderNum){
+  const oldById={};
+  (oldLines||[]).forEach(cl=>{if(cl.id)oldById[cl.id]=cl;});
+  const currentIds=new Set((lines||[]).map(cl=>cl.id).filter(Boolean));
+  for(const line of (lines||[])){
+    await syncCreditPaymentsForLine(line,oldById[line.id],orderNum);
+  }
+  const removedLedgerIds=[];
+  (oldLines||[]).forEach(oldLine=>{
+    if(oldLine.id && !currentIds.has(oldLine.id)){
+      (oldLine.payments||[]).forEach(p=>{
+        if(isCustomerCreditMethod(p.method)||p.creditApplied||p.credit_applied){
+          creditLedgerIdsFromPayment(p,oldLine.name,orderNum).forEach(id=>removedLedgerIds.push(id));
+        }
+      });
+    }
+  });
+  if(removedLedgerIds.length)await removeCreditLedgerEntriesStrict(removedLedgerIds);
+}
+/* ===== END CUSTOMER CREDIT RESTORE ON ORDER DELETE/CANCEL PATCH ===== */
+
 </script>
 </body>
 </html>
