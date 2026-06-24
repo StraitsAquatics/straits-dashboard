@@ -258,6 +258,14 @@ textarea{resize:vertical;min-height:60px}
       📋 All Orders <span id="tab-count-all" class="badge b-grey" style="margin-left:5px">0</span>
     </button>
   </div>
+  <div id="order-status-filter-row" class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3)">Order status:</span>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="all" onclick="setOrderStatusFilter('all')">All Active <span id="sf-count-all" class="badge b-grey" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="paid_delivery" onclick="setOrderStatusFilter('paid_delivery')">Paid / Awaiting Delivery <span id="sf-count-paid_delivery" class="badge b-amber" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="delivered_unpaid" onclick="setOrderStatusFilter('delivered_unpaid')">Delivered / Awaiting Payment <span id="sf-count-delivered_unpaid" class="badge b-blue" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="payment_delivery" onclick="setOrderStatusFilter('payment_delivery')">Payment + Delivery Pending <span id="sf-count-payment_delivery" class="badge b-red" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="mixed" onclick="setOrderStatusFilter('mixed')">Mixed / Partial <span id="sf-count-mixed" class="badge b-grey" style="margin-left:5px">0</span></button>
+  </div>
   <div class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
     <span style="font-size:11px;color:var(--text3)">Customer colour:</span>
     <span class="badge dl-local">🟢 Local Pick-up</span>
@@ -2026,6 +2034,133 @@ function viewOrder(id){
   openModal('modal-order-detail');
 }
 /* ===== END TRACK BUTTON PATCH ===== */
+
+
+
+/* ===== ORDER MANAGER STATUS FILTER PATCH 2026-06-24: display-only, no database changes ===== */
+let currentOrderStatusFilter = 'all';
+
+function isCustomerDeliveredForStatus(cl){
+  const items = (cl && cl.items) ? cl.items : [];
+  // Keep the same delivery assumption used by the stable completion logic: no item rows = nothing pending delivery.
+  if(!items.length) return true;
+  return items.every(it => it.delivered === true || (it.doa && it.doaResolved));
+}
+function getCustomerLifecycle(cl){
+  const paid = isCustomerFullyPaid(cl);
+  const delivered = isCustomerDeliveredForStatus(cl);
+  if(paid && delivered) return 'completed';
+  if(paid && !delivered) return 'paid_delivery';
+  if(!paid && delivered) return 'delivered_unpaid';
+  return 'payment_delivery';
+}
+function getOrderLifecycle(o){
+  if(isOrderComplete(o)) return 'completed';
+  const cls = o.custLines || [];
+  if(!cls.length) return 'payment_delivery';
+  const states = cls.map(getCustomerLifecycle);
+  const unique = [...new Set(states)];
+  if(unique.length === 1) return unique[0];
+  return 'mixed';
+}
+function lifecycleLabel(state){
+  return ({
+    all:'All Active',
+    paid_delivery:'Paid - Awaiting Delivery',
+    delivered_unpaid:'Delivered - Awaiting Payment',
+    payment_delivery:'Payment + Delivery Pending',
+    mixed:'Mixed / Partial',
+    completed:'Completed'
+  })[state] || 'Active';
+}
+function lifecycleBadge(state){
+  if(state === 'completed') return '<span class="badge b-green">Completed</span>';
+  if(state === 'paid_delivery') return '<span class="badge b-amber">Paid - Awaiting Delivery</span>';
+  if(state === 'delivered_unpaid') return '<span class="badge b-blue">Delivered - Awaiting Payment</span>';
+  if(state === 'payment_delivery') return '<span class="badge b-red">Payment + Delivery Pending</span>';
+  if(state === 'mixed') return '<span class="badge b-grey">Mixed / Partial</span>';
+  return '<span class="badge b-red">Active</span>';
+}
+function ensureOrderStatusFilters(){
+  if(document.getElementById('order-status-filter-row')) return;
+  const colourRow = document.querySelector('#page-orders .flex.gap-8.items-c.mb-12');
+  if(!colourRow) return;
+  const row = document.createElement('div');
+  row.id = 'order-status-filter-row';
+  row.className = 'flex gap-8 items-c mb-12';
+  row.style.flexWrap = 'wrap';
+  row.innerHTML = `
+    <span style="font-size:11px;color:var(--text3)">Order status:</span>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="all" onclick="setOrderStatusFilter('all')">All Active <span id="sf-count-all" class="badge b-grey" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="paid_delivery" onclick="setOrderStatusFilter('paid_delivery')">Paid / Awaiting Delivery <span id="sf-count-paid_delivery" class="badge b-amber" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="delivered_unpaid" onclick="setOrderStatusFilter('delivered_unpaid')">Delivered / Awaiting Payment <span id="sf-count-delivered_unpaid" class="badge b-blue" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="payment_delivery" onclick="setOrderStatusFilter('payment_delivery')">Payment + Delivery Pending <span id="sf-count-payment_delivery" class="badge b-red" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="mixed" onclick="setOrderStatusFilter('mixed')">Mixed / Partial <span id="sf-count-mixed" class="badge b-grey" style="margin-left:5px">0</span></button>
+  `;
+  colourRow.parentNode.insertBefore(row, colourRow);
+}
+function setOrderStatusFilter(status){
+  currentOrderStatusFilter = status || 'all';
+  renderOrders(document.getElementById('orders-search')?.value || '');
+}
+function updateOrderStatusFilterUI(counts){
+  ensureOrderStatusFilters();
+  ['all','paid_delivery','delivered_unpaid','payment_delivery','mixed'].forEach(k=>{
+    const c = document.getElementById('sf-count-'+k);
+    if(c) c.textContent = counts && counts[k] !== undefined ? counts[k] : 0;
+  });
+  document.querySelectorAll('.order-status-btn').forEach(btn=>{
+    const active = btn.dataset.status === currentOrderStatusFilter;
+    btn.style.background = active ? 'var(--ocean)' : 'var(--white)';
+    btn.style.color = active ? '#fff' : 'var(--text2)';
+    btn.style.borderColor = active ? 'var(--ocean)' : 'var(--border2)';
+  });
+}
+function setOrderTab(tab,btn){
+  currentOrderTab = tab;
+  currentOrderStatusFilter = 'all';
+  document.querySelectorAll('.order-tab').forEach(b=>{b.style.color='var(--text3)';b.style.borderBottomColor='transparent';});
+  const target = btn || document.getElementById('tab-'+tab);
+  if(target){target.style.color='var(--reef)';target.style.borderBottomColor='var(--reef)';}
+  renderOrders(document.getElementById('orders-search')?.value||'');
+}
+function renderOrders(filter=''){
+  ensureOrderTableHeader();
+  ensureOrderStatusFilters();
+  updateOrderTabCounts();
+  const q=(filter||'').toLowerCase();
+  let baseRows=db.orders.filter(o=>!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));
+  baseRows=baseRows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));
+  const counts={all:baseRows.length,paid_delivery:0,delivered_unpaid:0,payment_delivery:0,mixed:0};
+  baseRows.forEach(o=>{const st=getOrderLifecycle(o); if(counts[st]!==undefined)counts[st]++;});
+  updateOrderStatusFilterUI(counts);
+  let rows = currentOrderStatusFilter==='all' ? baseRows : baseRows.filter(o=>getOrderLifecycle(o)===currentOrderStatusFilter);
+  const tbody=document.getElementById('orders-body');
+  if(!tbody)return;
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found for this filter</p></div></td></tr>';return;}
+  tbody.innerHTML=[...rows].reverse().map(o=>{
+    const pClass=num(o.profit)>=0?'text-green':'text-red';
+    const margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—';
+    const owed=getOrderPendingBalance(o);
+    const custLines=o.custLines||[];
+    const customerCell=custLines.length===1?`<div class="flex items-c gap-8"><span title="${escAttr(custLines[0].name)}${custLines[0].delivery?' — '+dlLabel(custLines[0].delivery):''}" class="cust-init ${dlClass(custLines[0].delivery)}" style="width:24px;height:24px;font-size:9px;border-width:1.5px">${inits(custLines[0].name||'')}</span><span class="font-bold text-sm">${escHtml(custLines[0].name||'—')}</span></div>`:custLines.map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('')+(custLines.length?`<span class="text-xs text-muted" style="margin-left:10px">${custLines.length}</span>`:'');
+    const complete=isOrderComplete(o);
+    const status=lifecycleBadge(getOrderLifecycle(o));
+    const toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;
+    const trackBtn=(custLines.length===1&&isTrackingUrl(getTrackingValue(custLines[0])))?trackingDisplayHtml(custLines[0],'order',o.id,0):'';
+    return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span></td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>'}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${trackBtn}${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
+  }).join('');
+}
+
+/* Safety: make sure the Order Manager status filter row is visible after the page loads. */
+window.addEventListener('DOMContentLoaded', function(){
+  try{
+    ensureOrderStatusFilters();
+    updateOrderStatusFilterUI({all:0,paid_delivery:0,delivered_unpaid:0,payment_delivery:0,mixed:0});
+  }catch(e){console.warn('Order status filter init skipped', e);}
+});
+
+/* ===== END ORDER MANAGER STATUS FILTER PATCH ===== */
 
 </script>
 </body>
