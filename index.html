@@ -468,6 +468,75 @@ input:focus,select:focus,textarea:focus{
 .empty .ei{filter:drop-shadow(0 3px 8px rgba(0,200,232,.18));}
 /* ===== END REEF MODERN VISUAL REFRESH ===== */
 
+
+/* ===== CALM CONTENT CLEANUP 2026-06-25 =====
+   Removes the busy blue gradients/patterns from content areas while keeping layout and logic unchanged. */
+body{
+  background:#f3f8fb !important;
+}
+body:before{
+  display:none !important;
+}
+.metric{
+  background:#ffffff !important;
+}
+.metric:after{
+  display:none !important;
+}
+.metric:before{
+  background:var(--reef) !important;
+}
+.metric:nth-child(2):before,
+.metric:nth-child(7):before{
+  background:var(--green) !important;
+}
+.metric:nth-child(5):before{
+  background:#f59e0b !important;
+}
+.metric:nth-child(6):before,
+.metric:nth-child(8):before,
+.metric:nth-child(9):before{
+  background:var(--red) !important;
+}
+.card,
+.card-head,
+.modal-head{
+  background:#ffffff !important;
+}
+.modal-foot{
+  background:#f8fafc !important;
+}
+th,
+.itbl th{
+  background:#f8fafc !important;
+}
+tr:hover td{
+  background:#f7fafc !important;
+}
+#order-scope-filter-row,
+#order-status-filter-row{
+  background:#ffffff !important;
+}
+.order-scope-btn.is-active,
+.order-status-btn.is-active{
+  background:#eefbff !important;
+  color:var(--ocean) !important;
+  border-color:var(--reef) !important;
+  box-shadow:0 0 0 3px rgba(0,200,232,.09) !important;
+}
+.bar-fill{
+  background:#7ce7f5 !important;
+  border-color:#00b6d4 !important;
+}
+.bar-fill.neg{
+  background:#ffaaaa !important;
+  border-color:#ef4444 !important;
+}
+.empty{
+  background:#ffffff !important;
+}
+/* ===== END CALM CONTENT CLEANUP ===== */
+
 </style>
 </head>
 <body>
@@ -2437,9 +2506,10 @@ function updateOrderStatusFilterUI(counts){
   });
   document.querySelectorAll('.order-status-btn').forEach(btn=>{
     const active = btn.dataset.status === currentOrderStatusFilter;
-    btn.style.background = active ? 'var(--ocean)' : 'var(--white)';
-    btn.style.color = active ? '#fff' : 'var(--text2)';
-    btn.style.borderColor = active ? 'var(--ocean)' : 'var(--border2)';
+    btn.classList.toggle('is-active', active);
+    btn.style.background = active ? '#eefbff' : 'var(--white)';
+    btn.style.color = active ? 'var(--ocean)' : 'var(--text2)';
+    btn.style.borderColor = active ? 'var(--reef)' : 'var(--border2)';
   });
 }
 function setOrderTab(tab,btn){
@@ -2853,9 +2923,10 @@ function updateOrderScopeUI(){
   Object.entries(counts).forEach(([k,v])=>{const el=document.getElementById('scope-count-'+k); if(el)el.textContent=v;});
   document.querySelectorAll('.order-scope-btn').forEach(btn=>{
     const active=btn.dataset.scope===currentOrderScopeFilter;
-    btn.style.background=active?'var(--ocean)':'var(--white)';
-    btn.style.color=active?'#fff':'var(--text2)';
-    btn.style.borderColor=active?'var(--ocean)':'var(--border2)';
+    btn.classList.toggle('is-active', active);
+    btn.style.background=active?'#eefbff':'var(--white)';
+    btn.style.color=active?'var(--ocean)':'var(--text2)';
+    btn.style.borderColor=active?'var(--reef)':'var(--border2)';
   });
   const statusRow=document.getElementById('order-status-filter-row');
   if(statusRow)statusRow.style.display=currentOrderScopeFilter==='stock'?'none':'flex';
