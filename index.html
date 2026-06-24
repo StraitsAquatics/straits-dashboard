@@ -211,7 +211,9 @@ textarea{resize:vertical;min-height:60px}
     <div class="metric"><div class="metric-lbl">Customers</div><div class="metric-val" id="ov-custs">0</div><div class="metric-sub">In database</div></div>
     <div class="metric"><div class="metric-lbl">Credits Outstanding</div><div class="metric-val mv-amber" id="ov-credits">0</div><div class="metric-sub">Customers with balance</div></div>
     <div class="metric"><div class="metric-lbl">Pending Payments</div><div class="metric-val mv-amber" id="ov-pending">€0</div><div class="metric-sub">Owed to us by customers</div></div>
-    <div class="metric"><div class="metric-lbl">Today's Profit</div><div class="metric-val mv-green" id="ov-today-profit">€0</div><div class="metric-sub">Orders placed today</div></div>
+    <div class="metric"><div class="metric-lbl">Today's Sales Profit</div><div class="metric-val mv-green" id="ov-today-sales-profit">€0</div><div class="metric-sub">Customer orders today</div></div>
+    <div class="metric"><div class="metric-lbl">Today's Stock Spend</div><div class="metric-val mv-red" id="ov-today-stock-spend">€0</div><div class="metric-sub">SA stock bought today</div></div>
+    <div class="metric"><div class="metric-lbl">Today's Net Position</div><div class="metric-val mv-green" id="ov-today-profit">€0</div><div class="metric-sub">Sales profit − stock spend</div></div>
     <div class="metric"><div class="metric-lbl">Active DOA Claims</div><div class="metric-val mv-red" id="ov-doas">€0</div><div class="metric-sub">Unresolved</div></div>
   </div>
   <div class="two-col">
@@ -258,6 +260,12 @@ textarea{resize:vertical;min-height:60px}
       📋 All Orders <span id="tab-count-all" class="badge b-grey" style="margin-left:5px">0</span>
     </button>
   </div>
+  <div id="order-scope-filter-row" class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3)">Order type:</span>
+    <button type="button" class="order-scope-btn btn btn-sec btn-sm" data-scope="customer" onclick="setOrderScopeFilter('customer')">Customer Orders <span id="scope-count-customer" class="badge b-blue" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-scope-btn btn btn-sec btn-sm" data-scope="stock" onclick="setOrderScopeFilter('stock')">Straits Aquatics Stock <span id="scope-count-stock" class="badge b-amber" style="margin-left:5px">0</span></button>
+    <button type="button" class="order-scope-btn btn btn-sec btn-sm" data-scope="all" onclick="setOrderScopeFilter('all')">All Order Types <span id="scope-count-all" class="badge b-grey" style="margin-left:5px">0</span></button>
+  </div>
   <div id="order-status-filter-row" class="flex gap-8 items-c mb-12" style="flex-wrap:wrap">
     <span style="font-size:11px;color:var(--text3)">Order status:</span>
     <button type="button" class="order-status-btn btn btn-sec btn-sm" data-status="all" onclick="setOrderStatusFilter('all')">All Active <span id="sf-count-all" class="badge b-grey" style="margin-left:5px">0</span></button>
@@ -296,6 +304,7 @@ textarea{resize:vertical;min-height:60px}
           <div class="flex gap-8 mt-8">
             <div id="ot-weekly" onclick="selOrderType('weekly',this)" style="padding:5px 14px;border-radius:20px;border:2px solid var(--ocean);background:#e8f4fd;color:var(--ocean);font-size:11px;font-weight:700;cursor:pointer">📦 Weekly Order</div>
             <div id="ot-adhoc" onclick="selOrderType('adhoc',this)" style="padding:5px 14px;border-radius:20px;border:2px solid var(--border2);background:#f8fafc;color:var(--text3);font-size:11px;font-weight:700;cursor:pointer">⚡ Ad Hoc</div>
+            <div id="ot-stock" onclick="selOrderType('stock',this)" style="padding:5px 14px;border-radius:20px;border:2px solid var(--border2);background:#f8fafc;color:var(--text3);font-size:11px;font-weight:700;cursor:pointer">🏪 SA Stock Order</div>
           </div>
           <input type="hidden" id="o-type" value="weekly">
         </div>
@@ -2497,6 +2506,291 @@ async function syncCreditPaymentsForOrderLines(lines,oldLines,orderNum){
   if(removedLedgerIds.length)await removeCreditLedgerEntriesStrict(removedLedgerIds);
 }
 /* ===== END CUSTOMER CREDIT RESTORE ON ORDER DELETE/CANCEL PATCH ===== */
+
+
+/* ===== STRAITS AQUATICS STOCK ORDER PATCH 2026-06-24 =====
+   Adds a separate SA stock order workflow using existing orders.sa_lines.
+   No Supabase schema changes. Customer order save/edit and credit logic left intact. */
+let currentOrderScopeFilter = 'customer';
+
+function isStockOrder(o){
+  return String(o?.orderType || o?.order_type || '').toLowerCase() === 'stock';
+}
+function stockLines(o){ return Array.isArray(o?.saLines) ? o.saLines : (Array.isArray(o?.sa_lines) ? o.sa_lines : []); }
+function stockCostFromLines(lines){ return (lines||[]).reduce((a,s)=>a+num(s.cost),0); }
+function stockSellFromLines(lines){ return (lines||[]).reduce((a,s)=>a+num(s.sell),0); }
+function orderMatchesScope(o){
+  if(currentOrderScopeFilter === 'all') return true;
+  if(currentOrderScopeFilter === 'stock') return isStockOrder(o);
+  return !isStockOrder(o);
+}
+function scopedOrders(){ return (db.orders||[]).filter(orderMatchesScope); }
+
+function updateOrderScopeUI(){
+  const all=db.orders||[];
+  const counts={
+    customer: all.filter(o=>!isStockOrder(o)).length,
+    stock: all.filter(isStockOrder).length,
+    all: all.length
+  };
+  Object.entries(counts).forEach(([k,v])=>{const el=document.getElementById('scope-count-'+k); if(el)el.textContent=v;});
+  document.querySelectorAll('.order-scope-btn').forEach(btn=>{
+    const active=btn.dataset.scope===currentOrderScopeFilter;
+    btn.style.background=active?'var(--ocean)':'var(--white)';
+    btn.style.color=active?'#fff':'var(--text2)';
+    btn.style.borderColor=active?'var(--ocean)':'var(--border2)';
+  });
+  const statusRow=document.getElementById('order-status-filter-row');
+  if(statusRow)statusRow.style.display=currentOrderScopeFilter==='stock'?'none':'flex';
+}
+function setOrderScopeFilter(scope){
+  currentOrderScopeFilter = ['customer','stock','all'].includes(scope) ? scope : 'customer';
+  currentOrderStatusFilter='all';
+  renderOrders(document.getElementById('orders-search')?.value||'');
+}
+
+const _stockBaseUpdateOrderTabCounts = updateOrderTabCounts;
+updateOrderTabCounts=function(){
+  const rows=scopedOrders();
+  const completed=rows.filter(o=>isOrderComplete(o)).length;
+  const active=rows.length-completed;
+  const set=(id,val)=>{const el=document.getElementById(id); if(el)el.textContent=val;};
+  set('tab-count-active',active); set('tab-count-completed',completed); set('tab-count-all',rows.length);
+  updateOrderScopeUI();
+};
+
+function stockOrderStatusBadge(o){
+  return isOrderComplete(o) ? '<span class="badge b-green">Stock Completed</span>' : '<span class="badge b-amber">Stock Ordered</span>';
+}
+function stockCustomerCell(o){
+  const lines=stockLines(o);
+  const count=lines.length;
+  return `<div class="flex items-c gap-8"><span class="cust-init ci-none" style="width:24px;height:24px;font-size:11px;border-width:1.5px">SA</span><span class="font-bold text-sm">Straits Aquatics Stock</span><span class="text-xs text-muted">${count} item${count===1?'':'s'}</span></div>`;
+}
+
+function setOrderTypeVisual(type){
+  type = type === 'adhoc' ? 'adhoc' : type === 'stock' ? 'stock' : 'weekly';
+  const hidden=document.getElementById('o-type'); if(hidden)hidden.value=type;
+  const weekly=document.getElementById('ot-weekly'), adhoc=document.getElementById('ot-adhoc'), stock=document.getElementById('ot-stock');
+  const active=(el)=>{if(!el)return;el.style.borderColor='var(--ocean)';el.style.background='#e8f4fd';el.style.color='var(--ocean)';};
+  const inactive=(el)=>{if(!el)return;el.style.borderColor='var(--border2)';el.style.background='#f8fafc';el.style.color='var(--text3)';};
+  [weekly,adhoc,stock].forEach(inactive);
+  if(type==='weekly')active(weekly); else if(type==='adhoc')active(adhoc); else active(stock);
+  updateOrderModeUI();
+}
+function selOrderType(type){
+  if(type==='stock' && curCustLines.length){
+    if(!confirm('Switch to SA Stock Order? Customer lines currently on this order will be removed from this draft.'))return;
+    curCustLines=[]; renderCustLines();
+  }
+  setOrderTypeVisual(type);
+}
+function patchedOrderType(){ return document.getElementById('o-type')?.value || 'weekly'; }
+
+function findOrderCardByTitle(text){
+  return [...document.querySelectorAll('#page-new-order .card')].find(card=>card.querySelector('.card-title')?.textContent.includes(text));
+}
+function updateOrderModeUI(){
+  const type=patchedOrderType();
+  const customerCard=findOrderCardByTitle('Customer Orders');
+  const stockCard=findOrderCardByTitle('Straits Aquatics Stock');
+  if(customerCard)customerCard.style.display=type==='stock'?'none':'';
+  if(stockCard){
+    const title=stockCard.querySelector('.card-title');
+    if(title)title.textContent=type==='stock'?'🏪 Straits Aquatics Stock Order Items':'🐠 Straits Aquatics Stock (for resale)';
+  }
+  updateSummary();
+}
+
+function addSARow(name='',cost='',sell='',supplier=''){
+  const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
+  const empty=document.getElementById('sa-lines-empty'); if(empty)empty.style.display='none';
+  const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(name)}" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" value="${cost!==''?num(cost):''}" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Expected sell €" value="${sell!==''?num(sell):''}" style="width:110px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary();if(!document.querySelector('#sa-lines-wrap .sa-row'))document.getElementById('sa-lines-empty').style.display='block'">✕</button>`;
+  wrap.appendChild(d);
+}
+function getSALines(){
+  return [...document.querySelectorAll('.sa-row')].map(r=>({
+    name:r.querySelector('.sa-n')?.value||'',
+    cost:num(r.querySelector('.sa-c')?.value),
+    sell:num(r.querySelector('.sa-s')?.value),
+    supplier:r.querySelector('.sa-sup')?.value||''
+  })).filter(r=>r.name || r.cost || r.sell);
+}
+function renderSALines(lines){
+  document.querySelectorAll('#sa-lines-wrap .sa-row').forEach(r=>r.remove());
+  const empty=document.getElementById('sa-lines-empty'); if(empty)empty.style.display=(lines&&lines.length)?'none':'block';
+  (lines||[]).forEach(s=>addSARow(s.name||'',s.cost||0,s.sell||0,s.supplier||''));
+}
+
+function updateSummary(){
+  const type=patchedOrderType();
+  const ship=num(document.getElementById('o-shipping')?.value);
+  const other=num(document.getElementById('o-othercosts')?.value);
+  const saLines=getSALines();
+  let quoted, actual, profit;
+  if(type==='stock'){
+    quoted=stockSellFromLines(saLines);
+    actual=stockCostFromLines(saLines)+ship+other;
+    profit=quoted-actual;
+  }else{
+    quoted=curCustLines.reduce((a,c)=>a+num(c.quoted),0);
+    actual=curCustLines.reduce((a,c)=>a+num(c.actual),0)+ship+other+stockCostFromLines(saLines);
+    profit=quoted-actual;
+  }
+  if(document.getElementById('sum-quoted'))document.getElementById('sum-quoted').textContent=fmt(quoted);
+  if(document.getElementById('sum-actual'))document.getElementById('sum-actual').textContent=fmt(actual);
+  const p=document.getElementById('sum-profit'); if(p){p.textContent=fmt(profit);p.className='metric-val '+(profit>=0?'mv-green':'mv-red');}
+  const d=document.getElementById('sum-doa-absorbed'); if(d)d.textContent=type==='stock'?'—':fmt(curCustLines.reduce((a,c)=>a+num(c.doaTotal),0));
+}
+
+const _stockBaseInitNewOrder = initNewOrder;
+initNewOrder=function(){
+  _stockBaseInitNewOrder();
+  if(!editingOrderId)setOrderTypeVisual('weekly');
+  updateOrderModeUI();
+};
+
+function editOrder(id){
+  const o=db.orders.find(x=>x.id===id);if(!o)return;
+  editingOrderId=id;curSuppliers=[...(o.suppliers||[])];curCustLines=JSON.parse(JSON.stringify(o.custLines||[]));
+  nav('new-order',null);
+  document.getElementById('order-page-title').textContent=`Edit Order #${o.num}`;
+  document.getElementById('o-num').value=o.num;
+  document.getElementById('o-date').value=o.date||today();
+  document.getElementById('o-shipping').value=o.shipping||'';
+  document.getElementById('o-othercosts').value=o.otherCosts||'';
+  document.getElementById('o-notes').value=o.notes||'';
+  setOrderTypeVisual(isStockOrder(o)?'stock':(o.orderType||'weekly'));
+  renderSupTags();renderCustLines();renderSALines(stockLines(o));updateSummary();
+}
+
+async function saveOrder(){
+  const numRef=document.getElementById('o-num').value.trim(); if(!numRef){toast('Enter order number',false);return;}
+  const orderType=patchedOrderType();
+  const isStock=orderType==='stock';
+  const old=editingOrderId?db.orders.find(o=>o.id===editingOrderId):null;
+  if(!isStock){
+    try{await syncCreditPaymentsForOrderLines(curCustLines,old?.custLines||[],numRef);}catch(e){toast(e.message||'Credit could not be applied',false);return;}
+  }else if(!getSALines().length){
+    toast('Add at least one SA stock item',false);return;
+  }
+  const ship=num(document.getElementById('o-shipping').value), other=num(document.getElementById('o-othercosts').value);
+  const saLines=getSALines();
+  const saveCustLines=isStock?[]:curCustLines;
+  const customerQuoted=saveCustLines.reduce((a,c)=>a+num(c.quoted),0);
+  const customerActual=saveCustLines.reduce((a,c)=>a+num(c.actual),0);
+  const stockCost=stockCostFromLines(saLines);
+  const stockSell=stockSellFromLines(saLines);
+  const totalQuoted=isStock?stockSell:customerQuoted;
+  const totalActual=isStock?(stockCost+ship+other):(customerActual+ship+other+stockCost);
+  const profit=totalQuoted-totalActual;
+  const doaTotal=isStock?0:saveCustLines.reduce((a,c)=>a+(c.items||[]).filter(it=>it.doa&&!it.doaResolved).reduce((b,it)=>b+num(it.actual),0),0);
+  const totalPendingPayment=isStock?0:saveCustLines.reduce((a,cl)=>a+getCustomerBalance(cl),0);
+  const temp={custLines:saveCustLines,manualComplete:false};
+  const manual=old && old.manualComplete && (isStock ? true : isOrderComplete(temp));
+  const row={id:editingOrderId||uid(),num:numRef,order_type:orderType,date:document.getElementById('o-date').value,suppliers:curSuppliers,shipping:ship,other_costs:other,notes:document.getElementById('o-notes').value,cust_lines:saveCustLines,sa_lines:saLines,total_quoted:totalQuoted,total_actual:totalActual,profit,doa_total:doaTotal,total_pending:totalPendingPayment,manual_complete:manual,created:old?.created||today()};
+  setSyncStatus('sync-busy','Saving...');
+  try{
+    if(editingOrderId){
+      await sbUpdate('orders',editingOrderId,row);
+      const idx=db.orders.findIndex(o=>o.id===editingOrderId);
+      if(idx>-1)db.orders[idx]={id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:saveCustLines,saLines,totalQuoted,totalActual,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created};
+      toast(isStock?'SA stock order updated ✓':'Order updated ✓');
+    }else{
+      await sbInsert('orders',row);
+      db.orders.push({id:row.id,num:row.num,orderType:row.order_type,date:row.date,suppliers:row.suppliers,shipping:row.shipping,otherCosts:row.other_costs,notes:row.notes,custLines:saveCustLines,saLines,totalQuoted,totalActual,profit,doaTotal,totalPending:totalPendingPayment,manualComplete:manual,created:row.created});
+      toast(isStock?'SA stock order saved ✓':'Order saved ✓');
+    }
+    if(!isStock){
+      for(const cl of saveCustLines){if(!db.customers.find(c=>String(c.name).toLowerCase()===String(cl.name).toLowerCase())){const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()}; await sbInsert('customers',nc); db.customers.push(nc);}}
+    }
+    setSyncStatus('sync-ok','✓ Synced'); editingOrderId=null; curCustLines=[]; curSuppliers=[]; renderCredits(); renderOverview(); nav('orders');
+  }catch(e){setSyncStatus('sync-err','✗ Error'); toast('Save failed: '+e.message,false); console.error(e);}
+}
+
+function getOrderLifecycle(o){
+  if(isStockOrder(o)) return isOrderComplete(o)?'completed':'stock_active';
+  if(isOrderComplete(o)) return 'completed';
+  const cls = o.custLines || [];
+  if(!cls.length) return 'payment_delivery';
+  const states = cls.map(getCustomerLifecycle);
+  const unique = [...new Set(states)];
+  if(unique.length === 1) return unique[0];
+  return 'mixed';
+}
+function lifecycleBadge(state){
+  if(state === 'stock_active') return '<span class="badge b-amber">Stock Ordered</span>';
+  if(state === 'completed') return '<span class="badge b-green">Completed</span>';
+  if(state === 'paid_delivery') return '<span class="badge b-amber">Paid - Awaiting Delivery</span>';
+  if(state === 'delivered_unpaid') return '<span class="badge b-blue">Delivered - Awaiting Payment</span>';
+  if(state === 'payment_delivery') return '<span class="badge b-red">Payment + Delivery Pending</span>';
+  if(state === 'mixed') return '<span class="badge b-grey">Mixed / Partial</span>';
+  return '<span class="badge b-red">Active</span>';
+}
+
+function renderOrders(filter=''){
+  ensureOrderTableHeader();ensureOrderStatusFilters();updateOrderTabCounts();updateOrderScopeUI();
+  const q=(filter||'').toLowerCase();
+  let baseRows=(db.orders||[]).filter(o=>orderMatchesScope(o) && (!q||String(o.num||'').toLowerCase().includes(q)||(o.suppliers||[]).join(',').toLowerCase().includes(q)||(o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q))||stockLines(o).some(s=>String(s.name||'').toLowerCase().includes(q))));
+  baseRows=baseRows.filter(o=>currentOrderTab==='all'?true:currentOrderTab==='completed'?isOrderComplete(o):!isOrderComplete(o));
+  const counts={all:baseRows.length,paid_delivery:0,delivered_unpaid:0,payment_delivery:0,mixed:0};
+  baseRows.filter(o=>!isStockOrder(o)).forEach(o=>{const st=getOrderLifecycle(o); if(counts[st]!==undefined)counts[st]++;});
+  updateOrderStatusFilterUI(counts); updateOrderScopeUI();
+  let rows=(currentOrderScopeFilter==='stock'||currentOrderStatusFilter==='all')?baseRows:baseRows.filter(o=>getOrderLifecycle(o)===currentOrderStatusFilter);
+  const tbody=document.getElementById('orders-body'); if(!tbody)return;
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="10"><div class="empty"><div class="ei">📦</div><p>No orders found for this filter</p></div></td></tr>';return;}
+  tbody.innerHTML=[...rows].reverse().map(o=>{
+    const stock=isStockOrder(o);
+    const pClass=num(o.profit)>=0?'text-green':'text-red';
+    const margin=num(o.totalQuoted)?((num(o.profit)/num(o.totalQuoted))*100).toFixed(0)+'%':'—';
+    const owed=stock?0:getOrderPendingBalance(o);
+    const custLines=o.custLines||[];
+    const customerCell=stock?stockCustomerCell(o):(custLines.length===1?`<div class="flex items-c gap-8"><span title="${escAttr(custLines[0].name)}${custLines[0].delivery?' — '+dlLabel(custLines[0].delivery):''}" class="cust-init ${dlClass(custLines[0].delivery)}" style="width:24px;height:24px;font-size:9px;border-width:1.5px">${inits(custLines[0].name||'')}</span><span class="font-bold text-sm">${escHtml(custLines[0].name||'—')}</span></div>`:custLines.map(cl=>`<span title="${escAttr(cl.name)}${cl.delivery?' — '+dlLabel(cl.delivery):''}" class="cust-init ${dlClass(cl.delivery)}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${inits(cl.name||'')}</span>`).join('')+(custLines.length?`<span class="text-xs text-muted" style="margin-left:10px">${custLines.length}</span>`:''));
+    const complete=isOrderComplete(o);
+    const status=stock?stockOrderStatusBadge(o):lifecycleBadge(getOrderLifecycle(o));
+    const toggle=complete?`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">↩ Reopen</button>`:`<button class="btn btn-sec btn-xs" onclick="toggleOrderComplete('${o.id}')">✓ Complete</button>`;
+    const trackBtn=(!stock&&custLines.length===1&&isTrackingUrl(getTrackingValue(custLines[0])))?trackingDisplayHtml(custLines[0],'order',o.id,0):'';
+    return `<tr style="${complete?'opacity:.72':''}"><td><span class="badge b-blue">#${escHtml(o.num)}</span>${stock?' <span class="badge b-amber">SA Stock</span>':''}</td><td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${escHtml(s)}</span>`).join(' ')}</td><td>${escHtml(o.date||'—')}</td><td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${customerCell}</div></td><td class="font-bold">${fmt(num(o.totalQuoted))}</td><td class="text-muted">${fmt(num(o.totalActual))}</td><td class="font-bold ${pClass}">${fmt(num(o.profit))} <span class="text-xs text-muted">(${margin})</span></td><td>${stock?'<span class="text-muted">—</span>':(owed>0.01?`<span class="font-bold text-red">${fmt(owed)}</span>`:'<span class="font-bold text-green">Paid</span>')}</td><td>${status}</td><td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="viewOrder('${o.id}')">View</button><button class="btn btn-sec btn-xs" onclick="editOrder('${o.id}')">Edit</button>${trackBtn}${toggle}<button class="btn btn-danger btn-xs" onclick="deleteOrder('${o.id}')">✕</button></div></td></tr>`;
+  }).join('');
+}
+
+const _stockBaseViewOrder=viewOrder;
+viewOrder=function(id){
+  const o=db.orders.find(x=>x.id===id); if(!o||!isStockOrder(o)){_stockBaseViewOrder(id); return;}
+  document.getElementById('od-title').textContent=`SA Stock Order #${o.num} — ${(o.suppliers||[]).join(', ')}`;
+  document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${escHtml(o.date||'—')}</div></div><div><div class="ostat-lbl">Expected Sales</div><div class="ostat-val text-green">${fmt(num(o.totalQuoted))}</div></div><div><div class="ostat-lbl">Stock Spend</div><div class="ostat-val text-red">${fmt(num(o.totalActual))}</div></div><div><div class="ostat-lbl">Expected Profit</div><div class="ostat-val ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</div></div><div><div class="ostat-lbl">Status</div><div class="ostat-val">${isOrderComplete(o)?'Completed':'Ordered'}</div></div>`;
+  let html=`<div style="padding:10px 12px;border:1px solid #bfdbfe;border-radius:8px;background:#eff6ff;margin-bottom:12px"><div class="font-bold mb-8">🏪 Straits Aquatics Stock Items</div><table class="itbl"><thead><tr><th>Item</th><th>Cost</th><th>Expected Sell</th><th>Expected Profit</th><th>Supplier</th></tr></thead><tbody>${stockLines(o).map(s=>`<tr><td>${escHtml(s.name||'')}</td><td>${fmt(num(s.cost))}</td><td>${fmt(num(s.sell))}</td><td class="${num(s.sell)-num(s.cost)>=0?'text-green':'text-red'} font-bold">${fmt(num(s.sell)-num(s.cost))}</td><td>${escHtml(s.supplier||'—')}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-red">${fmt(stockCostFromLines(stockLines(o)))}</td><td class="font-bold text-green">${fmt(stockSellFromLines(stockLines(o)))}</td><td class="font-bold ${num(o.profit)>=0?'text-green':'text-red'}">${fmt(num(o.profit))}</td><td></td></tr></tfoot></table></div>`;
+  if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${escHtml(o.notes)}</p>`;
+  document.getElementById('od-body').innerHTML=html;
+  document.getElementById('od-del-btn').onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+  openModal('modal-order-detail');
+};
+
+const _stockBaseRenderOverview=renderOverview;
+renderOverview=function(){
+  _stockBaseRenderOverview();
+  const todayKey=today();
+  const customerOrders=(db.orders||[]).filter(o=>!isStockOrder(o));
+  const stockOrders=(db.orders||[]).filter(isStockOrder);
+  const totalRevenue=customerOrders.reduce((a,o)=>a+num(o.totalQuoted),0);
+  const totalProfit=customerOrders.reduce((a,o)=>a+num(o.profit),0);
+  const salesToday=customerOrders.filter(o=>parseOrderDateToKey(o.date||o.created)===todayKey).reduce((a,o)=>a+num(o.profit),0);
+  const stockSpendToday=stockOrders.filter(o=>parseOrderDateToKey(o.date||o.created)===todayKey).reduce((a,o)=>a+num(o.totalActual),0);
+  const netToday=salesToday-stockSpendToday;
+  const set=(id,val,cls)=>{const el=document.getElementById(id); if(el){el.textContent=val; if(cls)el.className='metric-val '+cls;}};
+  set('ov-rev',fmt(totalRevenue));
+  set('ov-profit',fmt(totalProfit),totalProfit<0?'mv-red':'mv-green');
+  set('ov-today-sales-profit',fmt(salesToday),salesToday<0?'mv-red':'mv-green');
+  set('ov-today-stock-spend',stockSpendToday?fmt(-stockSpendToday):fmt(0),stockSpendToday>0?'mv-red':'mv-green');
+  set('ov-today-profit',fmt(netToday),netToday<0?'mv-red':'mv-green');
+  updateOrderTabCounts(); updateOrderScopeUI();
+};
+
+window.addEventListener('DOMContentLoaded', function(){
+  try{setOrderTypeVisual('weekly');updateOrderScopeUI();}catch(e){console.warn('SA stock init skipped',e);}
+});
+/* ===== END STRAITS AQUATICS STOCK ORDER PATCH ===== */
 
 </script>
 </body>
