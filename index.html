@@ -778,7 +778,7 @@ tr:hover td{
 <!-- PRICES -->
 <div id="page-prices" class="page">
   <div class="section-hd"><div class="section-title">Species Price List</div>
-    <button class="btn btn-primary" onclick="openAddPriceModal()">+ Add Species</button></div>
+    <button class="btn btn-primary" onclick="openModal('modal-add-price')">+ Add Species</button></div>
   <input type="text" id="price-search" placeholder="🔍 Search species, category..." oninput="filterPrices(this.value)"
     style="width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-size:13px;margin-bottom:12px">
   <div class="card"><div class="tbl-wrap">
@@ -973,7 +973,7 @@ tr:hover td{
 
 <div class="modal-ov" id="modal-add-price">
   <div class="modal">
-    <div class="modal-head"><div class="modal-title" id="price-modal-title">Add to Price List</div><button class="modal-close" onclick="closeModal('modal-add-price')">✕</button></div>
+    <div class="modal-head"><div class="modal-title">Add to Price List</div><button class="modal-close" onclick="closeModal('modal-add-price')">✕</button></div>
     <div class="modal-body">
       <div class="form-grid">
         <div class="fg fg-full"><label>Species / Item Name</label><input type="text" id="pr-name"></div>
@@ -992,7 +992,7 @@ tr:hover td{
     </div>
     <div class="modal-foot">
       <button class="btn btn-sec" onclick="closeModal('modal-add-price')">Cancel</button>
-      <button class="btn btn-primary" id="price-save-btn" onclick="savePrice()">Save</button>
+      <button class="btn btn-primary" onclick="savePrice()">Save</button>
     </div>
   </div>
 </div>
@@ -3180,110 +3180,6 @@ window.addEventListener('DOMContentLoaded', function(){
 });
 /* ===== END STRAITS AQUATICS STOCK ORDER PATCH ===== */
 
-
-
-/* ===== PRICE LIST EDIT PATCH 2026-06-29 =====
-   Adds inline editing for price list items without changing existing database structure. */
-let editingPriceId = null;
-
-function resetPriceForm(){
-  editingPriceId = null;
-  const title = document.getElementById('price-modal-title') || document.querySelector('#modal-add-price .modal-title');
-  const saveBtn = document.getElementById('price-save-btn') || document.querySelector('#modal-add-price .modal-foot .btn-primary');
-  if(title) title.textContent = 'Add to Price List';
-  if(saveBtn) saveBtn.textContent = 'Save';
-  ['pr-name','pr-wild','pr-capt','pr-sup','pr-notes'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
-  const cat=document.getElementById('pr-cat'); if(cat) cat.value='Fish';
-}
-
-function openAddPriceModal(){
-  resetPriceForm();
-  openModal('modal-add-price');
-}
-
-function editPrice(id){
-  const p = db.prices.find(x=>String(x.id)===String(id));
-  if(!p){toast('Price item not found', false);return;}
-  editingPriceId = p.id;
-  const title = document.getElementById('price-modal-title') || document.querySelector('#modal-add-price .modal-title');
-  const saveBtn = document.getElementById('price-save-btn') || document.querySelector('#modal-add-price .modal-foot .btn-primary');
-  if(title) title.textContent = 'Edit Price List Item';
-  if(saveBtn) saveBtn.textContent = 'Update';
-  const set=(id,val)=>{const el=document.getElementById(id); if(el) el.value = val ?? '';};
-  set('pr-name', p.name || '');
-  set('pr-cat', p.cat || 'Fish');
-  set('pr-wild', num(p.wild) || '');
-  set('pr-capt', num(p.capt) || '');
-  set('pr-sup', p.sup || '');
-  set('pr-notes', p.notes || '');
-  openModal('modal-add-price');
-}
-
-async function savePrice(){
-  const name=document.getElementById('pr-name').value.trim();
-  if(!name){toast('Enter a name',false);return;}
-  const row={
-    name,
-    cat:document.getElementById('pr-cat').value,
-    wild:num(document.getElementById('pr-wild').value),
-    capt:num(document.getElementById('pr-capt').value),
-    sup:document.getElementById('pr-sup').value,
-    notes:document.getElementById('pr-notes').value
-  };
-  const currentSearch=document.getElementById('price-search')?.value||'';
-  try{
-    if(editingPriceId){
-      await sbUpdate('prices', editingPriceId, row);
-      const idx=db.prices.findIndex(p=>String(p.id)===String(editingPriceId));
-      if(idx>-1) db.prices[idx]={...db.prices[idx],...row};
-      closeModal('modal-add-price');
-      resetPriceForm();
-      renderPrices(currentSearch);
-      toast('Price updated ✓');
-    }else{
-      const np={id:uid(),...row};
-      await sbInsert('prices',np);
-      db.prices.push(np);
-      closeModal('modal-add-price');
-      resetPriceForm();
-      renderPrices(currentSearch);
-      toast('Added ✓');
-    }
-  }catch(e){
-    toast(editingPriceId?'Update failed':'Save failed',false);
-    console.error(e);
-  }
-}
-
-function renderPrices(filter=''){
-  const tbody=document.getElementById('prices-body');
-  if(!tbody)return;
-  const q=(filter||'').toLowerCase();
-  const rows=db.prices.filter(p=>!q||String(p.name||'').toLowerCase().includes(q)||String(p.cat||'').toLowerCase().includes(q)||String(p.sup||'').toLowerCase().includes(q)||String(p.notes||'').toLowerCase().includes(q));
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">🐟</div><p>No results</p></div></td></tr>';return;}
-  tbody.innerHTML=rows.map(p=>`<tr>
-    <td class="font-bold">${escHtml(p.name||'')}</td>
-    <td><span class="badge b-grey">${escHtml(p.cat||'—')}</span></td>
-    <td>${num(p.wild)?fmt(num(p.wild)):'—'}</td>
-    <td>${num(p.capt)?fmt(num(p.capt)):'—'}</td>
-    <td class="text-sm text-muted">${escHtml(p.sup||'—')}</td>
-    <td class="text-sm text-muted">${escHtml(p.notes||'—')}</td>
-    <td><div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="editPrice('${escAttr(p.id)}')">Edit</button><button class="btn btn-danger btn-xs" onclick="delPrice('${escAttr(p.id)}')">✕</button></div></td>
-  </tr>`).join('');
-}
-
-async function delPrice(id){
-  if(!confirm('Remove?'))return;
-  const currentSearch=document.getElementById('price-search')?.value||'';
-  try{
-    await sbDelete('prices',id);
-    db.prices=db.prices.filter(p=>String(p.id)!==String(id));
-    if(String(editingPriceId)===String(id)) resetPriceForm();
-    renderPrices(currentSearch);
-    toast('Removed');
-  }catch(e){toast('Delete failed',false);console.error(e);}
-}
-/* ===== END PRICE LIST EDIT PATCH ===== */
 </script>
 </body>
 </html>
