@@ -761,7 +761,7 @@ tr:hover td{
 <!-- CREDITS -->
 <div id="page-credits" class="page">
   <div class="section-hd"><div class="section-title">Credits & Amounts Owed</div>
-    <button class="btn btn-primary" onclick="openModal('modal-credit')">+ Record Entry</button></div>
+    <button class="btn btn-primary" onclick="openCreditModal()">+ Record Entry</button></div>
   <div class="two-col">
     <div class="card"><div class="card-head"><div class="card-title">Customer Credits (held with us)</div></div>
       <div class="card-body" id="cred-positive"><div class="empty"><div class="ei">💳</div><p>None</p></div></div></div>
@@ -1385,7 +1385,7 @@ function renderCustomers(filter=''){
   tbody.innerHTML=rows.map(c=>{
     let spent=0,ords=0;db.orders.forEach(o=>(o.custLines||[]).forEach(cl=>{if(cl.name.toLowerCase()===c.name.toLowerCase()){spent+=cl.quoted;ords++;}}));
     const credit=db.credits.filter(cr=>cr.customer.toLowerCase()===c.name.toLowerCase()&&cr.type==='credit').reduce((a,cr)=>a+cr.amount,0);
-    return`<tr><td><div class="flex items-c gap-8"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(c.name)}</div><span class="font-bold">${c.name}</span></div></td><td>${c.location||'\u2014'}</td><td>${c.phone||'\u2014'}</td><td class="font-bold text-green">${fmt(spent)}</td><td>${ords}</td><td>${credit>0?`<span class="badge b-amber">${fmt(credit)}</span>`:'\u2014'}</td><td class="text-sm text-muted">${c.notes||'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCust('${c.id}')">\u2715</button></td></tr>`;
+    return`<tr><td><div class="flex items-c gap-8"><div class="cust-init ci-none" style="width:26px;height:26px;font-size:9px">${inits(c.name)}</div><span class="font-bold">${c.name}</span></div></td><td>${c.location||'\u2014'}</td><td>${c.phone||'\u2014'}</td><td class="font-bold text-green">${fmt(spent)}</td><td>${ords}</td><td><div class="flex items-c gap-6">${credit>0?`<span class="badge b-amber">${fmt(credit)}</span>`:'\u2014'}<button class="btn btn-sec btn-xs" title="Adjust credit for ${escAttr(c.name)}" onclick="openCreditModalForCustomer('${escAttr(c.name)}')">\u270e</button></div></td><td class="text-sm text-muted">${c.notes||'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCust('${c.id}')">\u2715</button></td></tr>`;
   }).join('');
 }
 async function delCust(id){
@@ -1395,12 +1395,62 @@ async function delCust(id){
 }
 
 // ===== CREDITS =====
+let editingCreditId=null;
+function openCreditModal(id=null){
+  editingCreditId=id;
+  const titleEl=document.querySelector('#modal-credit .modal-title');
+  const saveBtn=document.querySelector('#modal-credit .btn-primary');
+  if(id){
+    const c=db.credits.find(x=>x.id===id);
+    if(!c){toast('Entry not found',false);return;}
+    if(titleEl)titleEl.textContent='Edit Credit / Debt';
+    if(saveBtn)saveBtn.textContent='Save Changes';
+    document.getElementById('cr-cust').value=c.customer||'';
+    document.getElementById('cr-type').value=c.type||'credit';
+    document.getElementById('cr-amount').value=c.amount!=null?c.amount:'';
+    document.getElementById('cr-order').value=c.order||'';
+    document.getElementById('cr-reason').value=c.reason||'';
+    document.getElementById('cr-date').value=c.date||today();
+  }else{
+    if(titleEl)titleEl.textContent='Record Credit / Debt';
+    if(saveBtn)saveBtn.textContent='Save';
+    document.getElementById('cr-cust').value='';
+    document.getElementById('cr-type').value='credit';
+    document.getElementById('cr-amount').value='';
+    document.getElementById('cr-order').value='';
+    document.getElementById('cr-reason').value='';
+    document.getElementById('cr-date').value=today();
+  }
+  openModal('modal-credit');
+}
+// prefill the credit modal for a specific customer (used from the Customers page)
+function openCreditModalForCustomer(name){
+  openCreditModal(null);
+  document.getElementById('cr-cust').value=name;
+  document.getElementById('cr-type').value='credit';
+}
+function editCredit(id){openCreditModal(id);}
 async function saveCredit(){
   const cust=document.getElementById('cr-cust').value.trim();
   const amt=parseFloat(document.getElementById('cr-amount').value)||0;
   if(!cust||!amt){toast('Fill in customer and amount',false);return;}
-  const nc={id:uid(),customer:cust,type:document.getElementById('cr-type').value,amount:amt,reason:document.getElementById('cr-reason').value,order_num:document.getElementById('cr-order').value,date:document.getElementById('cr-date').value};
-  try{await sbInsert('credits',nc);db.credits.push({id:nc.id,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,date:nc.date});closeModal('modal-credit');renderCredits();renderOverview();toast('Saved \u2713');}
+  const payload={customer:cust,type:document.getElementById('cr-type').value,amount:amt,reason:document.getElementById('cr-reason').value,order_num:document.getElementById('cr-order').value,date:document.getElementById('cr-date').value};
+  try{
+    if(editingCreditId){
+      await sbUpdate('credits',editingCreditId,payload);
+      const idx=db.credits.findIndex(c=>c.id===editingCreditId);
+      const updated={id:editingCreditId,customer:payload.customer,type:payload.type,amount:payload.amount,reason:payload.reason,order:payload.order_num,date:payload.date};
+      if(idx>-1)db.credits[idx]=updated;else db.credits.push(updated);
+      toast('Updated \u2713');
+    }else{
+      const nc={id:uid(),...payload};
+      await sbInsert('credits',nc);
+      db.credits.push({id:nc.id,customer:nc.customer,type:nc.type,amount:nc.amount,reason:nc.reason,order:nc.order_num,date:nc.date});
+      toast('Saved \u2713');
+    }
+    editingCreditId=null;
+    closeModal('modal-credit');renderCredits();renderCustomers();renderOverview();
+  }
   catch(e){toast('Save failed',false);}
 }
 function renderCredits(){
@@ -1411,11 +1461,11 @@ function renderCredits(){
   document.getElementById('cred-negative').innerHTML=html(neg,'text-blue font-bold');
   const tbody=document.getElementById('credits-body');
   if(!db.credits.length){tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">\ud83d\udcb3</div><p>No entries</p></div></td></tr>';return;}
-  tbody.innerHTML=[...db.credits].reverse().map(c=>`<tr><td class="font-bold">${c.customer}</td><td><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes us'}</span></td><td class="font-bold">${fmt(c.amount)}</td><td>${c.reason||'\u2014'}</td><td>${c.date||'\u2014'}</td><td>${c.order?`#${c.order}`:'\u2014'}</td><td><button class="btn btn-danger btn-xs" onclick="delCredit('${c.id}')">\u2715</button></td></tr>`).join('');
+  tbody.innerHTML=[...db.credits].reverse().map(c=>`<tr><td class="font-bold">${c.customer}</td><td><span class="badge ${c.type==='credit'?'b-amber':'b-blue'}">${c.type==='credit'?'Credit':'Owes us'}</span></td><td class="font-bold">${fmt(c.amount)}</td><td>${c.reason||'\u2014'}</td><td>${c.date||'\u2014'}</td><td>${c.order?`#${c.order}`:'\u2014'}</td><td><div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="editCredit('${c.id}')">\u270e Edit</button><button class="btn btn-danger btn-xs" onclick="delCredit('${c.id}')">\u2715</button></div></td></tr>`).join('');
 }
 async function delCredit(id){
   if(!confirm('Delete?'))return;
-  try{await sbDelete('credits',id);db.credits=db.credits.filter(c=>c.id!==id);renderCredits();}
+  try{await sbDelete('credits',id);db.credits=db.credits.filter(c=>c.id!==id);renderCredits();renderCustomers();renderOverview();}
   catch(e){toast('Delete failed',false);}
 }
 
