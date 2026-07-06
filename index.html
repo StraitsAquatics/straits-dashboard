@@ -704,7 +704,7 @@ tr:hover td{
               <option>De Jong Marine Life</option><option>Reef Fish Centre</option><option>Amblard</option>
               <option>Dream Corals</option><option>Aq-arium</option><option>Lunaqua</option>
               <option>Blue Clownfish</option><option>Marine Aquatics</option><option>Red Sea / Tecno</option>
-              <option>Fauna Marin</option><option>Aquaforest</option><option>Other</option>
+              <option>Fauna Marin</option><option>Aquaforest</option><option>Straits Aquatics</option><option>Other</option>
             </select>
             <button class="btn btn-sec btn-sm" onclick="addSupplier()">+ Add</button>
           </div>
@@ -1502,6 +1502,7 @@ const SUPPLIERS=[
   {name:'Marine Aquatics',type:'Dry Goods',url:'https://www.marine-aquatics.eu',email:'r.macek@marine-aquatics.eu',contact:'Radomir',notes:'AI lights, pumps, misc equipment.'},
   {name:'Red Sea / Tecno',type:'Dry Goods',url:'\u2014',email:'info@tecnoaquarium.com',contact:'\u2014',notes:'Red Sea Reef Mat rollers, Red Sea products.'},
   {name:'Blau / BMF',type:'Dry Goods',url:'https://bmf-b2b.com',email:'administracion@barcelonamarinefarm.com',contact:'Olga',notes:'Blau fans, equipment, misc.'},
+  {name:'Straits Aquatics',type:'Internal / Own Stock',url:'https://www.straitsaquatics.com',email:'—',contact:'Ryan',notes:'Internal Straits Aquatics stock, own items, or in-house stock movements.'},
 ];
 function renderSuppliers(){
   document.getElementById('sup-cards').innerHTML=SUPPLIERS.map(s=>`<div class="card" style="margin-bottom:0"><div class="card-head"><div><div class="font-bold">${s.name}</div><span class="badge b-grey" style="margin-top:4px;display:inline-flex">${s.type}</span></div></div><div class="card-body">${s.contact!=='\u2014'?`<div class="text-sm mb-8"><span class="text-muted">Contact:</span> <strong>${s.contact}</strong></div>`:''}`+
@@ -1954,7 +1955,7 @@ function addSARow(){
   const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
   document.getElementById('sa-lines-empty').style.display='none';
   const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Sell €" style="width:90px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary()">\u2715</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Sell €" style="width:90px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary()">\u2715</button>`;
   wrap.appendChild(d);
 }
 function getSALines(){return[...document.querySelectorAll('.sa-row')].map(r=>({name:r.querySelector('.sa-n').value,cost:parseFloat(r.querySelector('.sa-c').value)||0,sell:parseFloat(r.querySelector('.sa-s').value)||0,supplier:r.querySelector('.sa-sup').value}));}
@@ -3044,7 +3045,7 @@ function addSARow(name='',cost='',sell='',supplier=''){
   const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
   const empty=document.getElementById('sa-lines-empty'); if(empty)empty.style.display='none';
   const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(name)}" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" value="${cost!==''?num(cost):''}" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Expected sell €" value="${sell!==''?num(sell):''}" style="width:110px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Other'].map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary();if(!document.querySelector('#sa-lines-wrap .sa-row'))document.getElementById('sa-lines-empty').style.display='block'">✕</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(name)}" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" value="${cost!==''?num(cost):''}" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Expected sell €" value="${sell!==''?num(sell):''}" style="width:110px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary();if(!document.querySelector('#sa-lines-wrap .sa-row'))document.getElementById('sa-lines-empty').style.display='block'">✕</button>`;
   wrap.appendChild(d);
 }
 function getSALines(){
