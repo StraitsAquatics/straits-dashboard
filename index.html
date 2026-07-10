@@ -1791,7 +1791,7 @@ function updateClock(){
 }
 updateClock();
 setInterval(updateClock,1000);
-initAuthGate();
+// initAuthGate(); disabled - final login boot runs at end of file
 
 
 
@@ -4470,6 +4470,231 @@ window.nav=function(id,btn){
   }
 })();
 /* ===== END USER ACTIONS + SESSION PERSISTENCE FIX ===== */
+
+
+/* ===== FINAL LOGIN / USER MANAGEMENT OVERRIDE 2026-07-10 =====
+   This runs after every older patch, so it is the controlling login/user code. */
+(function(){
+  const SESSION_KEY_FINAL = 'straits_dashboard_session_final_v1';
+  const SESSION_MAX_AGE_FINAL = 1000*60*60*24*14;
+
+  function safeMsg(v){return String(v==null?'':v);}
+  function notifyUser(msg, ok){
+    try{ toast(msg, ok!==false); }catch(e){}
+    if(ok===false){ console.error(msg); }
+  }
+  function setLoginMsgFinal(msg,isError=true){
+    const el=document.getElementById('login-message');
+    if(!el)return;
+    el.textContent=msg||'';
+    el.style.color=isError?'var(--red)':'var(--green)';
+  }
+  function saveSessionFinal(sess){
+    const raw=JSON.stringify(sess);
+    localStorage.setItem(SESSION_KEY_FINAL,raw);
+    localStorage.setItem('straits_dashboard_session_v1',raw);
+  }
+  function readSessionFinal(){
+    const raw=localStorage.getItem(SESSION_KEY_FINAL)||localStorage.getItem('straits_dashboard_session_v1')||sessionStorage.getItem('straits_dashboard_session_v1');
+    if(!raw)return null;
+    try{
+      const sess=JSON.parse(raw);
+      if(!sess || !sess.id || !sess.username || !sess.loginAt)return null;
+      if(Date.now()-Number(sess.loginAt)>SESSION_MAX_AGE_FINAL){clearSessionFinal();return null;}
+      return sess;
+    }catch(e){return null;}
+  }
+  function clearSessionFinal(){
+    [SESSION_KEY_FINAL,'straits_dashboard_session_v1','straits_session','straits_user','current_user','currentUser','user','session','authUser'].forEach(k=>{
+      try{localStorage.removeItem(k);sessionStorage.removeItem(k);}catch(e){}
+    });
+  }
+  function applyAuthFinal(sess){
+    window._session=sess;
+    document.body.classList.remove('auth-locked');
+    const loader=document.getElementById('loading-screen');
+    if(loader)loader.style.display='flex';
+    const nameEl=document.getElementById('current-user-name');
+    const roleEl=document.getElementById('current-user-role');
+    if(nameEl)nameEl.textContent=sess.displayName||sess.username;
+    if(roleEl)roleEl.textContent=sess.role==='admin'?'Admin':'Viewer';
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const usersBtn=document.getElementById('users-sidebar-btn');
+    if(sess.role==='admin'){
+      if(adminLabel)adminLabel.style.display='block';
+      if(usersBtn)usersBtn.style.display='flex';
+    }else{
+      if(adminLabel)adminLabel.style.display='none';
+      if(usersBtn)usersBtn.style.display='none';
+      try{applyViewerMode();}catch(e){}
+    }
+    try{TITLES.users='User Management';}catch(e){}
+  }
+  function showLoginFinal(msg){
+    window._session=null;
+    document.body.classList.add('auth-locked');
+    const loader=document.getElementById('loading-screen');
+    if(loader)loader.style.display='none';
+    setLoginMsgFinal(msg||'',!!msg);
+    setTimeout(()=>document.getElementById('login-username')?.focus(),60);
+  }
+
+  async function fetchActiveUsersForLogin(username){
+    const cols='id,username,display_name,password_hash,role,is_active,last_login';
+    const exactUrl=SB_URL+'/rest/v1/users?select='+cols+'&username=eq.'+encodeURIComponent(username)+'&limit=1';
+    let r=await fetch(exactUrl,{headers:H});
+    if(!r.ok)throw new Error(await r.text());
+    let rows=await r.json();
+    if(rows && rows[0])return rows[0];
+
+    const listUrl=SB_URL+'/rest/v1/users?select='+cols+'&is_active=eq.true';
+    r=await fetch(listUrl,{headers:H});
+    if(!r.ok)throw new Error(await r.text());
+    rows=await r.json();
+    return (rows||[]).find(u=>String(u.username||'').trim().toUpperCase()===username) || null;
+  }
+
+  window.handleDashboardLogin = async function(e){
+    if(e)e.preventDefault();
+    const username=(document.getElementById('login-username')?.value||'').trim().toUpperCase();
+    const password=document.getElementById('login-password')?.value||'';
+    const btn=document.getElementById('login-submit');
+    if(!username||!password){setLoginMsgFinal('Enter username and password.');return;}
+    try{
+      if(btn){btn.disabled=true;btn.textContent='Checking...';}
+      setLoginMsgFinal('Checking login...',false);
+      const user=await fetchActiveUsersForLogin(username);
+      if(!user){setLoginMsgFinal('Username not found or inactive. Check Supabase users table/RLS SELECT policy.');return;}
+      if(user.is_active===false){setLoginMsgFinal('This user is inactive.');return;}
+      const ok=await verifyDashboardPassword(password,user.password_hash);
+      if(!ok){setLoginMsgFinal('Incorrect password.');return;}
+      const sess={id:user.id,username:user.username,displayName:user.display_name||user.username,role:user.role||'viewer',loginAt:Date.now()};
+      saveSessionFinal(sess);
+      applyAuthFinal(sess);
+      try{await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(user.id),{method:'PATCH',headers:{...H,'Prefer':'return=minimal'},body:JSON.stringify({last_login:new Date().toISOString(),updated_at:new Date().toISOString()})});}catch(e){console.warn('last_login update failed',e);}
+      await loadAll();
+      try{initUserSession();}catch(e){}
+      setLoginMsgFinal('',false);
+      notifyUser('Signed in ✓',true);
+    }catch(err){
+      console.error('login failed',err);
+      setLoginMsgFinal('Login failed: '+safeMsg(err.message||err));
+    }finally{
+      if(btn){btn.disabled=false;btn.textContent='Sign In';}
+    }
+  };
+
+  window.signOut = function(){
+    clearSessionFinal();
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const usersBtn=document.getElementById('users-sidebar-btn');
+    if(adminLabel)adminLabel.style.display='none';
+    if(usersBtn)usersBtn.style.display='none';
+    showLoginFinal('Signed out.');
+  };
+
+  window.renderUsers = async function(){
+    const tbody=document.getElementById('users-body');
+    if(!tbody)return;
+    try{
+      const r=await fetch(SB_URL+'/rest/v1/users?select=*&order=username.asc',{headers:H});
+      if(!r.ok)throw new Error(await r.text());
+      const users=(await r.json()||[]).filter(u=>u.is_active!==false);
+      if(!users.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No active users</p></div></td></tr>';return;}
+      const currId=window._session?.id;
+      tbody.innerHTML=users.map(u=>`<tr>
+        <td class="font-bold">${escHtml(u.display_name||u.username)}</td>
+        <td><span style="font-family:monospace;font-size:12px;color:var(--text2)">${escHtml(u.username||'')}</span></td>
+        <td><span class="badge ${u.role==='admin'?'b-blue':'b-grey'}">${u.role==='admin'?'Admin':'Viewer'}</span></td>
+        <td class="text-sm text-muted">${escHtml(u.last_login||'Never')}</td>
+        <td><div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sec btn-xs" onclick="toggleUserRole('${u.id}','${u.role}')">${u.role==='admin'?'Make Viewer':'Make Admin'}</button>
+          ${u.id!==currId?`<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escAttr(u.display_name||u.username)}')">Delete</button>`:'<span class="text-xs text-muted">(you)</span>'}
+        </div></td>
+      </tr>`).join('');
+    }catch(err){
+      console.error('renderUsers failed',err);
+      tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users: '+escHtml(err.message||err)+'</p></div></td></tr>';
+    }
+  };
+
+  window.toggleUserRole = async function(id,currentRole){
+    if(!window._session || window._session.role!=='admin'){alert('Admin access only');return;}
+    const newRole=currentRole==='admin'?'viewer':'admin';
+    if(!confirm('Change this user to '+newRole+'?'))return;
+    try{
+      const r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{
+        method:'PATCH',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify({role:newRole,updated_at:new Date().toISOString()})
+      });
+      if(!r.ok)throw new Error(await r.text());
+      await renderUsers();
+      alert('Role updated.');
+    }catch(err){
+      console.error('toggleUserRole failed',err);
+      alert('Role update failed. Supabase said: '+(err.message||err));
+    }
+  };
+
+  window.deleteUser = async function(id,name){
+    if(!window._session || window._session.role!=='admin'){alert('Admin access only');return;}
+    if(id===window._session.id){alert('You cannot delete the account you are signed in with.');return;}
+    if(!confirm('Remove user "'+name+'"? This will deactivate their dashboard access.'))return;
+    try{
+      const r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{
+        method:'PATCH',
+        headers:{...H,'Prefer':'return=representation'},
+        body:JSON.stringify({is_active:false,updated_at:new Date().toISOString()})
+      });
+      const txt=await r.text();
+      if(!r.ok)throw new Error(txt||('HTTP '+r.status));
+      await renderUsers();
+      alert('User removed/deactivated.');
+    }catch(err){
+      console.error('deleteUser failed',err);
+      alert('User removal failed. Supabase said: '+(err.message||err)+'\n\nThis normally means the UPDATE policy on public.users is missing. Run the SQL I gave you, then refresh.');
+    }
+  };
+
+  const baseNavFinal=window.nav;
+  window.nav=function(id,btn){
+    if(!window._session){showLoginFinal();return;}
+    if(id==='users'){
+      if(window._session.role!=='admin'){alert('Admin access only');return;}
+      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+      document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+      document.getElementById('page-users')?.classList.add('active');
+      const title=document.getElementById('page-title'); if(title)title.textContent='User Management';
+      if(btn)btn.classList.add('active'); else document.getElementById('users-sidebar-btn')?.classList.add('active');
+      renderUsers();
+      return;
+    }
+    return baseNavFinal ? baseNavFinal(id,btn) : undefined;
+  };
+
+  async function bootFinalAuth(){
+    const form=document.getElementById('login-form');
+    if(form){
+      const fresh=form.cloneNode(true);
+      form.parentNode.replaceChild(fresh,form);
+      fresh.addEventListener('submit',window.handleDashboardLogin);
+    }
+    const sess=readSessionFinal();
+    if(!sess){showLoginFinal();return;}
+    try{
+      applyAuthFinal(sess);
+      await loadAll();
+      try{initUserSession();}catch(e){}
+    }catch(err){
+      console.error('saved session load failed',err);
+      clearSessionFinal();
+      showLoginFinal('Please sign in again.');
+    }
+  }
+
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bootFinalAuth,{once:true});
+  else bootFinalAuth();
+})();
+/* ===== END FINAL LOGIN / USER MANAGEMENT OVERRIDE ===== */
 
 </script>
 </body>
