@@ -3759,8 +3759,8 @@ window.addEventListener('DOMContentLoaded', function(){
         <div class="card-head"><div class="card-title">Previous Payments</div><span class="text-sm text-muted">Saved monthly payment records</span></div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Pay Period</th><th>Total Hours</th><th>Amount Paid</th><th>Paid On</th><th>Status</th></tr></thead>
-            <tbody id="staff-payments-body"><tr><td colspan="5"><div class="empty"><p>No previous payments yet</p></div></td></tr></tbody>
+            <thead><tr><th>Pay Period</th><th>Total Hours</th><th>Amount Paid</th><th>Paid On</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="staff-payments-body"><tr><td colspan="6"><div class="empty"><p>No previous payments yet</p></div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3786,7 +3786,7 @@ window.addEventListener('DOMContentLoaded', function(){
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Staff pay error');
       const err = '<tr><td colspan="6"><div class="empty"><div class="ei">⚠️</div><p>Could not load staff hours. Check that the staff_hours and staff_payments tables exist in Supabase.</p></div></td></tr>';
       const current = document.getElementById('staff-current-body'); if(current) current.innerHTML = err;
-      const payments = document.getElementById('staff-payments-body'); if(payments) payments.innerHTML = '<tr><td colspan="5"><div class="empty"><p>Could not load payment history.</p></div></td></tr>';
+      const payments = document.getElementById('staff-payments-body'); if(payments) payments.innerHTML = '<tr><td colspan="6"><div class="empty"><p>Could not load payment history.</p></div></td></tr>';
       if(showToast && typeof toast === 'function') toast('Could not load staff pay data', false);
     }
   }
@@ -3936,6 +3936,88 @@ window.addEventListener('DOMContentLoaded', function(){
     }
   }
 
+
+  async function editStaffPayment(id){
+    const payment = (db.staffPayments || []).find(p => String(p.id) === String(id));
+    if(!payment) return;
+    const newPaidOn = prompt('Paid on date (YYYY-MM-DD):', payment.paid_on || staffDateKey(new Date()));
+    if(newPaidOn === null) return;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(String(newPaidOn))){ alert('Use date format YYYY-MM-DD.'); return; }
+
+    const newHoursText = prompt('Total hours paid:', payment.total_hours ?? '');
+    if(newHoursText === null) return;
+    const newAmountText = prompt('Amount paid (£):', payment.total_amount_gbp ?? '');
+    if(newAmountText === null) return;
+    const newStatus = prompt('Status:', payment.status || 'paid');
+    if(newStatus === null) return;
+
+    const totalHours = staffNum(newHoursText);
+    const totalAmount = staffNum(newAmountText);
+    if(totalHours < 0 || totalAmount < 0){ alert('Hours and amount cannot be negative.'); return; }
+
+    const payload = {
+      paid_on: newPaidOn,
+      total_hours: Math.round(totalHours * 100) / 100,
+      total_amount_gbp: Math.round(totalAmount * 100) / 100,
+      status: String(newStatus || 'paid').trim() || 'paid'
+    };
+
+    try{
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Updating staff payment...');
+      await sbUpdate('staff_payments', id, payload);
+      Object.assign(payment, payload);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
+      renderStaffPay();
+      if(typeof toast === 'function') toast('Payment updated ✓');
+    }catch(e){
+      console.error('Could not update staff payment', e);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Update failed');
+      if(typeof toast === 'function') toast('Could not update payment. Check Supabase update policy.', false);
+      alert('Could not update payment. Error: ' + e.message);
+    }
+  }
+
+  async function deleteStaffPayment(id){
+    const payment = (db.staffPayments || []).find(p => String(p.id) === String(id));
+    if(!payment) return;
+    const linked = (db.staffHours || []).filter(r => String(r.payment_id || '') === String(id));
+    const msg = `Delete this previous payment record?
+
+${staffDateLabel(payment.period_start)} – ${staffDateLabel(payment.period_end)}
+${staffHoursFmt(payment.total_hours)} · ${staffMoney(payment.total_amount_gbp)}
+
+Any linked hours will be reopened as unpaid, so you can edit or delete them afterwards.`;
+    if(!confirm(msg)) return;
+
+    try{
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Deleting staff payment...');
+
+      const patchResponse = await fetch(`${SB_URL}/rest/v1/staff_hours?payment_id=eq.${encodeURIComponent(id)}`, {
+        method:'PATCH',
+        headers:{...H,'Prefer':'return=representation'},
+        body:JSON.stringify({paid:false, payment_id:null})
+      });
+      if(!patchResponse.ok) throw new Error(await patchResponse.text());
+
+      await sbDelete('staff_payments', id);
+      db.staffPayments = (db.staffPayments || []).filter(p => String(p.id) !== String(id));
+      (db.staffHours || []).forEach(r => {
+        if(String(r.payment_id || '') === String(id)){
+          r.paid = false;
+          r.payment_id = null;
+        }
+      });
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
+      renderStaffPay();
+      if(typeof toast === 'function') toast('Payment deleted and linked hours reopened ✓');
+    }catch(e){
+      console.error('Could not delete staff payment', e);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Delete failed');
+      if(typeof toast === 'function') toast('Could not delete payment. Check Supabase delete/update policies.', false);
+      alert('Could not delete payment. Error: ' + e.message);
+    }
+  }
+
   function renderStaffPay(){
     ensureStaffPage();
     const period = staffCurrentPeriod();
@@ -3978,7 +4060,7 @@ window.addEventListener('DOMContentLoaded', function(){
     const payBody = document.getElementById('staff-payments-body');
     if(payBody){
       if(!payments.length){
-        payBody.innerHTML = '<tr><td colspan="5"><div class="empty"><p>No previous payments yet</p></div></td></tr>';
+        payBody.innerHTML = '<tr><td colspan="6"><div class="empty"><p>No previous payments yet</p></div></td></tr>';
       }else{
         payBody.innerHTML = payments.slice().sort((a,b)=>String(b.period_end||'').localeCompare(String(a.period_end||''))).map(p => `<tr>
           <td>${staffDateLabel(p.period_start)} – ${staffDateLabel(p.period_end)}</td>
@@ -3986,6 +4068,10 @@ window.addEventListener('DOMContentLoaded', function(){
           <td class="font-bold text-green">${staffMoney(p.total_amount_gbp)}</td>
           <td>${staffDateLabel(p.paid_on)}</td>
           <td><span class="badge b-green">${staffEsc(p.status || 'paid')}</span></td>
+          <td><div class="flex gap-6" style="flex-wrap:wrap">
+            <button class="btn btn-sec btn-xs" onclick="editStaffPayment('${staffEsc(p.id)}')">Edit</button>
+            <button class="btn btn-danger btn-xs" onclick="deleteStaffPayment('${staffEsc(p.id)}')">Delete</button>
+          </div></td>
         </tr>`).join('');
       }
     }
@@ -4027,6 +4113,8 @@ window.addEventListener('DOMContentLoaded', function(){
   window.editStaffHour = editStaffHour;
   window.deleteStaffHour = deleteStaffHour;
   window.markCurrentStaffPeriodPaid = markCurrentStaffPeriodPaid;
+  window.editStaffPayment = editStaffPayment;
+  window.deleteStaffPayment = deleteStaffPayment;
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initStaffPay);
   else initStaffPay();
