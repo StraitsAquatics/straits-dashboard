@@ -1258,11 +1258,12 @@ function applyViewerMode(){
 }
 
 // ===== USERS =====
+// User table patch: do not send/order by a non-existent 'created' column.
 async function renderUsers(){
   const tbody=document.getElementById('users-body');
   if(!tbody)return;
   try{
-    const r=await fetch(SB_URL+'/rest/v1/users?order=created.asc',{headers:H});
+    const r=await fetch(SB_URL+'/rest/v1/users?select=*',{headers:H});
     const users=await r.json();
     if(!users.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No users</p></div></td></tr>';return;}
     const currId=window._session?.id;
@@ -1298,7 +1299,7 @@ async function saveUser(){
   const hash=await sha256(salt+password);
   const password_hash=salt+':'+hash;
   try{
-    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role,created:new Date().toISOString().split('T')[0]})});
+    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role})});
     if(!r.ok)throw new Error(await r.text());
     closeModal('modal-add-user');
     ['u-name','u-username','u-password'].forEach(id=>document.getElementById(id).value='');
