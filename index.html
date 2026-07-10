@@ -4638,20 +4638,21 @@ window.nav=function(id,btn){
   window.deleteUser = async function(id,name){
     if(!window._session || window._session.role!=='admin'){alert('Admin access only');return;}
     if(id===window._session.id){alert('You cannot delete the account you are signed in with.');return;}
-    if(!confirm('Remove user "'+name+'"? This will deactivate their dashboard access.'))return;
+    if(!confirm('Delete user "'+name+'"? This will remove their dashboard access.'))return;
     try{
+      // Hard-delete is used here because some Supabase RLS setups block soft-deactivation
+      // with "new row violates row-level security" when setting is_active=false.
       const r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{
-        method:'PATCH',
-        headers:{...H,'Prefer':'return=representation'},
-        body:JSON.stringify({is_active:false,updated_at:new Date().toISOString()})
+        method:'DELETE',
+        headers:{...H,'Prefer':'return=minimal'}
       });
       const txt=await r.text();
       if(!r.ok)throw new Error(txt||('HTTP '+r.status));
       await renderUsers();
-      alert('User removed/deactivated.');
+      alert('User deleted.');
     }catch(err){
       console.error('deleteUser failed',err);
-      alert('User removal failed. Supabase said: '+(err.message||err)+'\n\nThis normally means the UPDATE policy on public.users is missing. Run the SQL I gave you, then refresh.');
+      alert('User deletion failed. Supabase said: '+(err.message||err)+'\n\nThis normally means the DELETE policy on public.users is missing. Run the SQL I gave you, then refresh.');
     }
   };
 
