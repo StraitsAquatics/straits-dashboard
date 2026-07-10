@@ -3247,6 +3247,72 @@ window.addEventListener('DOMContentLoaded', function(){
     const n = Number(v);
     return Number.isFinite(n) ? String(v) : maintEsc(v);
   }
+  function maintNumericValue(v){
+    if(v === null || v === undefined || v === '') return null;
+    const cleaned = String(v).trim().replace(',', '.');
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  }
+  function maintNormaliseSalinity(v){
+    const n = maintNumericValue(v);
+    if(n === null) return null;
+    if(n >= 1000 && n <= 1100) return n / 1000;   // 1026 -> 1.026
+    if(n > 30 && n < 40) return n;                 // ppt, kept as ppt
+    return n;                                      // 1.026 style
+  }
+  function maintDisplayValue(v, parameter){
+    if(v === null || v === undefined || v === '') return '—';
+    const n = maintNumericValue(v);
+    if(n === null) return maintEsc(v);
+    if(parameter === 'salinity'){
+      if(n >= 1000 && n <= 1100) return (n / 1000).toFixed(3);
+      if(n > 1 && n < 2) return n.toFixed(3);
+      return String(v);
+    }
+    return String(v);
+  }
+  function maintParamStatus(tank, parameter, value){
+    const raw = maintNumericValue(value);
+    if(raw === null) return {cls:'b-grey', label:'No result'};
+    let n = raw;
+    if(parameter === 'salinity') n = maintNormaliseSalinity(value);
+
+    const isCoral = tank === 'coral';
+    const p = String(parameter).toLowerCase();
+
+    function statusGreen(){return {cls:'b-green', label:'OK'};}
+    function statusAmber(){return {cls:'b-amber', label:'Caution'};}
+    function statusRed(){return {cls:'b-red', label:'Out of range'};}
+
+    if(isCoral){
+      if(p === 'no3') return (n >= 2 && n <= 20) ? statusGreen() : ((n >= 0 && n < 2) || (n > 20 && n <= 35)) ? statusAmber() : statusRed();
+      if(p === 'po4') return (n >= 0.02 && n <= 0.10) ? statusGreen() : ((n >= 0 && n < 0.02) || (n > 0.10 && n <= 0.20)) ? statusAmber() : statusRed();
+      if(p === 'kh') return (n >= 7 && n <= 11) ? statusGreen() : ((n >= 6.5 && n < 7) || (n > 11 && n <= 12)) ? statusAmber() : statusRed();
+      if(p === 'mg') return (n >= 1250 && n <= 1350) ? statusGreen() : ((n >= 1200 && n < 1250) || (n > 1350 && n <= 1450)) ? statusAmber() : statusRed();
+      if(p === 'ca') return (n >= 380 && n <= 450) ? statusGreen() : ((n >= 350 && n < 380) || (n > 450 && n <= 480)) ? statusAmber() : statusRed();
+      if(p === 'salinity'){
+        if(raw > 30 && raw < 40) return (raw >= 34 && raw <= 36) ? statusGreen() : ((raw >= 33 && raw < 34) || (raw > 36 && raw <= 37)) ? statusAmber() : statusRed();
+        return (n >= 1.025 && n <= 1.027) ? statusGreen() : ((n >= 1.023 && n < 1.025) || (n > 1.027 && n <= 1.029)) ? statusAmber() : statusRed();
+      }
+      if(p === 'ph') return (n >= 7.8 && n <= 8.5) ? statusGreen() : ((n >= 7.6 && n < 7.8) || (n > 8.5 && n <= 8.6)) ? statusAmber() : statusRed();
+      if(p === 'temperature') return (n >= 24.5 && n <= 27.5) ? statusGreen() : ((n >= 23.5 && n < 24.5) || (n > 27.5 && n <= 28.3)) ? statusAmber() : statusRed();
+    }else{
+      if(p === 'no3') return (n >= 0 && n <= 25) ? statusGreen() : (n > 25 && n <= 50) ? statusAmber() : statusRed();
+      if(p === 'po4') return (n >= 0 && n <= 0.30) ? statusGreen() : (n > 0.30 && n <= 1.00) ? statusAmber() : statusRed();
+      if(p === 'salinity'){
+        if(raw > 30 && raw < 40) return (raw >= 31 && raw <= 33) ? statusGreen() : ((raw >= 30 && raw < 31) || (raw > 33 && raw <= 35)) ? statusAmber() : statusRed();
+        return (n >= 1.022 && n <= 1.024) ? statusGreen() : ((n >= 1.020 && n < 1.022) || (n > 1.024 && n <= 1.026)) ? statusAmber() : statusRed();
+      }
+      if(p === 'ph') return (n >= 7.8 && n <= 8.4) ? statusGreen() : ((n >= 7.6 && n < 7.8) || (n > 8.4 && n <= 8.5)) ? statusAmber() : statusRed();
+      if(p === 'temperature') return (n >= 24 && n <= 27) ? statusGreen() : ((n >= 23 && n < 24) || (n > 27 && n <= 28)) ? statusAmber() : statusRed();
+    }
+    return {cls:'b-grey', label:'Not assessed'};
+  }
+  function maintParamBadge(tank, parameter, value){
+    if(value === null || value === undefined || value === '') return '<span class="badge b-grey">—</span>';
+    const status = maintParamStatus(tank, parameter, value);
+    return `<span class="badge ${status.cls}" title="${maintEsc(status.label)}">${maintDisplayValue(value, parameter)}</span>`;
+  }
   function maintDate(v){
     if(!v) return '—';
     const d = new Date(v);
@@ -3350,6 +3416,14 @@ window.addEventListener('DOMContentLoaded', function(){
         <div class="card">
           <div class="card-head"><div class="card-title">Latest Observations / Issues</div></div>
           <div class="card-body" id="maint-latest-issues"><div class="empty"><div class="ei">🧪</div><p>No maintenance logs loaded yet</p></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">Water Parameter Colour Key</div><span class="text-sm text-muted">Green = OK · Yellow = caution · Red = out of range</span></div>
+          <div class="card-body text-sm text-muted">
+            Coral: NO3 2–20, PO4 0.02–0.10, KH 7–11, MG 1250–1350, CA 380–450, salinity 1.025–1.027, pH 7.8–8.5, temp 24.5–27.5°C.<br>
+            Fish / Invertebrate QT: NO3 0–25, PO4 0–0.30, salinity 1.022–1.024, pH 7.8–8.4, temp 24–27°C.
+          </div>
         </div>
 
         <div class="two-col">
@@ -3490,11 +3564,11 @@ window.addEventListener('DOMContentLoaded', function(){
     const rows = logs.slice(0, 30);
     const coralRows = rows.map(l => `<tr>
       <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintNum(l.coral_no3)}</td><td>${maintNum(l.coral_po4)}</td><td>${maintNum(l.coral_kh)}</td><td>${maintNum(l.coral_mg)}</td><td>${maintNum(l.coral_ca)}</td><td>${maintNum(l.coral_salinity)}</td><td>${maintNum(l.coral_ph)}</td><td>${maintNum(l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
+      <td>${maintParamBadge('coral','no3',l.coral_no3)}</td><td>${maintParamBadge('coral','po4',l.coral_po4)}</td><td>${maintParamBadge('coral','kh',l.coral_kh)}</td><td>${maintParamBadge('coral','mg',l.coral_mg)}</td><td>${maintParamBadge('coral','ca',l.coral_ca)}</td><td>${maintParamBadge('coral','salinity',l.coral_salinity)}</td><td>${maintParamBadge('coral','ph',l.coral_ph)}</td><td>${maintParamBadge('coral','temperature',l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
     </tr>`).join('');
     const qtRows = rows.map(l => `<tr>
       <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintNum(l.qt_no3)}</td><td>${maintNum(l.qt_po4)}</td><td>${maintNum(l.qt_salinity)}</td><td>${maintNum(l.qt_ph)}</td><td>${maintNum(l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
+      <td>${maintParamBadge('qt','no3',l.qt_no3)}</td><td>${maintParamBadge('qt','po4',l.qt_po4)}</td><td>${maintParamBadge('qt','salinity',l.qt_salinity)}</td><td>${maintParamBadge('qt','ph',l.qt_ph)}</td><td>${maintParamBadge('qt','temperature',l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
     </tr>`).join('');
     set('maint-coral-body', coralRows || '<tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
     set('maint-qt-body', qtRows || '<tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr>');
