@@ -3357,8 +3357,8 @@ window.addEventListener('DOMContentLoaded', function(){
             <div class="card-head"><div class="card-title">Coral Tank — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
-                <tbody id="maint-coral-body"><tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr></tbody>
+                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>pH</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
+                <tbody id="maint-coral-body"><tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr></tbody>
               </table>
             </div>
           </div>
@@ -3366,8 +3366,8 @@ window.addEventListener('DOMContentLoaded', function(){
             <div class="card-head"><div class="card-title">Fish / Invertebrate QT — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
-                <tbody id="maint-qt-body"><tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr></tbody>
+                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>Salinity</th><th>pH</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
+                <tbody id="maint-qt-body"><tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr></tbody>
               </table>
             </div>
           </div>
@@ -3456,8 +3456,8 @@ window.addEventListener('DOMContentLoaded', function(){
     if(!logs.length){
       set('maint-last','—'); set('maint-last-sub','No submissions'); set('maint-total','0'); set('maint-open-issues','0'); set('maint-status','—'); set('maint-status-sub','Awaiting data'); set('maint-tasks','0/8');
       set('maint-latest-issues','<div class="empty"><div class="ei">🧪</div><p>No maintenance logs found yet. Submit a Google Form response first.</p></div>');
-      set('maint-coral-body','<tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
-      set('maint-qt-body','<tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr>');
+      set('maint-coral-body','<tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
+      set('maint-qt-body','<tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr>');
       set('maint-cleaning-body','<tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr>');
       return;
     }
@@ -3490,14 +3490,14 @@ window.addEventListener('DOMContentLoaded', function(){
     const rows = logs.slice(0, 30);
     const coralRows = rows.map(l => `<tr>
       <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintNum(l.coral_no3)}</td><td>${maintNum(l.coral_po4)}</td><td>${maintNum(l.coral_kh)}</td><td>${maintNum(l.coral_mg)}</td><td>${maintNum(l.coral_ca)}</td><td>${maintNum(l.coral_salinity)}</td><td>${maintNum(l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
+      <td>${maintNum(l.coral_no3)}</td><td>${maintNum(l.coral_po4)}</td><td>${maintNum(l.coral_kh)}</td><td>${maintNum(l.coral_mg)}</td><td>${maintNum(l.coral_ca)}</td><td>${maintNum(l.coral_salinity)}</td><td>${maintNum(l.coral_ph)}</td><td>${maintNum(l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
     </tr>`).join('');
     const qtRows = rows.map(l => `<tr>
       <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintNum(l.qt_no3)}</td><td>${maintNum(l.qt_po4)}</td><td>${maintNum(l.qt_kh)}</td><td>${maintNum(l.qt_mg)}</td><td>${maintNum(l.qt_ca)}</td><td>${maintNum(l.qt_salinity)}</td><td>${maintNum(l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
+      <td>${maintNum(l.qt_no3)}</td><td>${maintNum(l.qt_po4)}</td><td>${maintNum(l.qt_salinity)}</td><td>${maintNum(l.qt_ph)}</td><td>${maintNum(l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
     </tr>`).join('');
-    set('maint-coral-body', coralRows || '<tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
-    set('maint-qt-body', qtRows || '<tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr>');
+    set('maint-coral-body', coralRows || '<tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
+    set('maint-qt-body', qtRows || '<tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr>');
 
     const cleaningRows = rows.map(l => `<tr>
       <td>${maintDate(l.work_date || l.submitted_at)}</td>
