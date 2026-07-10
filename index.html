@@ -537,9 +537,60 @@ tr:hover td{
 }
 /* ===== END CALM CONTENT CLEANUP ===== */
 
+
+
+/* ===== LOGIN GATE 2026-07-10 ===== */
+body.auth-locked .layout,
+body.auth-locked #loading-screen{display:none !important;}
+#login-screen{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:24px;background:linear-gradient(135deg,#05283b 0%,#063c55 50%,#031d2d 100%);}
+body.auth-locked #login-screen{display:flex;}
+.login-card{width:420px;max-width:100%;background:#fff;border:1px solid rgba(214,231,239,.95);border-radius:18px;box-shadow:0 28px 80px rgba(3,29,45,.35);overflow:hidden;}
+.login-head{padding:22px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,#f7fdff,#edf8fb);}
+.login-logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,#00c8e8,#7ce7f5 62%,#ff8a58);display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 8px 22px rgba(0,200,232,.25);}
+.login-title{font-size:18px;font-weight:850;color:var(--ocean);line-height:1.1;}
+.login-sub{font-size:12px;color:var(--text3);margin-top:3px;}
+.login-body{padding:22px 24px;display:flex;flex-direction:column;gap:12px;}
+.login-foot{padding:14px 24px;background:#f8fafc;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.login-msg{min-height:18px;font-size:12px;color:var(--red);font-weight:650;}
+.login-muted{font-size:11px;color:var(--text3);}
+.login-remember{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);}
+.login-remember input{width:14px;height:14px;}
+body:not(.auth-locked) #login-screen{display:none !important;}
+/* ===== END LOGIN GATE ===== */
+
 </style>
 </head>
-<body>
+<body class="auth-locked">
+
+<!-- LOGIN SCREEN -->
+<div id="login-screen">
+  <form class="login-card" id="login-form" autocomplete="on">
+    <div class="login-head">
+      <div class="login-logo">🐠</div>
+      <div>
+        <div class="login-title">Straits Aquatics</div>
+        <div class="login-sub">Dashboard login</div>
+      </div>
+    </div>
+    <div class="login-body">
+      <div class="fg">
+        <label>Username</label>
+        <input type="text" id="login-username" autocomplete="username" placeholder="e.g. RCASTLE" style="text-transform:uppercase">
+      </div>
+      <div class="fg">
+        <label>Password</label>
+        <input type="password" id="login-password" autocomplete="current-password" placeholder="Enter password">
+      </div>
+      <label class="login-remember"><input type="checkbox" id="login-remember" checked> Keep me signed in on this device</label>
+      <div class="login-msg" id="login-message"></div>
+    </div>
+    <div class="login-foot">
+      <span class="login-muted">Users are managed in Supabase.</span>
+      <button type="submit" class="btn btn-primary viewer-ok" id="login-submit">Sign In</button>
+    </div>
+  </form>
+</div>
+
 
 <!-- Loading screen -->
 <div id="loading-screen">
@@ -999,6 +1050,7 @@ tr:hover td{
 
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
 <script>
 
 // ===== SUPABASE CONFIG =====
@@ -1294,12 +1346,13 @@ async function saveUser(){
   const password=document.getElementById('u-password').value;
   const role=document.getElementById('u-role').value;
   if(!name||!username||!password){toast('Fill in all fields',false);return;}
-  // Hash password
+  // New users are stored as salt:sha256(password) so the dashboard can verify them without hard-coding passwords.
   const salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
   const hash=await sha256(salt+password);
   const password_hash=salt+':'+hash;
   try{
-    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify({id:uid8(),username,display_name:name,password_hash,role})});
+    const payload={username,display_name:name,password_hash,role,is_active:true};
+    const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify(payload)});
     if(!r.ok)throw new Error(await r.text());
     closeModal('modal-add-user');
     ['u-name','u-username','u-password'].forEach(id=>document.getElementById(id).value='');
@@ -1738,7 +1791,7 @@ function updateClock(){
 }
 updateClock();
 setInterval(updateClock,1000);
-loadAll();
+initAuthGate();
 
 
 
@@ -4123,64 +4176,174 @@ Any linked hours will be reopened as unpaid, so you can edit or delete them afte
 /* ===== END STRAITS AQUATICS STAFF HOURS / PAY PATCH ===== */
 
 
-/* ===== ADMIN USERS + SIGN OUT FIX 2026-07-10 =====
-   Makes the Users admin page accessible and makes Sign Out actually do something.
-   This is deliberately appended as a final patch so it does not disturb existing order/staff/maintenance logic. */
-(function(){
-  function ensureAdminUsersVisible(){
-    const adminLabel=document.getElementById('admin-sidebar-label');
-    const usersBtn=document.getElementById('users-sidebar-btn');
-    if(adminLabel) adminLabel.style.display='block';
-    if(usersBtn) usersBtn.style.display='flex';
 
-    const nameEl=document.getElementById('current-user-name');
-    const roleEl=document.getElementById('current-user-role');
-    if(nameEl && !String(nameEl.textContent||'').trim()) nameEl.textContent='Owner';
-    if(roleEl && !String(roleEl.textContent||'').trim()) roleEl.textContent='Admin';
+/* ===== REAL LOGIN GATE + SIGN OUT FIX 2026-07-10 =====
+   Uses Supabase public.users table. Existing $2a$ bcrypt hashes are supported through bcryptjs CDN;
+   new users created from this dashboard use salt:sha256 hashes. */
+const AUTH_SESSION_KEY='straits_dashboard_session_v1';
+const AUTH_MAX_AGE_MS=1000*60*60*24*14;
 
-    try{ if(typeof TITLES!=='undefined') TITLES.users='User Management'; }catch(e){}
+function setLoginMessage(msg,isError=true){
+  const el=document.getElementById('login-message');
+  if(!el)return;
+  el.textContent=msg||'';
+  el.style.color=isError?'var(--red)':'var(--green)';
+}
+
+function getBcryptLib(){
+  if(window.dcodeIO && window.dcodeIO.bcrypt)return window.dcodeIO.bcrypt;
+  if(window.bcrypt)return window.bcrypt;
+  return null;
+}
+
+async function verifyDashboardPassword(password,storedHash){
+  if(!storedHash)return false;
+  const h=String(storedHash);
+  // Current dashboard-created users: salt:sha256(salt + password)
+  if(/^[a-f0-9]{16,}:[a-f0-9]{64}$/i.test(h)){
+    const [salt,expected]=h.split(':');
+    const actual=await sha256(salt+password);
+    return actual===expected;
   }
+  // Existing Supabase users: bcrypt / $2a$ / $2b$ / $2y$
+  if(/^\$2[aby]\$/.test(h)){
+    const bcrypt=getBcryptLib();
+    if(!bcrypt)throw new Error('Password checker has not loaded yet. Please refresh and try again.');
+    return bcrypt.compareSync(password,h);
+  }
+  return false;
+}
 
-  window.signOut=function(){
-    try{
-      window._session=null;
-      sessionStorage.clear();
-      ['straits_session','straits_user','current_user','currentUser','user','session','authUser'].forEach(k=>{
-        try{ localStorage.removeItem(k); }catch(e){}
-      });
-    }catch(e){}
-    location.reload();
-  };
+function readSavedSession(){
+  const raw=localStorage.getItem(AUTH_SESSION_KEY)||sessionStorage.getItem(AUTH_SESSION_KEY);
+  if(!raw)return null;
+  try{
+    const sess=JSON.parse(raw);
+    if(!sess || !sess.id || !sess.username || !sess.loginAt)return null;
+    if(Date.now()-sess.loginAt>AUTH_MAX_AGE_MS){clearSavedSession();return null;}
+    return sess;
+  }catch(e){return null;}
+}
+function saveSession(sess,persist=true){
+  const raw=JSON.stringify(sess);
+  if(persist)localStorage.setItem(AUTH_SESSION_KEY,raw);
+  else sessionStorage.setItem(AUTH_SESSION_KEY,raw);
+}
+function clearSavedSession(){
+  try{
+    localStorage.removeItem(AUTH_SESSION_KEY);
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    ['straits_session','straits_user','current_user','currentUser','user','session','authUser'].forEach(k=>{
+      localStorage.removeItem(k); sessionStorage.removeItem(k);
+    });
+  }catch(e){}
+}
 
-  const previousNav=window.nav;
-  window.nav=function(id,btn){
-    if(id==='users'){
-      ensureAdminUsersVisible();
-      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-      document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
-      const page=document.getElementById('page-users');
-      if(page) page.classList.add('active');
-      const title=document.getElementById('page-title');
-      if(title) title.textContent='User Management';
-      if(btn) btn.classList.add('active');
-      else document.getElementById('users-sidebar-btn')?.classList.add('active');
-      if(typeof renderUsers==='function') renderUsers();
-      return;
-    }
-    return previousNav ? previousNav(id,btn) : undefined;
-  };
+function applyAuthUI(sess){
+  window._session=sess;
+  document.body.classList.remove('auth-locked');
+  const nameEl=document.getElementById('current-user-name');
+  const roleEl=document.getElementById('current-user-role');
+  if(nameEl)nameEl.textContent=sess.displayName||sess.username;
+  if(roleEl)roleEl.textContent=sess.role==='admin'?'Admin':'Viewer';
+  const adminLabel=document.getElementById('admin-sidebar-label');
+  const usersBtn=document.getElementById('users-sidebar-btn');
+  if(sess.role==='admin'){
+    if(adminLabel)adminLabel.style.display='block';
+    if(usersBtn)usersBtn.style.display='flex';
+  }else{
+    if(adminLabel)adminLabel.style.display='none';
+    if(usersBtn)usersBtn.style.display='none';
+    if(typeof applyViewerMode==='function')applyViewerMode();
+  }
+  try{ if(typeof TITLES!=='undefined') TITLES.users='User Management'; }catch(e){}
+}
 
-  // Also make the original initUserSession safer if it exists.
-  const previousInit=window.initUserSession;
-  window.initUserSession=function(){
-    if(previousInit) previousInit();
-    ensureAdminUsersVisible();
-  };
+function showLogin(msg=''){
+  window._session=null;
+  document.body.classList.add('auth-locked');
+  const loader=document.getElementById('loading-screen');
+  if(loader)loader.style.display='none';
+  setLoginMessage(msg,!!msg);
+  setTimeout(()=>document.getElementById('login-username')?.focus(),50);
+}
 
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', ensureAdminUsersVisible);
-  else ensureAdminUsersVisible();
-})();
-/* ===== END ADMIN USERS + SIGN OUT FIX ===== */
+async function handleDashboardLogin(e){
+  if(e)e.preventDefault();
+  const username=(document.getElementById('login-username')?.value||'').trim().toUpperCase();
+  const password=document.getElementById('login-password')?.value||'';
+  const remember=!!document.getElementById('login-remember')?.checked;
+  const btn=document.getElementById('login-submit');
+  if(!username||!password){setLoginMessage('Enter username and password.');return;}
+  try{
+    if(btn){btn.disabled=true;btn.textContent='Checking...';}
+    setLoginMessage('Checking login...',false);
+    const url=SB_URL+'/rest/v1/users?select=id,username,display_name,password_hash,role,is_active&username=eq.'+encodeURIComponent(username)+'&limit=1';
+    const r=await fetch(url,{headers:H});
+    if(!r.ok)throw new Error(await r.text());
+    const users=await r.json();
+    const user=users && users[0];
+    if(!user){setLoginMessage('Username not found.');return;}
+    if(user.is_active===false){setLoginMessage('This user is inactive.');return;}
+    const ok=await verifyDashboardPassword(password,user.password_hash);
+    if(!ok){setLoginMessage('Incorrect password.');return;}
+    const sess={id:user.id,username:user.username,displayName:user.display_name||user.username,role:user.role||'viewer',loginAt:Date.now()};
+    saveSession(sess,remember);
+    window._session=sess;
+    try{await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(user.id),{method:'PATCH',headers:H,body:JSON.stringify({last_login:new Date().toISOString()})});}catch(e){}
+    applyAuthUI(sess);
+    const loader=document.getElementById('loading-screen');
+    if(loader)loader.style.display='flex';
+    await loadAll();
+    if(typeof initUserSession==='function')initUserSession();
+    setLoginMessage('',false);
+    toast('Signed in ✓');
+  }catch(err){
+    console.error(err);
+    setLoginMessage('Login failed: '+(err.message||err));
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Sign In';}
+  }
+}
+
+async function initAuthGate(){
+  const form=document.getElementById('login-form');
+  if(form && !form.dataset.bound){form.addEventListener('submit',handleDashboardLogin);form.dataset.bound='1';}
+  const sess=readSavedSession();
+  if(!sess){showLogin();return;}
+  applyAuthUI(sess);
+  const loader=document.getElementById('loading-screen');
+  if(loader)loader.style.display='flex';
+  await loadAll();
+  if(typeof initUserSession==='function')initUserSession();
+}
+
+window.signOut=function(){
+  clearSavedSession();
+  window._session=null;
+  location.reload();
+};
+
+const authBaseNav=window.nav;
+window.nav=function(id,btn){
+  if(!window._session){showLogin();return;}
+  if(id==='users'){
+    if(window._session.role!=='admin'){toast('Admin access only',false);return;}
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+    document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+    const page=document.getElementById('page-users');
+    if(page) page.classList.add('active');
+    const title=document.getElementById('page-title');
+    if(title) title.textContent='User Management';
+    if(btn) btn.classList.add('active');
+    else document.getElementById('users-sidebar-btn')?.classList.add('active');
+    if(typeof renderUsers==='function') renderUsers();
+    return;
+  }
+  return authBaseNav ? authBaseNav(id,btn) : undefined;
+};
+/* ===== END REAL LOGIN GATE + SIGN OUT FIX ===== */
+
 
 </script>
 </body>
