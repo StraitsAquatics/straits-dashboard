@@ -3231,6 +3231,330 @@ window.addEventListener('DOMContentLoaded', function(){
 });
 /* ===== END STRAITS AQUATICS STOCK ORDER PATCH ===== */
 
+
+/* ===== STRAITS AQUATICS MAINTENANCE LOGS PATCH 2026-07-10 =====
+   Reads Google Form submissions from Supabase maintenance_logs and displays them
+   in the dashboard with separate Coral Tank and Fish / Invertebrate QT tables.
+   Added: issue resolution override and delete log controls. */
+(function(){
+  const MAINT_PAGE_ID = 'maintenance';
+
+  function maintEsc(v){
+    return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+  function maintNum(v){
+    if(v === null || v === undefined || v === '') return '—';
+    const n = Number(v);
+    return Number.isFinite(n) ? String(v) : maintEsc(v);
+  }
+  function maintDate(v){
+    if(!v) return '—';
+    const d = new Date(v);
+    if(!isNaN(d.getTime())) return d.toLocaleDateString('en-GB');
+    return maintEsc(v);
+  }
+  function maintDateTime(v){
+    if(!v) return '—';
+    const d = new Date(v);
+    if(!isNaN(d.getTime())) return d.toLocaleString('en-GB', {dateStyle:'short', timeStyle:'short'});
+    return maintEsc(v);
+  }
+  function maintBool(v){
+    return v === true || v === 'true' || v === 1 || v === '1';
+  }
+  function maintBoolBadge(v){
+    return maintBool(v) ? '<span class="badge b-green">Done</span>' : '<span class="badge b-grey">—</span>';
+  }
+  function maintHasText(v){
+    return String(v || '').trim().length > 0;
+  }
+  function maintRawIssue(log){
+    return maintBool(log?.urgent_issue) || maintHasText(log?.urgent_issue_details) || maintHasText(log?.livestock_concerns) || maintHasText(log?.equipment_issues) || maintHasText(log?.dead_livestock_losses);
+  }
+  function maintIssueResolved(log){
+    return maintBool(log?.issue_resolved);
+  }
+  function maintOpenIssue(log){
+    return maintRawIssue(log) && !maintIssueResolved(log);
+  }
+  function maintIssueBadge(log){
+    if(!maintRawIssue(log)) return '<span class="badge b-green">OK</span>';
+    if(maintIssueResolved(log)) return '<span class="badge b-blue">Resolved</span>';
+    return '<span class="badge b-red">Check</span>';
+  }
+  function maintIssueSummary(log){
+    if(!log) return 'No submissions yet';
+    const parts=[];
+    if(maintBool(log.urgent_issue)) parts.push('Urgent issue marked');
+    if(maintHasText(log.urgent_issue_details)) parts.push(log.urgent_issue_details);
+    if(maintHasText(log.livestock_concerns)) parts.push('Livestock: ' + log.livestock_concerns);
+    if(maintHasText(log.equipment_issues)) parts.push('Equipment: ' + log.equipment_issues);
+    if(maintHasText(log.dead_livestock_losses)) parts.push('Losses: ' + log.dead_livestock_losses);
+    if(parts.length && maintIssueResolved(log)){
+      parts.push('Resolved' + (log.issue_resolution_notes ? ': ' + log.issue_resolution_notes : ''));
+    }
+    return parts.length ? maintEsc(parts.join(' · ')) : 'No issues noted';
+  }
+  function maintCompletionCount(log){
+    if(!log) return '0/8';
+    const keys=['coral_glass_scraped','coral_inside_cleaned','qt_glass_scraped','qt_inside_cleaned','coral_skimmer_cleaned','spillages_cleaned','livestock_fed','shelves_tidied'];
+    const done=keys.filter(k=>maintBool(log[k])).length;
+    return done + '/' + keys.length;
+  }
+  function maintActions(log){
+    if(!log || !log.id) return '—';
+    const id = maintEsc(log.id);
+    const resolveBtn = maintRawIssue(log)
+      ? (maintIssueResolved(log)
+        ? `<button class="btn btn-sec btn-xs maint-action" onclick="toggleMaintenanceIssueResolved('${id}',false)">↩ Reopen</button>`
+        : `<button class="btn btn-sec btn-xs maint-action" onclick="toggleMaintenanceIssueResolved('${id}',true)">✓ Mark resolved</button>`)
+      : '';
+    return `<div class="flex gap-6" style="flex-wrap:wrap">${resolveBtn}<button class="btn btn-danger btn-xs maint-action" onclick="deleteMaintenanceLog('${id}')">Delete</button></div>`;
+  }
+
+  function ensureMaintenanceSidebar(){
+    if(document.getElementById('maintenance-sidebar-btn')) return;
+    const financeLabel = [...document.querySelectorAll('.sb-label')].find(el => el.textContent.trim() === 'Finance');
+    const adminLabel = document.getElementById('admin-sidebar-label');
+    const anchor = financeLabel || adminLabel;
+    const html = `
+      <div class="sb-label" id="maintenance-sidebar-label">Operations</div>
+      <button class="sb-btn" id="maintenance-sidebar-btn" onclick="nav('maintenance',this)"><span class="ic">🧪</span><span>Tank Maintenance</span></button>
+    `;
+    if(anchor) anchor.insertAdjacentHTML('beforebegin', html);
+    else document.querySelector('.sidebar > div[style]')?.insertAdjacentHTML('beforeend', html);
+  }
+
+  function ensureMaintenancePage(){
+    if(document.getElementById('page-maintenance')) return;
+    const content = document.querySelector('.content');
+    if(!content) return;
+    content.insertAdjacentHTML('beforeend', `
+      <div id="page-maintenance" class="page">
+        <div class="section-hd">
+          <div>
+            <div class="section-title">Tank Maintenance</div>
+            <div class="text-sm text-muted">Google Form submissions stored in Supabase maintenance_logs</div>
+          </div>
+          <button class="btn btn-sec viewer-ok" onclick="loadMaintenanceLogs(true)">↻ Refresh</button>
+        </div>
+
+        <div class="metrics">
+          <div class="metric"><div class="metric-lbl">Last Checklist</div><div class="metric-val mv-blue" id="maint-last">—</div><div class="metric-sub" id="maint-last-sub">No submissions</div></div>
+          <div class="metric"><div class="metric-lbl">Total Logs</div><div class="metric-val" id="maint-total">0</div><div class="metric-sub">From Supabase</div></div>
+          <div class="metric"><div class="metric-lbl">Open Issues</div><div class="metric-val mv-red" id="maint-open-issues">0</div><div class="metric-sub">Unresolved maintenance concerns</div></div>
+          <div class="metric"><div class="metric-lbl">Latest Status</div><div class="metric-val" id="maint-status">—</div><div class="metric-sub" id="maint-status-sub">Awaiting data</div></div>
+          <div class="metric"><div class="metric-lbl">Cleaning Tasks</div><div class="metric-val mv-green" id="maint-tasks">0/8</div><div class="metric-sub">Latest checklist</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">Latest Observations / Issues</div></div>
+          <div class="card-body" id="maint-latest-issues"><div class="empty"><div class="ei">🧪</div><p>No maintenance logs loaded yet</p></div></div>
+        </div>
+
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head"><div class="card-title">Coral Tank — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
+                <tbody id="maint-coral-body"><tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div class="card-title">Fish / Invertebrate QT — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
+                <tbody id="maint-qt-body"><tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">Cleaning / Maintenance History</div><span class="text-sm text-muted">Glass, skimmer, feeding and observations</span></div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>Coral Glass</th><th>Coral Inside</th><th>QT Glass</th><th>QT Inside</th><th>Skimmer</th><th>Spillages</th><th>Fed</th><th>Shelves</th><th>Issues</th><th>Comments</th><th>Actions</th></tr></thead>
+              <tbody id="maint-cleaning-body"><tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  async function loadMaintenanceLogs(showToast){
+    if(!window.db) window.db = {};
+    try{
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','⏳ Loading maintenance...');
+      const rows = await sbGet('maintenance_logs','select=*&order=submitted_at.desc&limit=100');
+      db.maintenance = Array.isArray(rows) ? rows : [];
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
+      renderMaintenance();
+      if(showToast && typeof toast === 'function') toast('Maintenance logs refreshed ✓');
+    }catch(e){
+      console.error('Maintenance log load failed', e);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Maintenance error');
+      const errHtml = '<div class="empty"><div class="ei">⚠️</div><p>Could not load maintenance logs from Supabase.</p></div>';
+      ['maint-coral-body','maint-qt-body','maint-cleaning-body'].forEach(id=>{
+        const el=document.getElementById(id); if(el) el.innerHTML = '<tr><td colspan="12">'+errHtml+'</td></tr>';
+      });
+      if(showToast && typeof toast === 'function') toast('Could not load maintenance logs', false);
+    }
+  }
+
+  async function toggleMaintenanceIssueResolved(id, resolved){
+    const action = resolved ? 'mark this issue as resolved' : 'reopen this issue';
+    if(!confirm('Are you sure you want to ' + action + '?')) return;
+    const payload = resolved
+      ? {issue_resolved:true, issue_resolved_at:new Date().toISOString(), issue_resolution_notes:(prompt('Resolution note, optional:', 'Resolved') || '')}
+      : {issue_resolved:false, issue_resolved_at:null, issue_resolution_notes:''};
+    try{
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Saving maintenance update...');
+      await sbUpdate('maintenance_logs', id, payload);
+      if(db.maintenance){
+        const idx = db.maintenance.findIndex(l => String(l.id) === String(id));
+        if(idx > -1) db.maintenance[idx] = {...db.maintenance[idx], ...payload};
+      }
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
+      renderMaintenance();
+      if(typeof toast === 'function') toast(resolved ? 'Issue marked resolved ✓' : 'Issue reopened');
+    }catch(e){
+      console.error('Could not update maintenance issue', e);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Maintenance update failed');
+      if(typeof toast === 'function') toast('Could not update issue. Check that the maintenance_logs columns/policies were added.', false);
+      alert('Could not update the issue. You may need to run the Supabase SQL migration for issue_resolved columns and update/delete policies. Error: ' + e.message);
+    }
+  }
+
+  async function deleteMaintenanceLog(id){
+    if(!confirm('Delete this maintenance log? This is useful for removing test form submissions. This cannot be undone.')) return;
+    try{
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Deleting maintenance log...');
+      await sbDelete('maintenance_logs', id);
+      db.maintenance = (db.maintenance || []).filter(l => String(l.id) !== String(id));
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
+      renderMaintenance();
+      if(typeof toast === 'function') toast('Maintenance log deleted ✓');
+    }catch(e){
+      console.error('Could not delete maintenance log', e);
+      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Delete failed');
+      if(typeof toast === 'function') toast('Could not delete maintenance log. Check update/delete policies.', false);
+      alert('Could not delete this log. You may need to run the Supabase SQL migration for delete policy. Error: ' + e.message);
+    }
+  }
+
+  function renderMaintenance(){
+    ensureMaintenancePage();
+    const logs = db.maintenance || [];
+    const latest = logs[0];
+    const set=(id,val)=>{const el=document.getElementById(id); if(el) el.innerHTML=val;};
+
+    if(!logs.length){
+      set('maint-last','—'); set('maint-last-sub','No submissions'); set('maint-total','0'); set('maint-open-issues','0'); set('maint-status','—'); set('maint-status-sub','Awaiting data'); set('maint-tasks','0/8');
+      set('maint-latest-issues','<div class="empty"><div class="ei">🧪</div><p>No maintenance logs found yet. Submit a Google Form response first.</p></div>');
+      set('maint-coral-body','<tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
+      set('maint-qt-body','<tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr>');
+      set('maint-cleaning-body','<tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr>');
+      return;
+    }
+
+    const openIssues = logs.filter(maintOpenIssue).length;
+    set('maint-last', maintDate(latest.work_date || latest.submitted_at));
+    set('maint-last-sub', 'Submitted ' + maintDateTime(latest.submitted_at));
+    set('maint-total', String(logs.length));
+    set('maint-open-issues', String(openIssues));
+    set('maint-status', maintOpenIssue(latest) ? '<span class="mv-red">Issue</span>' : (maintRawIssue(latest) ? '<span class="mv-blue">Resolved</span>' : '<span class="mv-green">OK</span>'));
+    set('maint-status-sub', maintOpenIssue(latest) ? 'Check observations below' : (maintRawIssue(latest) ? 'Issue resolved / overridden' : 'No issues on latest checklist'));
+    set('maint-tasks', maintCompletionCount(latest));
+
+    set('maint-latest-issues', `
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Date</th><th>Status</th><th>Summary</th><th>Coral Notes</th><th>QT Notes</th><th>Final Comments</th><th>Resolution</th><th>Actions</th></tr></thead>
+        <tbody><tr>
+          <td>${maintDate(latest.work_date || latest.submitted_at)} ${maintEsc(latest.time_completed || '')}</td>
+          <td>${maintIssueBadge(latest)}</td>
+          <td>${maintIssueSummary(latest)}</td>
+          <td>${maintEsc(latest.coral_notes || '—')}</td>
+          <td>${maintEsc(latest.qt_notes || '—')}</td>
+          <td>${maintEsc(latest.final_comments || '—')}</td>
+          <td>${maintIssueResolved(latest) ? maintEsc((latest.issue_resolution_notes || 'Resolved') + (latest.issue_resolved_at ? ' · ' + maintDateTime(latest.issue_resolved_at) : '')) : '—'}</td>
+          <td>${maintActions(latest)}</td>
+        </tr></tbody>
+      </table></div>
+    `);
+
+    const rows = logs.slice(0, 30);
+    const coralRows = rows.map(l => `<tr>
+      <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
+      <td>${maintNum(l.coral_no3)}</td><td>${maintNum(l.coral_po4)}</td><td>${maintNum(l.coral_kh)}</td><td>${maintNum(l.coral_mg)}</td><td>${maintNum(l.coral_ca)}</td><td>${maintNum(l.coral_salinity)}</td><td>${maintNum(l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
+    </tr>`).join('');
+    const qtRows = rows.map(l => `<tr>
+      <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
+      <td>${maintNum(l.qt_no3)}</td><td>${maintNum(l.qt_po4)}</td><td>${maintNum(l.qt_kh)}</td><td>${maintNum(l.qt_mg)}</td><td>${maintNum(l.qt_ca)}</td><td>${maintNum(l.qt_salinity)}</td><td>${maintNum(l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
+    </tr>`).join('');
+    set('maint-coral-body', coralRows || '<tr><td colspan="11"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
+    set('maint-qt-body', qtRows || '<tr><td colspan="11"><div class="empty"><p>No QT results yet</p></div></td></tr>');
+
+    const cleaningRows = rows.map(l => `<tr>
+      <td>${maintDate(l.work_date || l.submitted_at)}</td>
+      <td>${maintBoolBadge(l.coral_glass_scraped)}</td>
+      <td>${maintBoolBadge(l.coral_inside_cleaned)}</td>
+      <td>${maintBoolBadge(l.qt_glass_scraped)}</td>
+      <td>${maintBoolBadge(l.qt_inside_cleaned)}</td>
+      <td>${maintBoolBadge(l.coral_skimmer_cleaned)}</td>
+      <td>${maintBoolBadge(l.spillages_cleaned)}</td>
+      <td>${maintBoolBadge(l.livestock_fed)}</td>
+      <td>${maintBoolBadge(l.shelves_tidied)}</td>
+      <td>${maintIssueBadge(l)}</td>
+      <td>${maintEsc(l.cleaning_notes || l.final_comments || '—')}</td>
+      <td>${maintActions(l)}</td>
+    </tr>`).join('');
+    set('maint-cleaning-body', cleaningRows || '<tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr>');
+  }
+
+  function installMaintenanceNav(){
+    ensureMaintenanceSidebar();
+    ensureMaintenancePage();
+    try{ if(typeof TITLES !== 'undefined') TITLES.maintenance = 'Tank Maintenance'; }catch(e){}
+    if(window.__maintenanceNavInstalled) return;
+    const baseNav = window.nav;
+    window.nav = function(id, btn){
+      if(id === MAINT_PAGE_ID){
+        document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+        document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+        const page = document.getElementById('page-maintenance');
+        if(page) page.classList.add('active');
+        const title = document.getElementById('page-title');
+        if(title) title.textContent = 'Tank Maintenance';
+        if(btn) btn.classList.add('active');
+        else document.getElementById('maintenance-sidebar-btn')?.classList.add('active');
+        renderMaintenance();
+        return;
+      }
+      return baseNav ? baseNav(id, btn) : undefined;
+    };
+    window.__maintenanceNavInstalled = true;
+  }
+
+  function initMaintenanceDashboard(){
+    installMaintenanceNav();
+    loadMaintenanceLogs(false);
+  }
+
+  window.renderMaintenance = renderMaintenance;
+  window.loadMaintenanceLogs = loadMaintenanceLogs;
+  window.toggleMaintenanceIssueResolved = toggleMaintenanceIssueResolved;
+  window.deleteMaintenanceLog = deleteMaintenanceLog;
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initMaintenanceDashboard);
+  else initMaintenanceDashboard();
+})();
+/* ===== END STRAITS AQUATICS MAINTENANCE LOGS PATCH ===== */
+
 </script>
 </body>
 </html>
