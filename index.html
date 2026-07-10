@@ -4121,6 +4121,66 @@ Any linked hours will be reopened as unpaid, so you can edit or delete them afte
 })();
 /* ===== END STRAITS AQUATICS STAFF HOURS / PAY PATCH ===== */
 
+
+/* ===== ADMIN USERS + SIGN OUT FIX 2026-07-10 =====
+   Makes the Users admin page accessible and makes Sign Out actually do something.
+   This is deliberately appended as a final patch so it does not disturb existing order/staff/maintenance logic. */
+(function(){
+  function ensureAdminUsersVisible(){
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const usersBtn=document.getElementById('users-sidebar-btn');
+    if(adminLabel) adminLabel.style.display='block';
+    if(usersBtn) usersBtn.style.display='flex';
+
+    const nameEl=document.getElementById('current-user-name');
+    const roleEl=document.getElementById('current-user-role');
+    if(nameEl && !String(nameEl.textContent||'').trim()) nameEl.textContent='Owner';
+    if(roleEl && !String(roleEl.textContent||'').trim()) roleEl.textContent='Admin';
+
+    try{ if(typeof TITLES!=='undefined') TITLES.users='User Management'; }catch(e){}
+  }
+
+  window.signOut=function(){
+    try{
+      window._session=null;
+      sessionStorage.clear();
+      ['straits_session','straits_user','current_user','currentUser','user','session','authUser'].forEach(k=>{
+        try{ localStorage.removeItem(k); }catch(e){}
+      });
+    }catch(e){}
+    location.reload();
+  };
+
+  const previousNav=window.nav;
+  window.nav=function(id,btn){
+    if(id==='users'){
+      ensureAdminUsersVisible();
+      document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+      document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+      const page=document.getElementById('page-users');
+      if(page) page.classList.add('active');
+      const title=document.getElementById('page-title');
+      if(title) title.textContent='User Management';
+      if(btn) btn.classList.add('active');
+      else document.getElementById('users-sidebar-btn')?.classList.add('active');
+      if(typeof renderUsers==='function') renderUsers();
+      return;
+    }
+    return previousNav ? previousNav(id,btn) : undefined;
+  };
+
+  // Also make the original initUserSession safer if it exists.
+  const previousInit=window.initUserSession;
+  window.initUserSession=function(){
+    if(previousInit) previousInit();
+    ensureAdminUsersVisible();
+  };
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', ensureAdminUsersVisible);
+  else ensureAdminUsersVisible();
+})();
+/* ===== END ADMIN USERS + SIGN OUT FIX ===== */
+
 </script>
 </body>
 </html>
