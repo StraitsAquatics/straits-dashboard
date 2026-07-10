@@ -4278,12 +4278,29 @@ async function handleDashboardLogin(e){
   try{
     if(btn){btn.disabled=true;btn.textContent='Checking...';}
     setLoginMessage('Checking login...',false);
-    const url=SB_URL+'/rest/v1/users?select=id,username,display_name,password_hash,role,is_active&username=eq.'+encodeURIComponent(username)+'&limit=1';
+    const cols='id,username,display_name,password_hash,role,is_active';
+    const url=SB_URL+'/rest/v1/users?select='+cols+'&username=eq.'+encodeURIComponent(username)+'&limit=1';
     const r=await fetch(url,{headers:H});
     if(!r.ok)throw new Error(await r.text());
-    const users=await r.json();
-    const user=users && users[0];
-    if(!user){setLoginMessage('Username not found.');return;}
+    let users=await r.json();
+    let user=users && users[0];
+
+    // Fallback: if the exact PostgREST match fails, fetch readable active users and match locally.
+    // If this also returns no rows, Supabase RLS is probably blocking the public.users table before login.
+    if(!user){
+      const r2=await fetch(SB_URL+'/rest/v1/users?select='+cols+'&is_active=eq.true',{headers:H});
+      if(!r2.ok)throw new Error(await r2.text());
+      const readableUsers=await r2.json();
+      user=(readableUsers||[]).find(u=>String(u.username||'').trim().toUpperCase()===username);
+      if(!user){
+        if(!readableUsers || readableUsers.length===0){
+          setLoginMessage('Cannot read users from Supabase. Check the users table RLS SELECT policy.');
+        }else{
+          setLoginMessage('Username not found. Check spelling/capitalisation in Supabase.');
+        }
+        return;
+      }
+    }
     if(user.is_active===false){setLoginMessage('This user is inactive.');return;}
     const ok=await verifyDashboardPassword(password,user.password_hash);
     if(!ok){setLoginMessage('Incorrect password.');return;}
@@ -4321,7 +4338,11 @@ async function initAuthGate(){
 window.signOut=function(){
   clearSavedSession();
   window._session=null;
-  location.reload();
+  const adminLabel=document.getElementById('admin-sidebar-label');
+  const usersBtn=document.getElementById('users-sidebar-btn');
+  if(adminLabel)adminLabel.style.display='none';
+  if(usersBtn)usersBtn.style.display='none';
+  showLogin('Signed out.');
 };
 
 const authBaseNav=window.nav;
@@ -4344,6 +4365,111 @@ window.nav=function(id,btn){
 };
 /* ===== END REAL LOGIN GATE + SIGN OUT FIX ===== */
 
+
+
+/* ===== USER ACTIONS + SESSION PERSISTENCE FIX 2026-07-10 =====
+   Makes refresh keep the logged-in session, and makes user management errors visible.
+   Delete now deactivates first (is_active=false), with hard-delete fallback. */
+(function(){
+  // Keep the session across normal refreshes. Sign Out still clears it.
+  window.saveSession = function(sess,persist=true){
+    const raw=JSON.stringify(sess);
+    try{
+      localStorage.setItem(AUTH_SESSION_KEY,raw);
+      if(persist) sessionStorage.removeItem(AUTH_SESSION_KEY);
+      else sessionStorage.setItem(AUTH_SESSION_KEY,raw);
+    }catch(e){
+      try{ sessionStorage.setItem(AUTH_SESSION_KEY,raw); }catch(_e){}
+    }
+  };
+
+  window.renderUsers = async function(){
+    const tbody=document.getElementById('users-body');
+    if(!tbody)return;
+    try{
+      const r=await fetch(SB_URL+'/rest/v1/users?select=*&order=username.asc',{headers:H});
+      if(!r.ok)throw new Error(await r.text());
+      const users=await r.json();
+      const visibleUsers=(users||[]).filter(u=>u.is_active!==false);
+      if(!visibleUsers.length){tbody.innerHTML='<tr><td colspan="5"><div class="empty"><div class="ei">👤</div><p>No active users</p></div></td></tr>';return;}
+      const currId=window._session?.id;
+      tbody.innerHTML=visibleUsers.map(u=>`<tr>
+        <td class="font-bold">${escHtml(u.display_name||u.username)}</td>
+        <td><span style="font-family:monospace;font-size:12px;color:var(--text2)">${escHtml(u.username||'')}</span></td>
+        <td><span class="badge ${u.role==='admin'?'b-blue':'b-grey'}">${u.role==='admin'?'Admin':'Viewer'}</span></td>
+        <td class="text-sm text-muted">${escHtml(u.last_login||'Never')}</td>
+        <td><div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-sec btn-xs" onclick="toggleUserRole('${u.id}','${u.role}')">${u.role==='admin'?'Make Viewer':'Make Admin'}</button>
+          ${u.id!==currId?`<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}','${escAttr(u.display_name||u.username)}')">Delete</button>`:'<span class="text-xs text-muted">(you)</span>'}
+        </div></td>
+      </tr>`).join('');
+    }catch(e){
+      console.error('renderUsers failed',e);
+      tbody.innerHTML='<tr><td colspan="5"><div class="empty"><p>Error loading users: '+escHtml(e.message||e)+'</p></div></td></tr>';
+    }
+  };
+
+  window.toggleUserRole = async function(id,currentRole){
+    if(!window._session || window._session.role!=='admin'){toast('Admin access only',false);return;}
+    const newRole=currentRole==='admin'?'viewer':'admin';
+    if(!confirm('Change this user to '+newRole+'?'))return;
+    try{
+      const r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{
+        method:'PATCH',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify({role:newRole,updated_at:new Date().toISOString()})
+      });
+      if(!r.ok)throw new Error(await r.text());
+      await renderUsers();
+      toast('Role updated ✓');
+    }catch(e){
+      console.error('toggleUserRole failed',e);
+      toast('Role update failed: '+(e.message||e),false);
+    }
+  };
+
+  window.deleteUser = async function(id,name){
+    if(!window._session || window._session.role!=='admin'){toast('Admin access only',false);return;}
+    if(id===window._session.id){toast('You cannot delete the account you are signed in with.',false);return;}
+    if(!confirm('Remove user "'+name+'"? This will deactivate their dashboard access.'))return;
+    try{
+      // Safer than hard delete: keeps audit/history but prevents login because login only accepts is_active=true.
+      let r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{
+        method:'PATCH',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify({is_active:false,updated_at:new Date().toISOString()})
+      });
+      if(!r.ok){
+        // Fallback for older tables/policies that permit DELETE but not UPDATE.
+        const patchErr=await r.text();
+        r=await fetch(SB_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(id),{method:'DELETE',headers:{...H,'Prefer':'return=minimal'}});
+        if(!r.ok){
+          const delErr=await r.text();
+          throw new Error('Deactivate failed: '+patchErr+' | Delete failed: '+delErr);
+        }
+      }
+      await renderUsers();
+      toast('User removed ✓');
+    }catch(e){
+      console.error('deleteUser failed',e);
+      toast('User removal failed: '+(e.message||e),false);
+    }
+  };
+
+  const oldHandleDashboardLogin=window.handleDashboardLogin;
+  if(oldHandleDashboardLogin){
+    // The original handler already works. This wrapper only ensures the saved session is in localStorage after success.
+    window.handleDashboardLogin=async function(e){
+      await oldHandleDashboardLogin(e);
+      if(window._session){
+        try{localStorage.setItem(AUTH_SESSION_KEY,JSON.stringify(window._session));}catch(_e){}
+      }
+    };
+    const form=document.getElementById('login-form');
+    if(form){
+      const clone=form.cloneNode(true);
+      form.parentNode.replaceChild(clone,form);
+      clone.addEventListener('submit',window.handleDashboardLogin);
+    }
+  }
+})();
+/* ===== END USER ACTIONS + SESSION PERSISTENCE FIX ===== */
 
 </script>
 </body>
