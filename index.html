@@ -829,7 +829,7 @@ body:not(.auth-locked) #login-screen{display:none !important;}
 <!-- PRICES -->
 <div id="page-prices" class="page">
   <div class="section-hd"><div class="section-title">Species Price List</div>
-    <button class="btn btn-primary" onclick="openModal('modal-add-price')">+ Add Species</button></div>
+    <button class="btn btn-primary" onclick="openPriceModal()">+ Add Species</button></div>
   <input type="text" id="price-search" placeholder="🔍 Search species, category..." oninput="filterPrices(this.value)"
     style="width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);font-size:13px;margin-bottom:12px">
   <div class="card"><div class="tbl-wrap">
@@ -4696,6 +4696,147 @@ window.nav=function(id,btn){
   else bootFinalAuth();
 })();
 /* ===== END FINAL LOGIN / USER MANAGEMENT OVERRIDE ===== */
+
+
+/* ===== LIVESTOCK PRICE LIST EDIT PATCH 2026-07-10 =====
+   Adds edit/update ability for entries in the Species Price List without changing the database structure. */
+let editingPriceId = null;
+
+function priceEscape(v){
+  if(typeof escHtml === 'function') return escHtml(v);
+  return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+function priceAttr(v){
+  if(typeof escAttr === 'function') return escAttr(v);
+  return priceEscape(v).replace(/`/g,'&#96;');
+}
+function currentUserCanEditPrices(){
+  return !window._session || window._session.role === 'admin';
+}
+function resetPriceModal(){
+  editingPriceId = null;
+  const title = document.querySelector('#modal-add-price .modal-title');
+  const saveBtn = document.querySelector('#modal-add-price .modal-foot .btn-primary');
+  if(title) title.textContent = 'Add to Price List';
+  if(saveBtn) saveBtn.textContent = 'Save';
+  ['pr-name','pr-wild','pr-capt','pr-sup','pr-notes'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.value = '';
+  });
+  const cat = document.getElementById('pr-cat');
+  if(cat) cat.value = 'Fish';
+}
+function openPriceModal(id=null){
+  if(!currentUserCanEditPrices()){toast('Admin access only', false);return;}
+  resetPriceModal();
+  if(id){
+    const p = db.prices.find(x => String(x.id) === String(id));
+    if(!p){toast('Price list item not found', false);return;}
+    editingPriceId = p.id;
+    const title = document.querySelector('#modal-add-price .modal-title');
+    const saveBtn = document.querySelector('#modal-add-price .modal-foot .btn-primary');
+    if(title) title.textContent = 'Edit Price List Item';
+    if(saveBtn) saveBtn.textContent = 'Update Price';
+    const setVal=(field,value)=>{const el=document.getElementById(field); if(el) el.value = value ?? '';};
+    setVal('pr-name', p.name || '');
+    setVal('pr-cat', p.cat || 'Fish');
+    setVal('pr-wild', p.wild ? Number(p.wild).toFixed(2).replace(/\.00$/,'') : '');
+    setVal('pr-capt', p.capt ? Number(p.capt).toFixed(2).replace(/\.00$/,'') : '');
+    setVal('pr-sup', p.sup || '');
+    setVal('pr-notes', p.notes || '');
+  }
+  openModal('modal-add-price');
+}
+function editPrice(id){
+  openPriceModal(id);
+}
+
+// Override existing price save so the same modal can add or update.
+savePrice = async function(){
+  if(!currentUserCanEditPrices()){toast('Admin access only', false);return;}
+  const name = document.getElementById('pr-name').value.trim();
+  if(!name){toast('Enter a name', false);return;}
+  const payload = {
+    name,
+    cat: document.getElementById('pr-cat').value,
+    wild: parseFloat(document.getElementById('pr-wild').value) || 0,
+    capt: parseFloat(document.getElementById('pr-capt').value) || 0,
+    sup: document.getElementById('pr-sup').value,
+    notes: document.getElementById('pr-notes').value
+  };
+  try{
+    setSyncStatus('sync-busy','Saving price...');
+    if(editingPriceId){
+      await sbUpdate('prices', editingPriceId, payload);
+      const idx = db.prices.findIndex(p => String(p.id) === String(editingPriceId));
+      if(idx > -1) db.prices[idx] = {id: editingPriceId, ...payload};
+      else db.prices.push({id: editingPriceId, ...payload});
+      toast('Price updated ✓');
+    }else{
+      const np = {id: uid(), ...payload};
+      await sbInsert('prices', np);
+      db.prices.push(np);
+      toast('Added ✓');
+    }
+    editingPriceId = null;
+    closeModal('modal-add-price');
+    resetPriceModal();
+    setSyncStatus('sync-ok','✓ Synced');
+    renderPrices(document.getElementById('price-search')?.value || '');
+  }catch(e){
+    console.error('savePrice failed', e);
+    setSyncStatus('sync-err','✗ Error');
+    alert('Price save failed. Supabase said:\n' + (e.message || e) + '\n\nIf this mentions row-level security, add/update permission is missing for the public.prices table.');
+  }
+};
+
+// Override price table render to include Edit + Delete actions for admins.
+renderPrices = function(filter=''){
+  const tbody = document.getElementById('prices-body');
+  if(!tbody) return;
+  const q = String(filter || '').toLowerCase();
+  const rows = db.prices.filter(p => !q ||
+    String(p.name || '').toLowerCase().includes(q) ||
+    String(p.cat || '').toLowerCase().includes(q) ||
+    String(p.sup || '').toLowerCase().includes(q) ||
+    String(p.notes || '').toLowerCase().includes(q)
+  );
+  if(!rows.length){
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty"><div class="ei">🐟</div><p>No results</p></div></td></tr>';
+    return;
+  }
+  const canEdit = currentUserCanEditPrices();
+  tbody.innerHTML = rows.map(p => {
+    const actions = canEdit
+      ? `<div class="flex gap-6" style="flex-wrap:wrap"><button class="btn btn-sec btn-xs" onclick="editPrice('${priceAttr(p.id)}')">✎ Edit</button><button class="btn btn-danger btn-xs" onclick="delPrice('${priceAttr(p.id)}')">✕</button></div>`
+      : '<span class="text-xs text-muted">—</span>';
+    return `<tr><td class="font-bold">${priceEscape(p.name)}</td><td><span class="badge b-grey">${priceEscape(p.cat || '—')}</span></td><td>${p.wild ? fmt(p.wild) : '—'}</td><td>${p.capt ? fmt(p.capt) : '—'}</td><td class="text-sm text-muted">${priceEscape(p.sup || '—')}</td><td class="text-sm text-muted">${priceEscape(p.notes || '—')}</td><td>${actions}</td></tr>`;
+  }).join('');
+};
+
+filterPrices = function(v){ renderPrices(v); };
+
+// Make the delete button show the real Supabase error if delete is blocked.
+const _priceDeleteOriginal = typeof delPrice === 'function' ? delPrice : null;
+delPrice = async function(id){
+  if(!currentUserCanEditPrices()){toast('Admin access only', false);return;}
+  const p = db.prices.find(x => String(x.id) === String(id));
+  const label = p ? p.name : 'this item';
+  if(!confirm('Remove "' + label + '" from the price list?')) return;
+  try{
+    setSyncStatus('sync-busy','Deleting price...');
+    await sbDelete('prices', id);
+    db.prices = db.prices.filter(p => String(p.id) !== String(id));
+    setSyncStatus('sync-ok','✓ Synced');
+    renderPrices(document.getElementById('price-search')?.value || '');
+    toast('Removed ✓');
+  }catch(e){
+    console.error('delPrice failed', e);
+    setSyncStatus('sync-err','✗ Error');
+    alert('Price delete failed. Supabase said:\n' + (e.message || e));
+  }
+};
+/* ===== END LIVESTOCK PRICE LIST EDIT PATCH ===== */
 
 </script>
 </body>
