@@ -3684,12 +3684,13 @@ window.addEventListener('DOMContentLoaded', function(){
 /* ===== END STRAITS AQUATICS MAINTENANCE LOGS PATCH ===== */
 
 
-/* ===== STRAITS AQUATICS STAFF HOURS / PAY PATCH 2026-07-10 =====
-   Simple casual-hours ledger: date + hours + £/hour, pay cycle 28th to 27th. */
+/* ===== STRAITS AQUATICS MULTI-WORKER STAFF HOURS / PAY PATCH 2026-08-02 =====
+   Multi-worker overtime ledger using existing staff_hours.staff_name and staff_payments.staff_name fields.
+   Workers: Destiny, Mikey, Willy. Default overtime rate: £10/hr. */
 (function(){
   const STAFF_PAGE_ID = 'staff-pay';
-  const DEFAULT_RATE_GBP = 12;
-  const STAFF_NAME = 'Assistant';
+  const DEFAULT_RATE_GBP = 10;
+  const STAFF_WORKERS = ['Destiny','Mikey','Willy'];
 
   function staffEsc(v){
     return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -3702,8 +3703,8 @@ window.addEventListener('DOMContentLoaded', function(){
     return '£' + staffNum(n).toFixed(2);
   }
   function staffHoursFmt(n){
-    const value = staffNum(n);
-    return (Math.round(value * 100) / 100).toString().replace(/\.00$/,'') + ' hrs';
+    const value = Math.round(staffNum(n) * 100) / 100;
+    return value.toString().replace(/\.00$/,'') + ' hrs';
   }
   function staffDateKey(d){
     const y=d.getFullYear();
@@ -3742,6 +3743,44 @@ window.addEventListener('DOMContentLoaded', function(){
   function staffPaymentStatusBadge(row){
     return row && row.paid ? '<span class="badge b-green">Paid</span>' : '<span class="badge b-red">Unpaid</span>';
   }
+  function normaliseStaffName(name){
+    const raw = String(name || '').trim();
+    if(!raw) return STAFF_WORKERS[0];
+    const found = STAFF_WORKERS.find(w => w.toLowerCase() === raw.toLowerCase());
+    return found || raw;
+  }
+  function staffWorkerOptions(selected){
+    const sel = normaliseStaffName(selected || STAFF_WORKERS[0]);
+    return STAFF_WORKERS.map(w => `<option value="${staffEsc(w)}" ${w===sel?'selected':''}>${staffEsc(w)}</option>`).join('');
+  }
+  function staffFilterOptions(selected){
+    const sel = selected || 'all';
+    return `<option value="all" ${sel==='all'?'selected':''}>All workers</option>` + STAFF_WORKERS.map(w => `<option value="${staffEsc(w)}" ${w===sel?'selected':''}>${staffEsc(w)}</option>`).join('');
+  }
+  function currentStaffFilter(){
+    return document.getElementById('staff-worker-filter')?.value || 'all';
+  }
+  function matchesStaffFilter(row, filter){
+    if(!filter || filter === 'all') return true;
+    return normaliseStaffName(row.staff_name || row.worker || 'Assistant') === filter;
+  }
+  function groupByStaff(rows){
+    const groups = {};
+    rows.forEach(r => {
+      const name = normaliseStaffName(r.staff_name || r.worker || 'Assistant');
+      if(!groups[name]) groups[name] = [];
+      groups[name].push(r);
+    });
+    return groups;
+  }
+  function maybeAllKnownWorkerNames(rows){
+    const set = new Set(STAFF_WORKERS);
+    rows.forEach(r => {
+      const n = normaliseStaffName(r.staff_name || r.worker || '');
+      if(n) set.add(n);
+    });
+    return Array.from(set).sort((a,b)=>a.localeCompare(b));
+  }
 
   function ensureStaffSidebar(){
     if(document.getElementById('staff-pay-sidebar-btn')) return;
@@ -3768,29 +3807,38 @@ window.addEventListener('DOMContentLoaded', function(){
       <div class="section-hd">
         <div>
           <div class="section-title">Staff Hours & Pay</div>
-          <div class="text-sm text-muted">Casual shop assistant hours · pay cycle 28th to 27th · payment due every 27th</div>
+          <div class="text-sm text-muted">Overtime / casual worker hours · pay cycle 28th to 27th · payment due every 27th</div>
         </div>
         <div class="flex gap-8 items-c" style="flex-wrap:wrap">
+          <label class="text-sm text-muted">View:</label>
+          <select id="staff-worker-filter" onchange="renderStaffPay()" style="min-width:150px">${staffFilterOptions('all')}</select>
           <button class="btn btn-sec viewer-ok" onclick="loadStaffPay(true)">↻ Refresh</button>
-          <button class="btn btn-primary" onclick="markCurrentStaffPeriodPaid()">✓ Mark current period as paid</button>
+          <button class="btn btn-primary" onclick="markCurrentStaffPeriodPaid()">✓ Mark selected period as paid</button>
         </div>
       </div>
 
       <div class="metrics">
         <div class="metric"><div class="metric-lbl">Current Pay Period</div><div class="metric-val" style="font-size:17px" id="staff-period-label">—</div><div class="metric-sub">Resets visually on the 28th</div></div>
+        <div class="metric"><div class="metric-lbl">Selected Worker</div><div class="metric-val mv-blue" style="font-size:20px" id="staff-selected-worker-label">All</div><div class="metric-sub">Filter controls payment view</div></div>
         <div class="metric"><div class="metric-lbl">Unpaid Hours</div><div class="metric-val mv-blue" id="staff-current-hours">0 hrs</div><div class="metric-sub">Current period only</div></div>
         <div class="metric"><div class="metric-lbl">Amount Owed</div><div class="metric-val mv-red" id="staff-current-owed">£0.00</div><div class="metric-sub">Unpaid total before payment</div></div>
         <div class="metric"><div class="metric-lbl">Payment Due</div><div class="metric-val" style="font-size:20px" id="staff-due-date">—</div><div class="metric-sub">Every 27th</div></div>
-        <div class="metric"><div class="metric-lbl">Default Rate</div><div class="metric-val mv-green" id="staff-default-rate">£12/hr</div><div class="metric-sub">Can be changed per entry</div></div>
+        <div class="metric"><div class="metric-lbl">Default Overtime Rate</div><div class="metric-val mv-green" id="staff-default-rate">£10/hr</div><div class="metric-sub">Can be changed per entry</div></div>
       </div>
 
       <div class="card mb-14">
-        <div class="card-head"><div class="card-title">Add Hours</div><span class="text-sm text-muted">Only date and hours required</span></div>
+        <div class="card-head"><div class="card-title">Current Period by Worker</div><span class="text-sm text-muted">Unpaid totals before payment</span></div>
+        <div class="card-body" id="staff-worker-summary"><div class="empty"><p>No hours entered for this period</p></div></div>
+      </div>
+
+      <div class="card mb-14">
+        <div class="card-head"><div class="card-title">Add Overtime / Casual Hours</div><span class="text-sm text-muted">Worker, date and hours required</span></div>
         <div class="card-body">
           <div class="form-grid">
+            <div class="fg"><label>Worker</label><select id="staff-worker">${staffWorkerOptions('Destiny')}</select></div>
             <div class="fg"><label>Date Worked</label><input type="date" id="staff-work-date"></div>
             <div class="fg"><label>Hours Worked</label><input type="number" id="staff-hours" step="0.25" min="0" placeholder="e.g. 2.5" oninput="updateStaffEntryPreview()"></div>
-            <div class="fg"><label>Rate (£/hour)</label><input type="number" id="staff-rate" step="0.01" min="0" value="12" oninput="updateStaffEntryPreview()"></div>
+            <div class="fg"><label>Rate (£/hour)</label><input type="number" id="staff-rate" step="0.01" min="0" value="10" oninput="updateStaffEntryPreview()"></div>
             <div class="fg"><label>Amount</label><input type="text" id="staff-amount-preview" value="£0.00" readonly></div>
           </div>
           <div class="flex gap-8 mt-12">
@@ -3803,18 +3851,18 @@ window.addEventListener('DOMContentLoaded', function(){
         <div class="card-head"><div class="card-title">Current Pay Period Entries</div><span class="text-sm text-muted" id="staff-current-entry-sub">28th to 27th</span></div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Date</th><th>Hours</th><th>Rate</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody id="staff-current-body"><tr><td colspan="6"><div class="empty"><p>No hours entered for this period</p></div></td></tr></tbody>
+            <thead><tr><th>Worker</th><th>Date</th><th>Hours</th><th>Rate</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="staff-current-body"><tr><td colspan="7"><div class="empty"><p>No hours entered for this period</p></div></td></tr></tbody>
           </table>
         </div>
       </div>
 
       <div class="card">
-        <div class="card-head"><div class="card-title">Previous Payments</div><span class="text-sm text-muted">Saved monthly payment records</span></div>
+        <div class="card-head"><div class="card-title">Previous Payments</div><span class="text-sm text-muted">Saved payment records by worker</span></div>
         <div class="tbl-wrap">
           <table>
-            <thead><tr><th>Pay Period</th><th>Total Hours</th><th>Amount Paid</th><th>Paid On</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody id="staff-payments-body"><tr><td colspan="6"><div class="empty"><p>No previous payments yet</p></div></td></tr></tbody>
+            <thead><tr><th>Worker</th><th>Pay Period</th><th>Total Hours</th><th>Amount Paid</th><th>Paid On</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="staff-payments-body"><tr><td colspan="7"><div class="empty"><p>No previous payments yet</p></div></td></tr></tbody>
           </table>
         </div>
       </div>
@@ -3827,8 +3875,8 @@ window.addEventListener('DOMContentLoaded', function(){
     try{
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','⏳ Loading staff hours...');
       const [hours, payments] = await Promise.all([
-        sbGet('staff_hours','select=*&order=work_date.desc,created_at.desc&limit=500'),
-        sbGet('staff_payments','select=*&order=period_end.desc,created_at.desc&limit=100')
+        sbGet('staff_hours','select=*&order=work_date.desc,created_at.desc&limit=1000'),
+        sbGet('staff_payments','select=*&order=period_end.desc,created_at.desc&limit=300')
       ]);
       db.staffHours = Array.isArray(hours) ? hours : [];
       db.staffPayments = Array.isArray(payments) ? payments : [];
@@ -3838,9 +3886,9 @@ window.addEventListener('DOMContentLoaded', function(){
     }catch(e){
       console.error('Staff pay load failed', e);
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Staff pay error');
-      const err = '<tr><td colspan="6"><div class="empty"><div class="ei">⚠️</div><p>Could not load staff hours. Check that the staff_hours and staff_payments tables exist in Supabase.</p></div></td></tr>';
+      const err = '<tr><td colspan="7"><div class="empty"><div class="ei">⚠️</div><p>Could not load staff hours. Check that the staff_hours and staff_payments tables exist in Supabase.</p></div></td></tr>';
       const current = document.getElementById('staff-current-body'); if(current) current.innerHTML = err;
-      const payments = document.getElementById('staff-payments-body'); if(payments) payments.innerHTML = '<tr><td colspan="6"><div class="empty"><p>Could not load payment history.</p></div></td></tr>';
+      const payments = document.getElementById('staff-payments-body'); if(payments) payments.innerHTML = '<tr><td colspan="7"><div class="empty"><p>Could not load payment history.</p></div></td></tr>';
       if(showToast && typeof toast === 'function') toast('Could not load staff pay data', false);
     }
   }
@@ -3853,12 +3901,15 @@ window.addEventListener('DOMContentLoaded', function(){
   }
 
   async function saveStaffHours(){
+    const workerEl = document.getElementById('staff-worker');
     const dateEl = document.getElementById('staff-work-date');
     const hoursEl = document.getElementById('staff-hours');
     const rateEl = document.getElementById('staff-rate');
+    const worker = normaliseStaffName(workerEl?.value || STAFF_WORKERS[0]);
     const workDate = dateEl?.value || staffDateKey(new Date());
     const hours = staffNum(hoursEl?.value);
     const rate = staffNum(rateEl?.value || DEFAULT_RATE_GBP);
+    if(!worker){ if(typeof toast === 'function') toast('Choose a worker', false); return; }
     if(!workDate){ if(typeof toast === 'function') toast('Enter the date worked', false); return; }
     if(hours <= 0){ if(typeof toast === 'function') toast('Enter the hours worked', false); return; }
     if(rate <= 0){ if(typeof toast === 'function') toast('Enter a valid hourly rate', false); return; }
@@ -3866,7 +3917,7 @@ window.addEventListener('DOMContentLoaded', function(){
     const period = staffPeriodForDate(workDate);
     const row = {
       id: (typeof uid === 'function' ? uid() : Date.now().toString(36)+Math.random().toString(36).slice(2,7)),
-      staff_name: STAFF_NAME,
+      staff_name: worker,
       work_date: workDate,
       hours: hours,
       rate_gbp: rate,
@@ -3886,32 +3937,39 @@ window.addEventListener('DOMContentLoaded', function(){
       if(hoursEl) hoursEl.value = '';
       if(rateEl) rateEl.value = String(DEFAULT_RATE_GBP);
       if(dateEl) dateEl.value = staffDateKey(new Date());
+      const filter = document.getElementById('staff-worker-filter');
+      if(filter && filter.value !== 'all') filter.value = worker;
       updateStaffEntryPreview();
       renderStaffPay();
-      if(typeof toast === 'function') toast('Hours added ✓');
+      if(typeof toast === 'function') toast(`${worker} hours added ✓`);
     }catch(e){
       console.error('Could not save staff hours', e);
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Save failed');
       if(typeof toast === 'function') toast('Could not save hours. Check Supabase table/policies.', false);
-      alert('Could not save hours. Check that you ran the Staff Pay SQL in Supabase. Error: ' + e.message);
+      alert('Could not save hours. Error: ' + e.message);
     }
   }
 
   async function editStaffHour(id){
     const row = (db.staffHours || []).find(r => String(r.id) === String(id));
     if(!row) return;
-    if(row.paid){ alert('This entry has already been marked as paid. To keep payment history accurate, paid entries should not be edited.'); return; }
+    if(row.paid){ alert('This entry has already been marked as paid. To keep payment history accurate, paid entries should not be edited. Delete/reopen the payment first if needed.'); return; }
+    const newWorker = prompt('Worker name:', normaliseStaffName(row.staff_name || STAFF_WORKERS[0]));
+    if(newWorker === null) return;
     const newDate = prompt('Date worked (YYYY-MM-DD):', row.work_date || staffDateKey(new Date()));
     if(newDate === null) return;
     const newHours = prompt('Hours worked:', row.hours ?? '');
     if(newHours === null) return;
     const newRate = prompt('Rate £/hour:', row.rate_gbp ?? DEFAULT_RATE_GBP);
     if(newRate === null) return;
+    const worker = normaliseStaffName(newWorker);
     const hours = staffNum(newHours), rate = staffNum(newRate);
+    if(!worker){ alert('Worker name is required.'); return; }
     if(!/^\d{4}-\d{2}-\d{2}$/.test(String(newDate))){ alert('Use date format YYYY-MM-DD.'); return; }
     if(hours <= 0 || rate <= 0){ alert('Hours and rate must be more than zero.'); return; }
     const period = staffPeriodForDate(newDate);
     const payload = {
+      staff_name: worker,
       work_date: newDate,
       hours,
       rate_gbp: rate,
@@ -3929,14 +3987,15 @@ window.addEventListener('DOMContentLoaded', function(){
     }catch(e){
       console.error('Could not edit staff hours', e);
       if(typeof toast === 'function') toast('Could not update hours', false);
+      alert('Could not update hours. Error: ' + e.message);
     }
   }
 
   async function deleteStaffHour(id){
     const row = (db.staffHours || []).find(r => String(r.id) === String(id));
     if(!row) return;
-    if(row.paid){ alert('This entry is already included in a paid period. It has not been deleted, so payment history remains accurate.'); return; }
-    if(!confirm('Delete this hours entry?')) return;
+    if(row.paid){ alert('This entry is already included in a paid period. Delete/reopen the payment first if you need to remove it.'); return; }
+    if(!confirm(`Delete this hours entry for ${normaliseStaffName(row.staff_name)}?`)) return;
     try{
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Deleting staff hours...');
       await sbDelete('staff_hours', id);
@@ -3947,41 +4006,60 @@ window.addEventListener('DOMContentLoaded', function(){
     }catch(e){
       console.error('Could not delete staff hours', e);
       if(typeof toast === 'function') toast('Could not delete hours. Check delete policy.', false);
+      alert('Could not delete hours. Error: ' + e.message);
     }
   }
 
   async function markCurrentStaffPeriodPaid(){
     const period = staffCurrentPeriod();
-    const entries = (db.staffHours || []).filter(r => r.pay_period_start === period.startKey && r.pay_period_end === period.endKey && !r.paid);
-    if(!entries.length){ if(typeof toast === 'function') toast('No unpaid hours in the current pay period', false); return; }
+    const filter = currentStaffFilter();
+    const entries = (db.staffHours || []).filter(r => r.pay_period_start === period.startKey && r.pay_period_end === period.endKey && !r.paid && matchesStaffFilter(r, filter));
+    if(!entries.length){ if(typeof toast === 'function') toast('No unpaid hours in the current pay period for this selection', false); return; }
+
+    const groups = groupByStaff(entries);
+    const groupNames = Object.keys(groups).sort();
     const totalHours = entries.reduce((a,r)=>a+staffNum(r.hours),0);
     const totalAmount = entries.reduce((a,r)=>a+staffNum(r.amount_gbp),0);
-    if(!confirm(`Mark current period as paid?\n\n${period.label}\n${staffHoursFmt(totalHours)} · ${staffMoney(totalAmount)}`)) return;
-    const paymentId = (typeof uid === 'function' ? uid() : Date.now().toString(36)+Math.random().toString(36).slice(2,7));
-    const payment = {
-      id: paymentId,
-      staff_name: STAFF_NAME,
-      period_start: period.startKey,
-      period_end: period.endKey,
-      total_hours: Math.round(totalHours * 100) / 100,
-      total_amount_gbp: Math.round(totalAmount * 100) / 100,
-      paid_on: staffDateKey(new Date()),
-      status: 'paid',
-      created_at: new Date().toISOString()
-    };
+    const workerLabel = filter === 'all' ? 'ALL selected workers' : filter;
+    const detail = groupNames.map(name => {
+      const rows = groups[name];
+      const h = rows.reduce((a,r)=>a+staffNum(r.hours),0);
+      const a = rows.reduce((sum,r)=>sum+staffNum(r.amount_gbp),0);
+      return `• ${name}: ${staffHoursFmt(h)} · ${staffMoney(a)}`;
+    }).join('\n');
+
+    if(!confirm(`Mark current period as paid for ${workerLabel}?\n\n${period.label}\n${staffHoursFmt(totalHours)} · ${staffMoney(totalAmount)}\n\n${detail}`)) return;
+
     try{
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Recording staff payment...');
-      await sbInsert('staff_payments', payment);
-      for(const entry of entries){
-        await sbUpdate('staff_hours', entry.id, {paid:true, payment_id:paymentId});
-        entry.paid = true;
-        entry.payment_id = paymentId;
+      for(const name of groupNames){
+        const rows = groups[name];
+        const staffHours = rows.reduce((a,r)=>a+staffNum(r.hours),0);
+        const staffAmount = rows.reduce((a,r)=>a+staffNum(r.amount_gbp),0);
+        const paymentId = (typeof uid === 'function' ? uid() : Date.now().toString(36)+Math.random().toString(36).slice(2,7));
+        const payment = {
+          id: paymentId,
+          staff_name: name,
+          period_start: period.startKey,
+          period_end: period.endKey,
+          total_hours: Math.round(staffHours * 100) / 100,
+          total_amount_gbp: Math.round(staffAmount * 100) / 100,
+          paid_on: staffDateKey(new Date()),
+          status: 'paid',
+          created_at: new Date().toISOString()
+        };
+        await sbInsert('staff_payments', payment);
+        for(const entry of rows){
+          await sbUpdate('staff_hours', entry.id, {paid:true, payment_id:paymentId});
+          entry.paid = true;
+          entry.payment_id = paymentId;
+        }
+        db.staffPayments = db.staffPayments || [];
+        db.staffPayments.unshift(payment);
       }
-      db.staffPayments = db.staffPayments || [];
-      db.staffPayments.unshift(payment);
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
       renderStaffPay();
-      if(typeof toast === 'function') toast('Current period marked paid ✓');
+      if(typeof toast === 'function') toast('Selected period marked paid ✓');
     }catch(e){
       console.error('Could not mark staff period paid', e);
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Payment failed');
@@ -3990,14 +4068,14 @@ window.addEventListener('DOMContentLoaded', function(){
     }
   }
 
-
   async function editStaffPayment(id){
     const payment = (db.staffPayments || []).find(p => String(p.id) === String(id));
     if(!payment) return;
+    const newWorker = prompt('Worker name:', normaliseStaffName(payment.staff_name || STAFF_WORKERS[0]));
+    if(newWorker === null) return;
     const newPaidOn = prompt('Paid on date (YYYY-MM-DD):', payment.paid_on || staffDateKey(new Date()));
     if(newPaidOn === null) return;
     if(!/^\d{4}-\d{2}-\d{2}$/.test(String(newPaidOn))){ alert('Use date format YYYY-MM-DD.'); return; }
-
     const newHoursText = prompt('Total hours paid:', payment.total_hours ?? '');
     if(newHoursText === null) return;
     const newAmountText = prompt('Amount paid (£):', payment.total_amount_gbp ?? '');
@@ -4010,6 +4088,7 @@ window.addEventListener('DOMContentLoaded', function(){
     if(totalHours < 0 || totalAmount < 0){ alert('Hours and amount cannot be negative.'); return; }
 
     const payload = {
+      staff_name: normaliseStaffName(newWorker),
       paid_on: newPaidOn,
       total_hours: Math.round(totalHours * 100) / 100,
       total_amount_gbp: Math.round(totalAmount * 100) / 100,
@@ -4035,17 +4114,11 @@ window.addEventListener('DOMContentLoaded', function(){
     const payment = (db.staffPayments || []).find(p => String(p.id) === String(id));
     if(!payment) return;
     const linked = (db.staffHours || []).filter(r => String(r.payment_id || '') === String(id));
-    const msg = `Delete this previous payment record?
-
-${staffDateLabel(payment.period_start)} – ${staffDateLabel(payment.period_end)}
-${staffHoursFmt(payment.total_hours)} · ${staffMoney(payment.total_amount_gbp)}
-
-Any linked hours will be reopened as unpaid, so you can edit or delete them afterwards.`;
+    const msg = `Delete this previous payment record?\n\n${normaliseStaffName(payment.staff_name || 'Worker')}\n${staffDateLabel(payment.period_start)} – ${staffDateLabel(payment.period_end)}\n${staffHoursFmt(payment.total_hours)} · ${staffMoney(payment.total_amount_gbp)}\n\nAny linked hours will be reopened as unpaid, so you can edit or delete them afterwards.`;
     if(!confirm(msg)) return;
 
     try{
       if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Deleting staff payment...');
-
       const patchResponse = await fetch(`${SB_URL}/rest/v1/staff_hours?payment_id=eq.${encodeURIComponent(id)}`, {
         method:'PATCH',
         headers:{...H,'Prefer':'return=representation'},
@@ -4072,35 +4145,78 @@ Any linked hours will be reopened as unpaid, so you can edit or delete them afte
     }
   }
 
+  function renderWorkerSummary(periodRows, filter){
+    const el = document.getElementById('staff-worker-summary');
+    if(!el) return;
+    const knownNames = maybeAllKnownWorkerNames(periodRows);
+    const rows = knownNames.map(name => {
+      const workerRows = periodRows.filter(r => normaliseStaffName(r.staff_name || r.worker || '') === name);
+      const unpaid = workerRows.filter(r => !r.paid);
+      const paid = workerRows.filter(r => r.paid);
+      const unpaidHours = unpaid.reduce((a,r)=>a+staffNum(r.hours),0);
+      const unpaidAmount = unpaid.reduce((a,r)=>a+staffNum(r.amount_gbp),0);
+      const paidHours = paid.reduce((a,r)=>a+staffNum(r.hours),0);
+      return {name, unpaidHours, unpaidAmount, paidHours};
+    });
+    if(!rows.some(r => r.unpaidHours || r.paidHours)){
+      el.innerHTML = '<div class="empty"><p>No hours entered for this period</p></div>';
+      return;
+    }
+    el.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>Worker</th><th>Unpaid Hours</th><th>Unpaid Amount</th><th>Paid Hours</th><th>Filter</th></tr></thead><tbody>${rows.map(r => `<tr>
+      <td class="font-bold">${staffEsc(r.name)}</td>
+      <td>${staffHoursFmt(r.unpaidHours)}</td>
+      <td class="font-bold ${r.unpaidAmount>0?'text-red':'text-muted'}">${staffMoney(r.unpaidAmount)}</td>
+      <td>${staffHoursFmt(r.paidHours)}</td>
+      <td>${filter===r.name ? '<span class="badge b-blue">Selected</span>' : `<button class="btn btn-sec btn-xs" onclick="setStaffWorkerFilter('${staffEsc(r.name)}')">View</button>`}</td>
+    </tr>`).join('')}</tbody></table></div>`;
+  }
+
+  function setStaffWorkerFilter(name){
+    const filter = document.getElementById('staff-worker-filter');
+    if(filter) filter.value = name || 'all';
+    renderStaffPay();
+  }
+
   function renderStaffPay(){
     ensureStaffPage();
     const period = staffCurrentPeriod();
     const hours = db.staffHours || [];
     const payments = db.staffPayments || [];
-    const currentRows = hours.filter(r => r.pay_period_start === period.startKey && r.pay_period_end === period.endKey).sort((a,b)=>String(b.work_date||'').localeCompare(String(a.work_date||'')));
+    const filter = currentStaffFilter();
+
+    const periodRowsAll = hours.filter(r => r.pay_period_start === period.startKey && r.pay_period_end === period.endKey);
+    const currentRows = periodRowsAll
+      .filter(r => matchesStaffFilter(r, filter))
+      .sort((a,b)=>String(b.work_date||'').localeCompare(String(a.work_date||'')) || normaliseStaffName(a.staff_name).localeCompare(normaliseStaffName(b.staff_name)));
     const unpaidRows = currentRows.filter(r => !r.paid);
     const unpaidHours = unpaidRows.reduce((a,r)=>a+staffNum(r.hours),0);
     const unpaidAmount = unpaidRows.reduce((a,r)=>a+staffNum(r.amount_gbp),0);
+
     const setText=(id,val)=>{const el=document.getElementById(id); if(el) el.textContent=val;};
     setText('staff-period-label', period.label);
+    setText('staff-selected-worker-label', filter === 'all' ? 'All workers' : filter);
     setText('staff-current-hours', staffHoursFmt(unpaidHours));
     setText('staff-current-owed', staffMoney(unpaidAmount));
     setText('staff-due-date', staffDateLabel(period.endKey));
     setText('staff-default-rate', '£' + DEFAULT_RATE_GBP + '/hr');
-    setText('staff-current-entry-sub', period.label);
+    setText('staff-current-entry-sub', `${period.label} · ${filter === 'all' ? 'all workers' : filter}`);
 
     const dateEl = document.getElementById('staff-work-date');
     if(dateEl && !dateEl.value) dateEl.value = staffDateKey(new Date());
     const rateEl = document.getElementById('staff-rate');
     if(rateEl && !rateEl.value) rateEl.value = String(DEFAULT_RATE_GBP);
+    const workerEl = document.getElementById('staff-worker');
+    if(workerEl && filter !== 'all') workerEl.value = filter;
     updateStaffEntryPreview();
+    renderWorkerSummary(periodRowsAll, filter);
 
     const body = document.getElementById('staff-current-body');
     if(body){
       if(!currentRows.length){
-        body.innerHTML = '<tr><td colspan="6"><div class="empty"><p>No hours entered for this period</p></div></td></tr>';
+        body.innerHTML = '<tr><td colspan="7"><div class="empty"><p>No hours entered for this period and worker selection</p></div></td></tr>';
       }else{
         body.innerHTML = currentRows.map(r => `<tr style="${r.paid?'opacity:.72':''}">
+          <td class="font-bold">${staffEsc(normaliseStaffName(r.staff_name || r.worker || 'Worker'))}</td>
           <td>${staffDateLabel(r.work_date)}</td>
           <td class="font-bold">${staffHoursFmt(r.hours)}</td>
           <td>${staffMoney(r.rate_gbp)}/hr</td>
@@ -4113,10 +4229,12 @@ Any linked hours will be reopened as unpaid, so you can edit or delete them afte
 
     const payBody = document.getElementById('staff-payments-body');
     if(payBody){
-      if(!payments.length){
-        payBody.innerHTML = '<tr><td colspan="6"><div class="empty"><p>No previous payments yet</p></div></td></tr>';
+      const visiblePayments = payments.filter(p => matchesStaffFilter(p, filter));
+      if(!visiblePayments.length){
+        payBody.innerHTML = '<tr><td colspan="7"><div class="empty"><p>No previous payments for this worker selection yet</p></div></td></tr>';
       }else{
-        payBody.innerHTML = payments.slice().sort((a,b)=>String(b.period_end||'').localeCompare(String(a.period_end||''))).map(p => `<tr>
+        payBody.innerHTML = visiblePayments.slice().sort((a,b)=>String(b.period_end||'').localeCompare(String(a.period_end||'')) || normaliseStaffName(a.staff_name).localeCompare(normaliseStaffName(b.staff_name))).map(p => `<tr>
+          <td class="font-bold">${staffEsc(normaliseStaffName(p.staff_name || 'Worker'))}</td>
           <td>${staffDateLabel(p.period_start)} – ${staffDateLabel(p.period_end)}</td>
           <td class="font-bold">${staffHoursFmt(p.total_hours)}</td>
           <td class="font-bold text-green">${staffMoney(p.total_amount_gbp)}</td>
@@ -4169,11 +4287,13 @@ Any linked hours will be reopened as unpaid, so you can edit or delete them afte
   window.markCurrentStaffPeriodPaid = markCurrentStaffPeriodPaid;
   window.editStaffPayment = editStaffPayment;
   window.deleteStaffPayment = deleteStaffPayment;
+  window.setStaffWorkerFilter = setStaffWorkerFilter;
 
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initStaffPay);
   else initStaffPay();
 })();
 /* ===== END STRAITS AQUATICS STAFF HOURS / PAY PATCH ===== */
+
 
 
 
