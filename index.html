@@ -6218,6 +6218,375 @@ function applyStaffMode(){
 })();
 /* ===== END STAFF ROLE DB ERROR HELPER + POS GBP/EUR ACCOUNTING PATCH ===== */
 
+
+/* ===== FINAL POS CONFIRMATION + STAFF SAFE VIEW PATCH 2026-08-31 =====
+   This patch is intentionally placed at the very end so later POS/order functions cannot overwrite it. */
+(function(){
+  const FX_GBP_TO_EUR_FINAL = 1.20;
+
+  const directPOSSaleSave = window.submitPOSSale || (typeof submitPOSSale !== 'undefined' ? submitPOSSale : null);
+  const baseRenderOrdersFinalSafe = window.renderOrders || (typeof renderOrders !== 'undefined' ? renderOrders : null);
+  const baseViewOrderFinalSafe = window.viewOrder || (typeof viewOrder !== 'undefined' ? viewOrder : null);
+  const baseEnsurePOSPageFinalSafe = window.ensurePOSPage || (typeof ensurePOSPage !== 'undefined' ? ensurePOSPage : null);
+  const baseAddPOSItemRowFinalSafe = window.addPOSItemRow || (typeof addPOSItemRow !== 'undefined' ? addPOSItemRow : null);
+
+  function fNum(v){ return parseFloat(v) || 0; }
+  function fGBP(v){ return '£' + fNum(v).toFixed(2); }
+  function fEUR(v){ return '€' + fNum(v).toFixed(2); }
+  function fToEUR(gbp){ return Math.round(fNum(gbp) * FX_GBP_TO_EUR_FINAL * 100) / 100; }
+  function fToGBP(eur){ return Math.round((fNum(eur) / FX_GBP_TO_EUR_FINAL) * 100) / 100; }
+  function fSafe(v){ return String(v == null ? '' : v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+  function fToday(){ return (typeof today === 'function') ? today() : new Date().toISOString().slice(0,10); }
+  function fFmtEUR(v){ return (typeof fmt === 'function') ? fmt(v) : fEUR(v); }
+  function fInits(n){ return (typeof inits === 'function') ? inits(n || '') : String(n||'').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(); }
+  function fIsStaff(){ return !!(window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff'); }
+  function fIsAdmin(){ return !window._session || window._session.role === 'admin'; }
+  function fIsPOSOrder(o){
+    return String(o?.orderType || o?.order_type || '').toLowerCase() === 'pos'
+      || String(o?.num || '').startsWith('POS - ')
+      || !!((o?.custLines || o?.cust_lines || [])[0]?.pos_meta);
+  }
+  function fPlainDateLabel(iso){
+    const s = String(iso || fToday());
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)){
+      const [y,m,d] = s.split('-');
+      return `${d}/${m}/${y}`;
+    }
+    return s;
+  }
+  function fOrderComplete(o){
+    try{ return (typeof isOrderComplete === 'function') ? isOrderComplete(o) : !!o.manualComplete; }
+    catch(e){ return !!o.manualComplete; }
+  }
+  function fCustomerBalance(cl){
+    try{ return (typeof getCustomerBalance === 'function') ? getCustomerBalance(cl) : Math.max(0, fNum(cl.quoted) - (cl.payments||[]).reduce((a,p)=>a+fNum(p.amount),0)); }
+    catch(e){ return 0; }
+  }
+  function fOrderPending(o){
+    try{ return (typeof getOrderPendingBalance === 'function') ? getOrderPendingBalance(o) : (o.custLines||[]).reduce((s,cl)=>s+fCustomerBalance(cl),0); }
+    catch(e){ return fNum(o.totalPending || o.total_pending); }
+  }
+  function fPOSMeta(o){
+    const cl = (o?.custLines || o?.cust_lines || [])[0] || {};
+    const m = cl.pos_meta || o.pos_meta || {};
+    const totalEur = fNum(o.totalQuoted ?? o.total_quoted ?? cl.quoted ?? m.total_eur);
+    const actualEur = fNum(o.totalActual ?? o.total_actual ?? cl.actual ?? m.cost_eur);
+    return {
+      totalGbp: fNum(m.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp ?? fToGBP(totalEur)),
+      totalEur: fNum(m.total_eur ?? cl.total_eur ?? totalEur),
+      costGbp: fNum(m.cost_gbp ?? cl.cost_gbp ?? cl.actual_gbp ?? fToGBP(actualEur)),
+      costEur: fNum(m.cost_eur ?? cl.cost_eur ?? actualEur),
+      profitGbp: fNum(m.profit_gbp ?? fToGBP(fNum(o.profit ?? (totalEur - actualEur)))),
+      profitEur: fNum(m.profit_eur ?? o.profit ?? (totalEur - actualEur)),
+      paidCurrency: m.paid_currency || cl.payment_currency || '',
+      paymentMethod: m.payment_method || cl.payMethod || '',
+      company: m.company || '',
+      invoiceRef: m.invoice_ref || '',
+      dueDate: m.due_date || cl.payBy || ''
+    };
+  }
+
+  function fCollectPOSDraft(){
+    const items = (typeof collectPOSItems === 'function') ? collectPOSItems() : [];
+    const saleDate = document.getElementById('pos-date')?.value || fToday();
+    const method = document.getElementById('pos-payment')?.value || 'Cash';
+    const paidCurrency = document.getElementById('pos-paid-currency')?.value || 'GBP';
+    const totalGbp = items.reduce((a,i)=>a+fNum(i.quoted_gbp ?? fToGBP(i.quoted)),0);
+    const costGbp = items.reduce((a,i)=>a+fNum(i.actual_gbp ?? fToGBP(i.actual)),0);
+    const totalEur = fToEUR(totalGbp);
+    const saleNo = (typeof posNextSaleNumber === 'function') ? posNextSaleNumber(saleDate) : String((db.orders||[]).length + 1).padStart(3,'0');
+    const invoiceRef = `${fPlainDateLabel(saleDate)} - ${saleNo}`;
+    let client = (document.getElementById('pos-client')?.value || '').trim();
+    let company = '', dueDate = '', invoiceNotes = '';
+    if(method === 'Invoice / Pay Later'){
+      company = (document.getElementById('pos-company')?.value || '').trim();
+      dueDate = document.getElementById('pos-due-date')?.value || '';
+      invoiceNotes = (document.getElementById('pos-invoice-notes')?.value || '').trim();
+      if(!client && company) client = company;
+    }
+    if(!client) client = 'Walk-in Customer - unknown';
+    const giftLimit = totalEur >= 250 ? 10 : (totalEur > 150 ? 5 : 0);
+    return {items,saleDate,method,paidCurrency,totalGbp,totalEur,costGbp,costEur:fToEUR(costGbp),client,company,dueDate,invoiceNotes,invoiceRef,giftLimit};
+  }
+
+  function fValidatePOSDraft(d){
+    if(!d.items.length) return 'Add at least one item and price sold.';
+    if(d.method === 'Invoice / Pay Later'){
+      if(!d.company) return 'Company name is required for Invoice / Pay Later.';
+      if(!d.dueDate) return 'Due date is required for Invoice / Pay Later.';
+    }
+    if(d.method === 'Customer Credit'){
+      if(d.client === 'Walk-in Customer - unknown') return 'Customer Credit requires a named customer.';
+      const bal = (typeof customerCreditBalance === 'function') ? customerCreditBalance(d.client) : 0;
+      if(bal + 0.001 < d.totalEur){
+        return `Customer credit is not enough.\n\nCustomer: ${d.client}\nAvailable credit: ${fEUR(bal)}\nSale total: ${fGBP(d.totalGbp)} / ${fEUR(d.totalEur)} @ x${FX_GBP_TO_EUR_FINAL.toFixed(2)}`;
+      }
+    }
+    return '';
+  }
+
+  function ensureFinalPOSConfirmModal(){
+    if(document.getElementById('modal-pos-final-confirm')) return;
+    const modal = document.createElement('div');
+    modal.className = 'modal-ov';
+    modal.id = 'modal-pos-final-confirm';
+    modal.innerHTML = `
+      <div class="modal" style="width:760px;max-width:98vw">
+        <div class="modal-head">
+          <div class="modal-title" id="pos-final-confirm-title">Confirm POS Sale</div>
+          <button class="modal-close" type="button" onclick="closeFinalPOSConfirmModal()">✕</button>
+        </div>
+        <div class="modal-body" id="pos-final-confirm-body"></div>
+        <div class="modal-foot">
+          <button class="btn btn-sec" type="button" onclick="closeFinalPOSConfirmModal()">← Go Back / Edit Sale</button>
+          <button class="btn btn-primary" type="button" id="pos-final-confirm-btn" onclick="confirmFinalPOSSaleSubmit()">Confirm & Submit Sale</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  window.closeFinalPOSConfirmModal = function(){
+    const m = document.getElementById('modal-pos-final-confirm');
+    if(m) m.classList.remove('open');
+  };
+
+  function showFinalPOSConfirmModal(d){
+    ensureFinalPOSConfirmModal();
+    window.__finalPOSDraft = d;
+    const title = document.getElementById('pos-final-confirm-title');
+    const body = document.getElementById('pos-final-confirm-body');
+    const btn = document.getElementById('pos-final-confirm-btn');
+    const paidAmount = d.paidCurrency === 'EUR' ? fEUR(d.totalEur) : fGBP(d.totalGbp);
+    const isInvoice = d.method === 'Invoice / Pay Later';
+    if(title) title.textContent = isInvoice ? 'Confirm Invoice / Pay Later Sale' : 'Confirm POS Sale';
+    const giftHtml = d.giftLimit ? `
+      <div style="margin-top:12px;padding:12px;border:2px solid #ef4444;border-radius:12px;background:#fff5f5">
+        <div class="font-bold text-red" style="font-size:14px">🎁 Free item required</div>
+        <div class="text-sm mt-8">
+          This sale qualifies for a free item up to <strong>£${d.giftLimit.toFixed(2)} value</strong>.
+          Please offer/provide a suitable small item before submitting.
+        </div>
+        <label class="flex items-c gap-8 mt-12" style="font-size:12px;font-weight:700;color:var(--red)">
+          <input type="checkbox" id="pos-final-gift-check" style="width:16px;height:16px" onchange="updateFinalPOSConfirmButton()">
+          I have offered / provided the free item to the client
+        </label>
+        <div class="text-xs text-muted mt-8">Gift threshold calculated using accounting conversion: GBP x ${FX_GBP_TO_EUR_FINAL.toFixed(2)} = EUR.</div>
+      </div>` : '';
+    if(body){
+      body.innerHTML = `
+        <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;margin-bottom:12px">
+          ${isInvoice
+            ? `<div class="font-bold text-red">This sale will be recorded as unpaid and added to Pending Payments.</div>`
+            : `<div class="font-bold">Please confirm the client has paid <span class="text-green">${paidAmount}</span>.</div>`}
+          <div class="text-sm text-muted mt-8">Full sale value: <strong>${fGBP(d.totalGbp)}</strong> / <strong>${fEUR(d.totalEur)}</strong> @ x${FX_GBP_TO_EUR_FINAL.toFixed(2)}</div>
+        </div>
+        <div class="two-col" style="margin-bottom:12px">
+          <div class="card" style="margin-bottom:0"><div class="card-body">
+            <div class="text-xs text-muted">Client</div><div class="font-bold">${fSafe(d.client)}</div>
+            ${d.company ? `<div class="text-xs text-muted mt-8">Company</div><div class="font-bold">${fSafe(d.company)}</div>` : ''}
+            ${d.dueDate ? `<div class="text-xs text-muted mt-8">Due date</div><div class="font-bold">${fSafe(d.dueDate)}</div>` : ''}
+          </div></div>
+          <div class="card" style="margin-bottom:0"><div class="card-body">
+            <div class="text-xs text-muted">Payment method</div><div class="font-bold">${fSafe(d.method)}</div>
+            <div class="text-xs text-muted mt-8">Paid currency</div><div class="font-bold">${fSafe(d.paidCurrency)}</div>
+            <div class="text-xs text-muted mt-8">Reference</div><div class="font-bold">${fSafe(d.invoiceRef)}</div>
+          </div></div>
+        </div>
+        <div class="tbl-wrap">
+          <table class="itbl">
+            <thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead>
+            <tbody>${d.items.map(i=>`<tr><td>${fSafe(i.name)}</td><td>${fGBP(i.quoted_gbp ?? fToGBP(i.quoted))}</td><td>${fEUR(i.quoted_eur ?? i.quoted ?? fToEUR(i.quoted_gbp))}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${fGBP(d.totalGbp)}</td><td class="font-bold text-blue">${fEUR(d.totalEur)}</td></tr></tfoot>
+          </table>
+        </div>
+        ${giftHtml}`;
+    }
+    if(btn){
+      btn.textContent = isInvoice ? 'Create Invoice Sale' : 'Confirm & Submit Sale';
+      btn.disabled = !!d.giftLimit;
+      btn.style.opacity = d.giftLimit ? '.45' : '1';
+      btn.style.cursor = d.giftLimit ? 'not-allowed' : 'pointer';
+    }
+    document.getElementById('modal-pos-final-confirm')?.classList.add('open');
+  }
+
+  window.updateFinalPOSConfirmButton = function(){
+    const d = window.__finalPOSDraft || {};
+    const btn = document.getElementById('pos-final-confirm-btn');
+    if(!btn) return;
+    const ok = !d.giftLimit || document.getElementById('pos-final-gift-check')?.checked;
+    btn.disabled = !ok;
+    btn.style.opacity = ok ? '1' : '.45';
+    btn.style.cursor = ok ? 'pointer' : 'not-allowed';
+  };
+
+  window.confirmFinalPOSSaleSubmit = async function(){
+    const d = window.__finalPOSDraft;
+    if(!d) return;
+    if(d.giftLimit && !document.getElementById('pos-final-gift-check')?.checked){
+      const warn = document.getElementById('pos-final-confirm-body');
+      alert('Please tick the free item confirmation before submitting.');
+      return;
+    }
+    const notesEl = document.getElementById('pos-notes');
+    if(notesEl && d.giftLimit){
+      const giftNote = `Free item confirmation: staff confirmed a free item up to £${d.giftLimit.toFixed(2)} was offered/provided. Gift threshold calculated using GBP x ${FX_GBP_TO_EUR_FINAL.toFixed(2)} = EUR.`;
+      notesEl.value = notesEl.value ? `${notesEl.value} | ${giftNote}` : giftNote;
+    }
+    window.closeFinalPOSConfirmModal();
+    if(typeof directPOSSaleSave === 'function'){
+      await directPOSSaleSave({preventDefault:function(){}});
+    }else{
+      alert('POS save function was not found. Please send this screenshot/file back for repair.');
+    }
+  };
+
+  // Final override: submit button must always show the confirmation modal first.
+  window.submitPOSSale = submitPOSSale = function(e){
+    if(e) e.preventDefault();
+    if(typeof canUsePOS === 'function' && !canUsePOS()){ alert('You do not have access to POS sales.'); return; }
+    const d = fCollectPOSDraft();
+    const err = fValidatePOSDraft(d);
+    if(err){
+      if(String(err).includes('\n')) alert(err);
+      else toast(err,false);
+      return;
+    }
+    showFinalPOSConfirmModal(d);
+  };
+
+  function finalApplyStaffPOSView(){
+    if(!fIsStaff()) return;
+    document.body.classList.add('role-staff');
+    document.querySelectorAll('#page-pos-sale .pos-item-cost').forEach(el => {
+      el.style.display='none';
+      const label = el.previousElementSibling;
+      if(label && label.tagName === 'LABEL') label.style.display='none';
+    });
+    ['pos-cost-total','pos-profit'].forEach(id=>{
+      const el=document.getElementById(id);
+      const card=el?.closest('.metric');
+      if(card) card.style.display='none';
+    });
+    const pe=document.getElementById('pos-profit-eur');
+    const pc=pe?.closest('.metric');
+    if(pc) pc.style.display='none';
+  }
+
+  window.ensurePOSPage = ensurePOSPage = function(){
+    const r = baseEnsurePOSPageFinalSafe ? baseEnsurePOSPageFinalSafe.apply(this,arguments) : undefined;
+    finalApplyStaffPOSView();
+    return r;
+  };
+  window.addPOSItemRow = addPOSItemRow = function(){
+    const r = baseAddPOSItemRowFinalSafe ? baseAddPOSItemRowFinalSafe.apply(this,arguments) : undefined;
+    finalApplyStaffPOSView();
+    return r;
+  };
+
+  function finalStaffOrders(filter=''){
+    const q = String(filter || '').toLowerCase();
+    let rows = (db.orders || []).filter(o => !q
+      || String(o.num||'').toLowerCase().includes(q)
+      || (o.suppliers||[]).join(',').toLowerCase().includes(q)
+      || (o.custLines||[]).some(c=>String(c.name||'').toLowerCase().includes(q)));
+    try{
+      rows = rows.filter(o => currentOrderTab === 'all' ? true : currentOrderTab === 'completed' ? fOrderComplete(o) : !fOrderComplete(o));
+    }catch(e){}
+    if(typeof updateOrderTabCounts === 'function'){
+      try{ updateOrderTabCounts(); }catch(e){}
+    }
+    const head = document.querySelector('#page-orders table thead tr');
+    if(head) head.innerHTML = '<th>Order #</th><th>Supplier(s)</th><th>Date</th><th>Customers</th><th>Sold / Quoted</th><th>Payment / Status</th><th>Actions</th>';
+    const tbody = document.getElementById('orders-body');
+    if(!tbody) return;
+    if(!rows.length){
+      tbody.innerHTML='<tr><td colspan="7"><div class="empty"><div class="ei">📦</div><p>No orders found</p></div></td></tr>';
+      return;
+    }
+    tbody.innerHTML = [...rows].reverse().map(o=>{
+      const isPOS = fIsPOSOrder(o);
+      const m = isPOS ? fPOSMeta(o) : null;
+      const custs = (o.custLines||[]).map(cl=>`<span title="${fSafe(cl.name||'')}" class="cust-init ${typeof dlClass==='function'?dlClass(cl.delivery):'ci-none'}" style="width:24px;height:24px;font-size:9px;margin-right:-5px;border-width:1.5px">${fInits(cl.name||'')}</span>`).join('');
+      const complete = fOrderComplete(o);
+      const pending = fOrderPending(o);
+      const status = isPOS
+        ? (m.paymentMethod === 'Invoice / Pay Later'
+            ? `<span class="badge b-red">Invoice / Pay Later</span><div class="text-xs text-muted">${fEUR(m.totalEur)} pending</div>`
+            : `<span class="badge b-green">Paid</span><div class="text-xs text-muted">${fSafe(m.paidCurrency||'—')} · ${fSafe(m.paymentMethod||'')}</div>`)
+        : (complete ? '<span class="badge b-green">Completed</span>' : pending > 0.01 ? '<span class="badge b-red">Active</span>' : '<span class="badge b-amber">Pending delivery</span>');
+      const sold = isPOS
+        ? `<div class="font-bold">${fGBP(m.totalGbp)}</div><div class="text-xs text-muted">${fEUR(m.totalEur)} @ x${FX_GBP_TO_EUR_FINAL.toFixed(2)}</div>`
+        : `<div class="font-bold">${fFmtEUR(o.totalQuoted||0)}</div>`;
+      return `<tr>
+        <td><span class="badge b-blue">#${fSafe(o.num)}</span>${isPOS?' <span class="badge b-green">POS Sale</span>':''}</td>
+        <td>${(o.suppliers||[]).map(s=>`<span class="sup-tag">${fSafe(s)}</span>`).join(' ')}</td>
+        <td>${fSafe(o.date||'—')}</td>
+        <td><div class="flex items-c" style="gap:2px;flex-wrap:wrap">${custs}<span class="text-xs text-muted" style="margin-left:10px">${(o.custLines||[]).length}</span></div></td>
+        <td>${sold}</td>
+        <td>${status}</td>
+        <td><button class="btn btn-sec btn-xs" onclick="viewOrder('${fSafe(o.id)}')">View</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  window.renderOrders = renderOrders = function(filter=''){
+    if(fIsStaff()) return finalStaffOrders(filter);
+    return baseRenderOrdersFinalSafe ? baseRenderOrdersFinalSafe.apply(this,arguments) : undefined;
+  };
+
+  window.viewOrder = viewOrder = function(id){
+    if(!fIsStaff()){
+      return baseViewOrderFinalSafe ? baseViewOrderFinalSafe.apply(this,arguments) : undefined;
+    }
+    const o = (db.orders||[]).find(x=>String(x.id)===String(id));
+    if(!o){ toast('Order not found',false); return; }
+    const isPOS = fIsPOSOrder(o);
+    const m = isPOS ? fPOSMeta(o) : null;
+    const clines = o.custLines || [];
+    document.getElementById('od-title').textContent = isPOS ? `POS Sale #${o.num}` : `Order #${o.num}`;
+    document.getElementById('od-statbar').innerHTML = isPOS
+      ? `<div><div class="ostat-lbl">Date</div><div class="ostat-val">${fSafe(o.date||'—')}</div></div><div><div class="ostat-lbl">Sale GBP</div><div class="ostat-val text-green">${fGBP(m.totalGbp)}</div></div><div><div class="ostat-lbl">Accounting EUR</div><div class="ostat-val text-blue">${fEUR(m.totalEur)}</div></div><div><div class="ostat-lbl">Payment</div><div class="ostat-val">${fSafe(m.paymentMethod||'—')} · ${fSafe(m.paidCurrency||'—')}</div></div>`
+      : `<div><div class="ostat-lbl">Date</div><div class="ostat-val">${fSafe(o.date||'—')}</div></div><div><div class="ostat-lbl">Quoted</div><div class="ostat-val text-green">${fFmtEUR(o.totalQuoted||0)}</div></div><div><div class="ostat-lbl">Status</div><div class="ostat-val">${fOrderComplete(o)?'Completed':'Active'}</div></div>`;
+    let html = '';
+    if(isPOS){
+      const cl = clines[0] || {};
+      const items = cl.items || [];
+      html += `<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-bottom:12px">
+        <div class="font-bold mb-8">Customer</div><div>${fSafe(cl.name||'Walk-in Customer - unknown')}</div>
+        ${m.company?`<div class="text-sm text-muted">Company: ${fSafe(m.company)}</div>`:''}
+        ${m.dueDate?`<div class="text-sm text-muted">Due: ${fSafe(m.dueDate)}</div>`:''}
+        ${m.invoiceRef?`<div class="text-sm text-muted">Reference: ${fSafe(m.invoiceRef)}</div>`:''}
+      </div>`;
+      html += `<table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead><tbody>${items.map(it=>`<tr><td>${fSafe(it.name||'')}</td><td>${fGBP(it.quoted_gbp ?? fToGBP(it.quoted))}</td><td>${fEUR(it.quoted_eur ?? it.quoted ?? fToEUR(it.quoted_gbp))}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${fGBP(m.totalGbp)}</td><td class="font-bold text-blue">${fEUR(m.totalEur)}</td></tr></tfoot></table>`;
+    }else{
+      html = clines.map(cl=>`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="font-bold">${fSafe(cl.name||'')}</div>${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Quoted</th><th>Status</th></tr></thead><tbody>${(cl.items||[]).map(it=>`<tr><td>${fSafe(it.name||'')}</td><td>${fFmtEUR(it.quoted||0)}</td><td>${fSafe(it.status||'')}</td></tr>`).join('')}</tbody></table>`:''}</div>`).join('');
+    }
+    if(o.notes) html += `<p class="text-sm text-muted mt-8">📝 ${fSafe(o.notes)}</p>`;
+    document.getElementById('od-body').innerHTML = html || '<p class="text-muted">No items.</p>';
+    const del = document.getElementById('od-del-btn');
+    if(del) del.style.display = 'none';
+    document.getElementById('modal-order-detail')?.classList.add('open');
+  };
+
+  // Keep staff restrictions applied after login/nav/rebuilds.
+  const finalOldApplyStaffMode = window.applyStaffMode;
+  window.applyStaffMode = function(){
+    if(finalOldApplyStaffMode) finalOldApplyStaffMode.apply(this,arguments);
+    document.body.classList.add('role-staff');
+    finalApplyStaffPOSView();
+  };
+  const finalOldNav = window.nav || (typeof nav !== 'undefined' ? nav : null);
+  window.nav = nav = function(id,btn){
+    const r = finalOldNav ? finalOldNav.apply(this,arguments) : undefined;
+    finalApplyStaffPOSView();
+    if(id === 'orders' && fIsStaff()) finalStaffOrders(document.getElementById('orders-search')?.value||'');
+    return r;
+  };
+  setTimeout(finalApplyStaffPOSView, 250);
+})();
+/* ===== END FINAL POS CONFIRMATION + STAFF SAFE VIEW PATCH ===== */
+
 </script>
 </body>
 </html>
