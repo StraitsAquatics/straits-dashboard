@@ -752,7 +752,7 @@ body:not(.auth-locked) #login-screen{display:none !important;}
           <div class="flex gap-6 items-c" style="flex-wrap:wrap">
             <select id="sup-picker" style="max-width:220px">
               <option value="">Pick supplier...</option>
-              <option>De Jong Marine Life</option><option>Reef Fish Centre</option><option>Amblard</option>
+              <option>De Jong Marine Life</option><option>Reef Fish Centre</option><option>Amblard</option><option>Aquaco DK</option>
               <option>Dream Corals</option><option>Aq-arium</option><option>Lunaqua</option>
               <option>Blue Clownfish</option><option>Marine Aquatics</option><option>Red Sea / Tecno</option>
               <option>Fauna Marin</option><option>Aquaforest</option><option>Straits Aquatics</option><option>Other</option>
@@ -1051,7 +1051,229 @@ body:not(.auth-locked) #login-screen{display:none !important;}
 
 <div class="toast" id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bcryptjs@2.4.3/dist/bcrypt.min.js">
+
+/* ===== POS CONFIRMATION + GIFT WARNING + STAFF ORDER PROFIT LOCK PATCH 2026-08-31 ===== */
+(function(){
+  const FX_GBP_TO_EUR = 1.20;
+  function moneyGBP(v){return '£' + (parseFloat(v)||0).toFixed(2);}
+  function moneyEUR(v){return '€' + (parseFloat(v)||0).toFixed(2);}
+  function toEUR(gbp){return Math.round(((parseFloat(gbp)||0) * FX_GBP_TO_EUR) * 100) / 100;}
+  function toGBP(eur){return Math.round(((parseFloat(eur)||0) / FX_GBP_TO_EUR) * 100) / 100;}
+  function n(v){return parseFloat(v)||0;}
+  function safe(v){return String(v==null?'':v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function isStaff(){return (window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff');}
+  function isPOSOrderLocal(o){return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos' || String(o?.num||'').startsWith('POS - ') || !!(o?.custLines||o?.cust_lines||[])[0]?.pos_meta;}
+  function firstLine(o){return (o?.custLines||o?.cust_lines||[])[0] || {};}
+  function posDateLabelLocal(iso){
+    const s=String(iso||today());
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const [y,m,d]=s.split('-');return `${d}/${m}/${y}`;}
+    return s;
+  }
+  function customerCreditBalanceLocal(name){
+    const target=String(name||'').trim().toLowerCase();
+    return (db.credits||[]).filter(c=>String(c.customer||'').trim().toLowerCase()===target && c.type==='credit').reduce((a,c)=>a+n(c.amount),0);
+  }
+  function giftTier(totalEur){
+    if(totalEur >= 250) return {limit:10,label:'£10',msg:'This customer qualifies for a free item up to £10 value.'};
+    if(totalEur > 150) return {limit:5,label:'£5',msg:'This customer qualifies for a free item up to £5 value.'};
+    return null;
+  }
+  function getPOSDraft(){
+    const rows=[...document.querySelectorAll('#pos-items .pos-item-row')];
+    const items=rows.map(r=>({
+      name:(r.querySelector('.pos-item-name')?.value||'').trim(),
+      soldGbp:n(r.querySelector('.pos-item-sold')?.value),
+      costGbp:n(r.querySelector('.pos-item-cost')?.value)
+    })).filter(i=>i.name && i.soldGbp>0);
+    const totalGbp=items.reduce((a,i)=>a+i.soldGbp,0);
+    const costGbp=items.reduce((a,i)=>a+i.costGbp,0);
+    const saleDate=document.getElementById('pos-date')?.value||today();
+    const method=document.getElementById('pos-payment')?.value||'Cash';
+    const paidCurrency=document.getElementById('pos-paid-currency')?.value||'GBP';
+    let client=(document.getElementById('pos-client')?.value||'').trim();
+    let company='',dueDate='',invoiceNotes='';
+    if(method==='Invoice / Pay Later'){
+      company=(document.getElementById('pos-company')?.value||'').trim();
+      dueDate=document.getElementById('pos-due-date')?.value||'';
+      invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();
+      if(!client)client=company;
+    }
+    if(!client)client='Walk-in Customer - unknown';
+    const saleNo=(typeof posNextSaleNumber==='function') ? posNextSaleNumber(saleDate) : String((db.orders||[]).filter(o=>String(o.num||'').startsWith('POS - '+posDateLabelLocal(saleDate))).length+1).padStart(3,'0');
+    const invoiceRef=`${posDateLabelLocal(saleDate)} - ${saleNo}`;
+    return {items,totalGbp,totalEur:toEUR(totalGbp),costGbp,costEur:toEUR(costGbp),method,paidCurrency,client,company,dueDate,invoiceNotes,saleDate,invoiceRef,orderNum:`POS - ${invoiceRef}`,gift:giftTier(toEUR(totalGbp))};
+  }
+  function ensurePOSConfirmModal(){
+    if(document.getElementById('modal-pos-confirm')) return;
+    const div=document.createElement('div');
+    div.className='modal-ov';
+    div.id='modal-pos-confirm';
+    div.innerHTML=`
+      <div class="modal" style="width:620px;max-width:96vw">
+        <div class="modal-head"><div class="modal-title" id="pos-confirm-title">Confirm POS Sale</div><button class="modal-close" onclick="closePOSConfirmModal()">✕</button></div>
+        <div class="modal-body" id="pos-confirm-body"></div>
+        <div class="modal-foot"><button class="btn btn-sec" onclick="closePOSConfirmModal()">← Go Back / Edit Sale</button><button class="btn btn-primary" id="pos-confirm-submit" onclick="confirmPOSSaleFinal()">Confirm & Submit Sale</button></div>
+      </div>`;
+    document.body.appendChild(div);
+  }
+  window.closePOSConfirmModal=function(){const m=document.getElementById('modal-pos-confirm'); if(m)m.classList.remove('open');};
+  function showPOSConfirmModal(draft){
+    ensurePOSConfirmModal();
+    window.__pendingPOSDraft=draft;
+    const isInvoice=draft.method==='Invoice / Pay Later';
+    const payRequired = draft.paidCurrency==='EUR' ? moneyEUR(draft.totalEur) : moneyGBP(draft.totalGbp);
+    const altRequired = draft.paidCurrency==='EUR' ? moneyGBP(draft.totalGbp) : moneyEUR(draft.totalEur);
+    const title=document.getElementById('pos-confirm-title');
+    if(title) title.textContent=isInvoice?'Confirm Invoice Sale':'Confirm POS Sale';
+    const submit=document.getElementById('pos-confirm-submit');
+    if(submit) submit.textContent=isInvoice?'Create Invoice Sale':'Confirm & Submit Sale';
+    const giftHtml=draft.gift?`
+      <div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:12px;background:#fff5f5">
+        <div class="font-bold text-red" style="font-size:14px">🎁 Free item required</div>
+        <div class="text-sm mt-8">${safe(draft.gift.msg)}</div>
+        <div class="text-xs text-muted mt-8">Suggested examples: Ocean Nutrition food or another suitable small item below ${safe(draft.gift.label)}.</div>
+        <label class="flex items-c gap-8 mt-12" style="font-size:12px;font-weight:700;color:var(--red)">
+          <input type="checkbox" id="pos-gift-confirmed" style="width:16px;height:16px;accent-color:var(--red)"> I have offered / provided the free item to the client
+        </label>
+        <div class="text-xs text-muted mt-8">Gift threshold calculated using accounting conversion: GBP x ${FX_GBP_TO_EUR.toFixed(2)} = EUR.</div>
+      </div>`:'';
+    const paymentBlock=isInvoice?`
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold text-red">This sale will be recorded as unpaid and added to Pending Payments.</div>
+        <div class="mt-8"><strong>Company:</strong> ${safe(draft.company||draft.client)}</div>
+        <div><strong>Invoice reference:</strong> ${safe(draft.invoiceRef)}</div>
+        <div><strong>Amount owed:</strong> ${moneyGBP(draft.totalGbp)} / ${moneyEUR(draft.totalEur)}</div>
+        <div><strong>Due date:</strong> ${safe(draft.dueDate)}</div>
+      </div>`:`
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold">Please confirm the client has paid the correct amount before submitting.</div>
+        <div class="mt-8"><strong>Amount to confirm:</strong> <span class="font-bold text-green" style="font-size:18px">${payRequired}</span> <span class="text-xs text-muted">(${altRequired} @ x${FX_GBP_TO_EUR.toFixed(2)})</span></div>
+      </div>`;
+    document.getElementById('pos-confirm-body').innerHTML=`
+      <div class="form-grid" style="margin-bottom:12px">
+        <div><div class="text-xs text-muted">Client</div><div class="font-bold">${safe(draft.client)}</div></div>
+        <div><div class="text-xs text-muted">Date</div><div class="font-bold">${safe(posDateLabelLocal(draft.saleDate))}</div></div>
+        <div><div class="text-xs text-muted">Payment method</div><div class="font-bold">${safe(draft.method)}</div></div>
+        <div><div class="text-xs text-muted">Paid currency</div><div class="font-bold">${safe(draft.paidCurrency)}</div></div>
+        <div><div class="text-xs text-muted">Sale total GBP</div><div class="font-bold text-green">${moneyGBP(draft.totalGbp)}</div></div>
+        <div><div class="text-xs text-muted">Accounting total EUR</div><div class="font-bold text-blue">${moneyEUR(draft.totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div></div>
+      </div>
+      ${paymentBlock}
+      <div class="mt-12">
+        <div class="font-bold text-sm mb-8">Items</div>
+        <table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead><tbody>${draft.items.map(i=>`<tr><td>${safe(i.name)}</td><td>${moneyGBP(i.soldGbp)}</td><td>${moneyEUR(toEUR(i.soldGbp))}</td></tr>`).join('')}</tbody></table>
+      </div>
+      ${giftHtml}
+      <div id="pos-confirm-warning" class="text-sm text-red font-bold mt-12" style="display:none"></div>`;
+    document.getElementById('modal-pos-confirm').classList.add('open');
+  }
+
+  const originalSubmitPOSSale = window.submitPOSSale || submitPOSSale;
+  window.submitPOSSale = submitPOSSale = async function(e){
+    if(e)e.preventDefault();
+    if(window.__posConfirmBypass){return originalSubmitPOSSale ? originalSubmitPOSSale(e) : undefined;}
+    if(!canUsePOS()){alert('You do not have access to POS sales.');return;}
+    const draft=getPOSDraft();
+    if(!draft.items.length){toast('Add at least one item and price sold',false);return;}
+    if(draft.method==='Invoice / Pay Later'){
+      if(!draft.company){toast('Company name is required for invoice/pay later',false);return;}
+      if(!draft.dueDate){toast('Due date is required for invoice/pay later',false);return;}
+    }
+    if(draft.method==='Customer Credit'){
+      if(draft.client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}
+      const bal=customerCreditBalanceLocal(draft.client);
+      if(bal + 0.001 < draft.totalEur){alert(`Customer credit is not enough.\n\nCustomer: ${draft.client}\nAvailable credit: ${moneyEUR(bal)}\nSale total: ${moneyGBP(draft.totalGbp)} / ${moneyEUR(draft.totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}`);return;}
+    }
+    showPOSConfirmModal(draft);
+  };
+
+  window.confirmPOSSaleFinal = async function(){
+    const draft=window.__pendingPOSDraft || getPOSDraft();
+    const warn=document.getElementById('pos-confirm-warning');
+    if(draft.gift && !document.getElementById('pos-gift-confirmed')?.checked){
+      if(warn){warn.style.display='block';warn.textContent='Please tick the free item confirmation before submitting this sale.';}
+      return;
+    }
+    if(draft.gift){
+      const notesEl=document.getElementById('pos-notes');
+      if(notesEl && !String(notesEl.value||'').includes('Free item confirmed')){
+        notesEl.value=(notesEl.value?notesEl.value+' | ':'')+`Free item confirmed: offered/provided item up to ${draft.gift.label} value.`;
+      }
+    }
+    closePOSConfirmModal();
+    try{
+      window.__posConfirmBypass=true;
+      await originalSubmitPOSSale({preventDefault:function(){}});
+    }finally{
+      window.__posConfirmBypass=false;
+      window.__pendingPOSDraft=null;
+    }
+  };
+
+  function installStaffProfitLock(){
+    if(document.getElementById('staff-profit-lock-style'))return;
+    const st=document.createElement('style');
+    st.id='staff-profit-lock-style';
+    st.textContent=`
+      body.role-staff #orders-body td:nth-child(6),
+      body.role-staff #orders-body td:nth-child(7),
+      body.role-staff #page-orders table thead th:nth-child(6),
+      body.role-staff #page-orders table thead th:nth-child(7){display:none !important;}
+      body.role-staff #page-pos-sale .pos-item-cost,
+      body.role-staff #page-pos-sale .metric:has(#pos-cost-total),
+      body.role-staff #page-pos-sale .metric:has(#pos-profit){display:none !important;}
+      body.role-staff #profit-body,
+      body.role-staff #page-profits{display:none !important;}
+    `;
+    document.head.appendChild(st);
+  }
+  installStaffProfitLock();
+  const oldApplyStaffMode=window.applyStaffMode;
+  window.applyStaffMode=function(){
+    if(oldApplyStaffMode) oldApplyStaffMode.apply(this,arguments);
+    document.body.classList.add('role-staff');
+    installStaffProfitLock();
+  };
+
+  const baseViewOrderStaffSafe = window.viewOrder || viewOrder;
+  window.viewOrder = viewOrder = function(id){
+    if(!isStaff()) return baseViewOrderStaffSafe ? baseViewOrderStaffSafe(id) : undefined;
+    const o=(db.orders||[]).find(x=>String(x.id)===String(id));
+    if(!o){toast('Order not found',false);return;}
+    const cls=o.custLines||o.cust_lines||[];
+    document.getElementById('od-title').textContent=`Order #${o.num}`;
+    const quoted=n(o.totalQuoted ?? o.total_quoted);
+    document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${safe(o.date||'—')}</div></div><div><div class="ostat-lbl">Supplier</div><div class="ostat-val">${safe((o.suppliers||[]).join(', ')||'—')}</div></div><div><div class="ostat-lbl">Quoted / Sale</div><div class="ostat-val text-green">${isPOSOrderLocal(o)?moneyEUR(quoted):fmt(quoted)}</div></div><div><div class="ostat-lbl">Status</div><div class="ostat-val">${o.manualComplete?'Completed':'Active'}</div></div>`;
+    let html='';
+    cls.forEach(cl=>{
+      const paid=(cl.payments||[]).reduce((a,p)=>a+n(p.amount),0);
+      const balance=Math.max(0,n(cl.quoted)-paid);
+      html+=`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${typeof dlClass==='function'?dlClass(cl.delivery):'ci-none'}">${typeof inits==='function'?inits(cl.name||''):'?'}</div><div style="flex:1"><div class="font-bold">${safe(cl.name||'Walk-in Customer - unknown')}</div><div class="flex gap-6 items-c mt-8"><span class="badge ${balance>0.01?'b-red':'b-green'}">${balance>0.01?'TO BE PAID':'PAID'}</span>${cl.payMethod?`<span class="badge b-grey">${safe(cl.payMethod)}</span>`:''}</div></div><div class="text-right"><div class="font-bold text-green">${isPOSOrderLocal(o)?moneyEUR(n(cl.quoted)):fmt(cl.quoted)}</div></div></div>`;
+      if((cl.items||[]).length){
+        html+=`<table class="itbl"><thead><tr><th>Item</th><th>Quoted / Sold</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${(cl.items||[]).map(it=>`<tr><td>${safe(it.name||'')}</td><td>${isPOSOrderLocal(o)?`${moneyGBP(it.quoted_gbp ?? toGBP(it.quoted))}<div class="text-xs text-muted">${moneyEUR(it.quoted_eur ?? it.quoted)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div>`:fmt(it.quoted)}</td><td>${safe(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`;
+      }
+      html+='</div>';
+    });
+    if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${safe(o.notes)}</p>`;
+    document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No order details.</p>';
+    const del=document.getElementById('od-del-btn'); if(del)del.style.display='none';
+    openModal('modal-order-detail');
+  };
+
+  const baseRenderOrdersStaff = window.renderOrders || renderOrders;
+  window.renderOrders = renderOrders = function(filter=''){
+    const out=baseRenderOrdersStaff ? baseRenderOrdersStaff(filter) : undefined;
+    if(isStaff()){
+      installStaffProfitLock();
+      document.querySelectorAll('#orders-body td:nth-child(5)').forEach(td=>td.classList.add('font-bold','text-green'));
+    }
+    return out;
+  };
+})();
+/* ===== END POS CONFIRMATION + GIFT WARNING + STAFF ORDER PROFIT LOCK PATCH ===== */
+
+</script>
 <script>
 
 // ===== SUPABASE CONFIG =====
@@ -1550,6 +1772,7 @@ const SUPPLIERS=[
   {name:'De Jong Marine Life',type:'Live Animals',url:'https://shop.dejongmarinelife.nl',email:'Info@dejongmarinelife.nl',contact:'Johan',notes:'Captive bred & wild. Primary live supplier.'},
   {name:'Reef Fish Centre',type:'Live Animals',url:'https://reeffishcenter.shop',email:'info@reeffishcenter.nl',contact:'Josh / Jack',notes:'Wide range wild livestock. Pacific & Indo-Pacific.'},
   {name:'Amblard',type:'Live Animals',url:'https://pro.amblard.com',email:'europe@amblard.com',contact:'Karin / Stephanie',notes:'Premium corals & fish. Sambawa, Java, Pacific collections.'},
+  {name:'Aquaco DK',type:'Live Animals',url:'\u2014',email:'\u2014',contact:'\u2014',notes:'New livestock supplier.'},
   {name:'Dream Corals',type:'Live Animals',url:'https://www.dreamcorals.eu',email:'\u2014',contact:'\u2014',notes:'Premium SPS/LPS, mushrooms, rare & WYSIWYG pieces.'},
   {name:'Aq-arium',type:'Dry Goods',url:'https://clientes.aq-arium.com',email:'\u2014',contact:'Ramon / Helena',notes:'Main dry goods. Aquaforest, equipment, additives, test kits.'},
   {name:'Lunaqua',type:'Live Food',url:'\u2014',email:'\u2014',contact:'\u2014',notes:'Copepods (Tisbe/Tigriopus), Artemia, rotifers, phyto, zoobloom.'},
@@ -2010,7 +2233,7 @@ function addSARow(){
   const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
   document.getElementById('sa-lines-empty').style.display='none';
   const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Sell €" style="width:90px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary()">\u2715</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Sell €" style="width:90px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Aquaco DK','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary()">\u2715</button>`;
   wrap.appendChild(d);
 }
 function getSALines(){return[...document.querySelectorAll('.sa-row')].map(r=>({name:r.querySelector('.sa-n').value,cost:parseFloat(r.querySelector('.sa-c').value)||0,sell:parseFloat(r.querySelector('.sa-s').value)||0,supplier:r.querySelector('.sa-sup').value}));}
@@ -3100,7 +3323,7 @@ function addSARow(name='',cost='',sell='',supplier=''){
   const id='sa'+uid();const wrap=document.getElementById('sa-lines-wrap');
   const empty=document.getElementById('sa-lines-empty'); if(empty)empty.style.display='none';
   const d=document.createElement('div');d.id=id;d.className='sa-row flex items-c gap-6 mb-8';d.style.cssText='padding:8px 15px;border-top:1px solid var(--border);flex-wrap:wrap';
-  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(name)}" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" value="${cost!==''?num(cost):''}" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Expected sell €" value="${sell!==''?num(sell):''}" style="width:110px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary();if(!document.querySelector('#sa-lines-wrap .sa-row'))document.getElementById('sa-lines-empty').style.display='block'">✕</button>`;
+  d.innerHTML=`<input type="text" placeholder="Item / species" value="${escAttr(name)}" style="flex:2;min-width:150px" class="sa-n"><input type="number" placeholder="Cost €" value="${cost!==''?num(cost):''}" style="width:90px" class="sa-c" oninput="updateSummary()"><input type="number" placeholder="Expected sell €" value="${sell!==''?num(sell):''}" style="width:110px" class="sa-s" oninput="updateSummary()"><select class="sa-sup" style="width:160px"><option value="">Supplier...</option>${['De Jong Marine Life','Reef Fish Centre','Amblard','Aquaco DK','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].map(s=>`<option ${s===supplier?'selected':''}>${s}</option>`).join('')}</select><button class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updateSummary();if(!document.querySelector('#sa-lines-wrap .sa-row'))document.getElementById('sa-lines-empty').style.display='block'">✕</button>`;
   wrap.appendChild(d);
 }
 function getSALines(){
