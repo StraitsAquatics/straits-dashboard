@@ -7515,5 +7515,174 @@ function applyStaffMode(){
 /* ===== END PRODUCTS CSV + BARCODE POS PATCH ===== */
 
 </script>
+
+
+<script>
+/* ===== PRODUCT CSV IMPORT DUPLICATE FIX 2026-09-01 =====
+   Supabase cannot upsert the same conflict key twice in one request.
+   This final override deduplicates CSV rows before upload, keeping the last version. */
+(function(){
+  const PRODUCT_TABLE_FIX = 'products';
+  const PRODUCT_FX_FIX = 1.20;
+  function nfix(v){
+    if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    const s = String(v == null ? '' : v).replace(/[£€,$\s]/g,'').replace(',', '.');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function normFix(v){ return String(v || '').trim().toLowerCase().replace(/\s+/g,' '); }
+  function uidFix(){ return (typeof uid === 'function') ? uid() : (Date.now().toString(36)+Math.random().toString(36).slice(2,7)); }
+  function notifyFix(msg, ok=true){ if(typeof toast === 'function') toast(msg, ok); else alert(msg); }
+  function parseCSVFix(text){
+    const rows=[]; let row=[], field='', inQuotes=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i], next=text[i+1];
+      if(ch==='"'){
+        if(inQuotes && next==='"'){ field+='"'; i++; }
+        else inQuotes=!inQuotes;
+      }else if(ch===',' && !inQuotes){ row.push(field); field=''; }
+      else if((ch==='\n'||ch==='\r') && !inQuotes){
+        if(ch==='\r' && next==='\n') i++;
+        row.push(field); field='';
+        if(row.some(v=>String(v).trim()!=='')) rows.push(row);
+        row=[];
+      }else field+=ch;
+    }
+    row.push(field);
+    if(row.some(v=>String(v).trim()!=='')) rows.push(row);
+    return rows;
+  }
+  function headerIndexFix(headers,names){
+    const hs=headers.map(h=>normFix(h).replace(/[_-]+/g,' '));
+    for(const n of names){
+      const key=normFix(n).replace(/[_-]+/g,' ');
+      let ix=hs.findIndex(h=>h===key); if(ix>=0) return ix;
+      ix=hs.findIndex(h=>h.includes(key)); if(ix>=0) return ix;
+    }
+    return -1;
+  }
+  function firstValFix(row,indexes){
+    for(const ix of indexes){ if(ix>=0 && row[ix]!=null && String(row[ix]).trim()!=='') return String(row[ix]).trim(); }
+    return '';
+  }
+  function bestPriceFix(row,indexes){
+    for(const ix of indexes){
+      if(ix>=0 && String(row[ix]||'').trim()!==''){
+        const v=nfix(row[ix]); if(v>0) return v;
+      }
+    }
+    return 0;
+  }
+  function mapFix(r){
+    return {
+      id:String(r.id || uidFix()),
+      name:r.name || r.product_name || r.title || '',
+      category:r.category || r.cat || '',
+      price_gbp:nfix(r.price_gbp ?? r.price ?? r.regular_price ?? r.sale_price),
+      barcode:r.barcode || r.ean || r.gtin || r.upc || '',
+      sku:r.sku || '',
+      source:r.source || '',
+      active:r.active !== false,
+      updated_at:r.updated_at || ''
+    };
+  }
+
+  window.importProductsCSV = async function(){
+    const isAdminUser = !window._session || window._session.role === 'admin';
+    if(!isAdminUser){ notifyFix('Admin access only', false); return; }
+    const file = document.getElementById('products-csv-file')?.files?.[0];
+    if(!file){ notifyFix('Choose a CSV file first', false); return; }
+    const status = document.getElementById('products-import-status');
+    try{
+      if(status) status.textContent='Reading CSV...';
+      const csvText = await file.text();
+      const rows = parseCSVFix(csvText);
+      if(rows.length < 2) throw new Error('CSV appears empty.');
+      const headers = rows[0];
+      const ixName = headerIndexFix(headers,['name','title','product name','product','item name']);
+      const ixTitle = headerIndexFix(headers,['title']);
+      const ixCat = headerIndexFix(headers,['category','categories','product type','type']);
+      const ixBarcode = headerIndexFix(headers,['barcode','bar code','ean','gtin','upc']);
+      const ixSKU = headerIndexFix(headers,['sku','product id','id','code']);
+      const priceIndexes = [
+        headerIndexFix(headers,['price gbp','gbp price','regular price','sale price','price','amount']),
+        headerIndexFix(headers,['price'])
+      ];
+      if(ixName < 0 && ixTitle < 0) throw new Error('Could not find a product name/title column.');
+
+      if(status) status.textContent='Loading existing products...';
+      if(typeof window.fetchProducts === 'function') await window.fetchProducts(true);
+      if(!window.db) window.db={};
+      if(!Array.isArray(window.db.products)) window.db.products=[];
+
+      const byName = new Map((window.db.products||[]).map(p=>[normFix(p.name),p]));
+      const byBarcode = new Map((window.db.products||[]).filter(p=>p.barcode).map(p=>[String(p.barcode).trim(),p]));
+      const bySku = new Map((window.db.products||[]).filter(p=>p.sku).map(p=>[normFix(p.sku),p]));
+      const importedById = new Map();
+      let usableRows = 0;
+      let duplicateRows = 0;
+
+      if(status) status.textContent='Preparing products and removing duplicates...';
+      for(const row of rows.slice(1)){
+        const name = firstValFix(row,[ixName,ixTitle]);
+        if(!name) continue;
+        usableRows++;
+        let price = bestPriceFix(row,priceIndexes);
+        const currency = document.getElementById('products-csv-currency')?.value || 'GBP';
+        if(currency === 'EUR' && price) price = Math.round((price / PRODUCT_FX_FIX) * 100) / 100;
+        const barcode = firstValFix(row,[ixBarcode]);
+        const sku = firstValFix(row,[ixSKU]);
+        const category = firstValFix(row,[ixCat]);
+
+        const existing = (barcode && byBarcode.get(barcode)) || (sku && bySku.get(normFix(sku))) || byName.get(normFix(name));
+        const payload = {
+          id: existing ? existing.id : uidFix(),
+          name,
+          category,
+          price_gbp: price,
+          barcode: barcode || null,
+          sku: sku || '',
+          source: 'csv',
+          active: true,
+          updated_at: new Date().toISOString()
+        };
+
+        if(importedById.has(String(payload.id))) duplicateRows++;
+        importedById.set(String(payload.id), payload); // Keep latest version of duplicate product in same CSV.
+
+        const mapped = mapFix(payload);
+        byName.set(normFix(name), mapped);
+        if(barcode) byBarcode.set(barcode, mapped);
+        if(sku) bySku.set(normFix(sku), mapped);
+      }
+
+      const imported = Array.from(importedById.values());
+      if(!imported.length) throw new Error('No usable products were found in the CSV.');
+
+      if(status) status.textContent = `Uploading ${imported.length} unique products to Supabase${duplicateRows?` (${duplicateRows} duplicate CSV rows merged)`:''}...`;
+      for(let i=0;i<imported.length;i+=100){
+        const chunk = imported.slice(i,i+100);
+        const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE_FIX}?on_conflict=id`, {
+          method:'POST',
+          headers:{...H,'Prefer':'resolution=merge-duplicates,return=representation'},
+          body:JSON.stringify(chunk)
+        });
+        if(!r.ok) throw new Error(await r.text());
+      }
+
+      if(typeof window.fetchProducts === 'function') await window.fetchProducts(true);
+      if(typeof window.refreshProductDatalists === 'function') window.refreshProductDatalists();
+      if(typeof window.renderProductsPage === 'function') window.renderProductsPage();
+      if(status) status.textContent = `Imported/updated ${imported.length} unique products ✓${duplicateRows?` Duplicate CSV rows merged: ${duplicateRows}.`:''}`;
+      notifyFix('Product CSV imported ✓');
+    }catch(e){
+      if(status) status.textContent='Import failed: '+(e.message||e);
+      alert('CSV import failed. Details:\n'+(e.message||e));
+    }
+  };
+})();
+/* ===== END PRODUCT CSV IMPORT DUPLICATE FIX ===== */
+</script>
+
 </body>
 </html>
