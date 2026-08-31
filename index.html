@@ -6794,5 +6794,726 @@ function applyStaffMode(){
 /* ===== END FINAL POS CONFIRMATION + STAFF SAFE VIEW PATCH ===== */
 
 </script>
+
+<script>
+/* ===== PRODUCTS CSV + BARCODE POS PATCH 2026-09-01 =====
+   Adds admin Products page, CSV import, editable barcode fields,
+   POS barcode scan box, and unknown barcode linking. */
+(function(){
+  const PRODUCT_FX = 1.20;
+  const PRODUCT_TABLE = 'products';
+  let productsLoaded = false;
+  let productsLoading = false;
+  let productsTableAvailable = true;
+  let unknownBarcodeValue = '';
+
+  function pNum(v){
+    if(typeof v === 'number') return Number.isFinite(v) ? v : 0;
+    const s = String(v == null ? '' : v).replace(/[£€,$\s]/g,'').replace(',', '.');
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function pGBP(v){ return '£' + pNum(v).toFixed(2); }
+  function pEUR(v){ return '€' + (Math.round(pNum(v) * PRODUCT_FX * 100) / 100).toFixed(2); }
+  function pSafe(v){ return String(v == null ? '' : v).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+  function pAttr(v){ return pSafe(v).replace(/`/g,'&#96;'); }
+  function pUid(){ return (typeof uid === 'function') ? uid() : (Date.now().toString(36) + Math.random().toString(36).slice(2,7)); }
+  function norm(v){ return String(v || '').trim().toLowerCase().replace(/\s+/g,' '); }
+  function isAdmin(){ return !window._session || window._session.role === 'admin'; }
+  function isStaff(){ return (window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff'); }
+  function notify(msg, ok=true){ if(typeof toast === 'function') toast(msg, ok); else alert(msg); }
+  function todayISO(){ return (typeof today === 'function') ? today() : new Date().toISOString().slice(0,10); }
+
+  if(!window.db) window.db = {};
+  if(!Array.isArray(window.db.products)) window.db.products = [];
+
+  function mapProductRow(r){
+    return {
+      id: String(r.id || pUid()),
+      name: r.name || r.product_name || r.title || '',
+      category: r.category || r.cat || '',
+      price_gbp: pNum(r.price_gbp ?? r.price ?? r.regular_price ?? r.sale_price),
+      barcode: r.barcode || r.ean || r.gtin || r.upc || '',
+      sku: r.sku || '',
+      source: r.source || '',
+      active: r.active !== false,
+      updated_at: r.updated_at || ''
+    };
+  }
+
+  function fallbackProducts(){
+    const src = Array.isArray(window.POS_PRODUCT_SUGGESTIONS) ? window.POS_PRODUCT_SUGGESTIONS : (typeof POS_PRODUCT_SUGGESTIONS !== 'undefined' && Array.isArray(POS_PRODUCT_SUGGESTIONS) ? POS_PRODUCT_SUGGESTIONS : []);
+    return src.map(p => ({
+      id: String(p.id || p.title || pUid()),
+      name: p.title || p.name || '',
+      category: p.category || '',
+      price_gbp: pNum(p.price || p.price_gbp),
+      barcode: p.barcode || '',
+      sku: p.sku || String(p.id || ''),
+      source: 'embedded_csv',
+      active: true
+    })).filter(p => p.name);
+  }
+
+  function liveProducts(){
+    const dbProducts = (window.db && Array.isArray(window.db.products)) ? window.db.products.filter(p => p.active !== false) : [];
+    return dbProducts.length ? dbProducts : fallbackProducts();
+  }
+
+  function findProductByName(name){
+    const key = norm(name);
+    if(!key) return null;
+    return liveProducts().find(p => norm(p.name) === key) || null;
+  }
+
+  function findProductByCode(code){
+    const key = String(code || '').trim();
+    if(!key) return null;
+    const keyN = norm(key);
+    return liveProducts().find(p => String(p.barcode || '').trim() === key || norm(p.sku) === keyN || norm(p.id) === keyN) || null;
+  }
+
+  async function fetchProducts(force=false){
+    if(productsLoading) return;
+    if(productsLoaded && !force) return;
+    productsLoading = true;
+    try{
+      const rows = await sbGet(PRODUCT_TABLE, 'select=*&order=name.asc');
+      window.db.products = (rows || []).map(mapProductRow);
+      productsTableAvailable = true;
+      productsLoaded = true;
+      refreshProductDatalists();
+      renderProductsPage();
+    }catch(e){
+      productsTableAvailable = false;
+      productsLoaded = true;
+      console.warn('Products table not available yet:', e);
+      renderProductsPage();
+      refreshProductDatalists();
+    }finally{
+      productsLoading = false;
+    }
+  }
+
+  function refreshProductDatalists(){
+    const products = liveProducts().slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).slice(0,3000);
+    const html = products.map(p => {
+      const bits = [];
+      if(p.price_gbp) bits.push(pGBP(p.price_gbp));
+      if(p.barcode) bits.push('barcode ' + p.barcode);
+      else if(p.sku) bits.push('SKU ' + p.sku);
+      if(p.category) bits.push(p.category);
+      return `<option value="${pAttr(p.name)}" label="${pAttr(bits.join(' · '))}"></option>`;
+    }).join('');
+    document.querySelectorAll('#pos-product-list,#product-search-list,#unknown-product-list').forEach(dl => { dl.innerHTML = html; });
+    const custList = document.getElementById('pos-customer-list');
+    if(custList && window.db && Array.isArray(window.db.customers)){
+      custList.innerHTML = window.db.customers.map(c=>`<option value="${pAttr(c.name)}"></option>`).join('');
+    }
+  }
+
+  function productsSQLBox(){
+    return `<div style="padding:12px;border:1px solid #fbbf24;background:#fffbeb;border-radius:12px;margin-bottom:12px">
+      <div class="font-bold text-amber">Products table not detected yet</div>
+      <div class="text-sm text-muted mt-8">Run the Supabase SQL I provided, refresh the dashboard, then upload your website CSV here.</div>
+    </div>`;
+  }
+
+  function ensureProductsSidebar(){
+    if(document.getElementById('products-sidebar-btn')) return;
+    const priceBtn = [...document.querySelectorAll('.sb-btn')].find(b => String(b.getAttribute('onclick') || '').includes("'prices'"));
+    if(!priceBtn) return;
+    priceBtn.insertAdjacentHTML('afterend', `<button class="sb-btn" id="products-sidebar-btn" onclick="nav('products',this)" style="display:${isAdmin()?'flex':'none'}"><span class="ic">🏷️</span><span>Products</span></button>`);
+  }
+
+  function ensureProductsPage(){
+    if(document.getElementById('page-products')) return;
+    const content = document.querySelector('.content');
+    if(!content) return;
+    const page = document.createElement('div');
+    page.id = 'page-products';
+    page.className = 'page';
+    page.innerHTML = `
+      <div class="section-hd">
+        <div>
+          <div class="section-title">Products</div>
+          <div class="text-sm text-muted">Admin product list for POS suggestions, CSV updates and barcode linking.</div>
+        </div>
+        <div class="flex gap-8" style="flex-wrap:wrap">
+          <button class="btn btn-sec" onclick="fetchProducts(true)">Refresh</button>
+          <button class="btn btn-primary" onclick="addManualProductRow()">+ Add Product</button>
+        </div>
+      </div>
+      <div id="products-table-warning"></div>
+      <div class="card mb-14">
+        <div class="card-head"><div class="card-title">Upload Website Product CSV</div></div>
+        <div class="card-body">
+          <div class="form-grid">
+            <div class="fg fg-full"><label>CSV file</label><input type="file" id="products-csv-file" accept=".csv,text/csv"></div>
+            <div class="fg"><label>Price currency in CSV</label><select id="products-csv-currency"><option value="GBP" selected>GBP £</option><option value="EUR">EUR € — convert to GBP</option></select></div>
+            <div class="fg"><label>Import mode</label><select id="products-csv-mode"><option value="upsert" selected>Update existing / add new</option></select></div>
+          </div>
+          <div class="flex gap-8 mt-12" style="flex-wrap:wrap">
+            <button class="btn btn-primary" onclick="importProductsCSV()">Import / Update Products</button>
+            <span class="text-sm text-muted" id="products-import-status">CSV columns are detected automatically: name/title, price, category, barcode/EAN/GTIN, SKU where present.</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title">Product Database</div>
+          <input type="text" id="products-search" placeholder="Search product, barcode or SKU..." oninput="renderProductsPage()" style="max-width:280px">
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Product</th><th>Category</th><th>Price GBP</th><th>Barcode</th><th>SKU</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="products-body"><tr><td colspan="7"><div class="empty"><div class="ei">🏷️</div><p>Loading products...</p></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>`;
+    content.appendChild(page);
+  }
+
+  function renderProductsPage(){
+    const body = document.getElementById('products-body');
+    const warn = document.getElementById('products-table-warning');
+    if(warn) warn.innerHTML = productsTableAvailable ? '' : productsSQLBox();
+    if(!body) return;
+    const q = norm(document.getElementById('products-search')?.value || '');
+    let rows = (window.db.products || []).slice();
+    if(q){
+      rows = rows.filter(p => norm(p.name).includes(q) || norm(p.category).includes(q) || norm(p.barcode).includes(q) || norm(p.sku).includes(q));
+    }
+    rows.sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+    if(!rows.length){
+      body.innerHTML = `<tr><td colspan="7"><div class="empty"><div class="ei">🏷️</div><p>${productsTableAvailable?'No products yet. Upload your CSV or add one manually.':'Create the Supabase products table first.'}</p></div></td></tr>`;
+      return;
+    }
+    body.innerHTML = rows.slice(0,600).map(p => `<tr data-product-id="${pAttr(p.id)}">
+      <td><input class="prod-name" value="${pAttr(p.name)}" style="min-width:260px;width:100%"></td>
+      <td><input class="prod-cat" value="${pAttr(p.category || '')}" style="min-width:130px;width:100%"></td>
+      <td><input type="number" step="0.01" min="0" class="prod-price" value="${pNum(p.price_gbp).toFixed(2)}" style="width:110px"></td>
+      <td><input class="prod-barcode" value="${pAttr(p.barcode || '')}" placeholder="Scan/type barcode" style="min-width:150px;width:100%"></td>
+      <td><input class="prod-sku" value="${pAttr(p.sku || '')}" placeholder="optional" style="min-width:120px;width:100%"></td>
+      <td><span class="badge ${p.active!==false?'b-green':'b-grey'}">${p.active!==false?'Active':'Inactive'}</span></td>
+      <td><div class="flex gap-6" style="flex-wrap:wrap">
+        <button class="btn btn-sec btn-xs" onclick="saveProductFromRow('${pAttr(p.id)}')">Save</button>
+        <button class="btn btn-sec btn-xs" onclick="toggleProductActive('${pAttr(p.id)}')">${p.active!==false?'Deactivate':'Activate'}</button>
+      </div></td>
+    </tr>`).join('') + (rows.length > 600 ? `<tr><td colspan="7"><div class="text-sm text-muted" style="padding:10px">Showing first 600 results. Use search to narrow the list.</div></td></tr>` : '');
+  }
+
+  function rowPayloadFromProductRow(id){
+    const tr = document.querySelector(`#products-body tr[data-product-id="${CSS.escape(String(id))}"]`);
+    if(!tr) return null;
+    return {
+      name: tr.querySelector('.prod-name')?.value.trim() || '',
+      category: tr.querySelector('.prod-cat')?.value.trim() || '',
+      price_gbp: pNum(tr.querySelector('.prod-price')?.value),
+      barcode: (tr.querySelector('.prod-barcode')?.value.trim() || null),
+      sku: tr.querySelector('.prod-sku')?.value.trim() || '',
+      updated_at: new Date().toISOString()
+    };
+  }
+
+  window.saveProductFromRow = async function(id){
+    if(!isAdmin()){ notify('Admin access only', false); return; }
+    const payload = rowPayloadFromProductRow(id);
+    if(!payload || !payload.name){ notify('Product name is required', false); return; }
+    try{
+      const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}?id=eq.${encodeURIComponent(id)}`, {method:'PATCH', headers:{...H,'Prefer':'return=representation'}, body:JSON.stringify(payload)});
+      if(!r.ok) throw new Error(await r.text());
+      const idx = window.db.products.findIndex(p => String(p.id) === String(id));
+      if(idx >= 0) window.db.products[idx] = {...window.db.products[idx], ...payload};
+      notify('Product saved ✓');
+      refreshProductDatalists();
+      renderProductsPage();
+    }catch(e){ alert('Product save failed. Supabase said:\n' + (e.message || e)); }
+  };
+
+  window.toggleProductActive = async function(id){
+    if(!isAdmin()){ notify('Admin access only', false); return; }
+    const p = window.db.products.find(x => String(x.id) === String(id));
+    if(!p) return;
+    const active = !(p.active !== false);
+    try{
+      const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}?id=eq.${encodeURIComponent(id)}`, {method:'PATCH', headers:{...H,'Prefer':'return=representation'}, body:JSON.stringify({active, updated_at:new Date().toISOString()})});
+      if(!r.ok) throw new Error(await r.text());
+      p.active = active;
+      notify(active ? 'Product activated' : 'Product deactivated');
+      refreshProductDatalists();
+      renderProductsPage();
+    }catch(e){ alert('Product update failed. Supabase said:\n' + (e.message || e)); }
+  };
+
+  window.addManualProductRow = async function(){
+    if(!isAdmin()){ notify('Admin access only', false); return; }
+    if(!productsTableAvailable){ alert('Create the Supabase products table first, then refresh.'); return; }
+    const name = prompt('Product name:');
+    if(!name) return;
+    const price = pNum(prompt('Price in GBP:', '0'));
+    const payload = {id:pUid(), name:name.trim(), category:'', price_gbp:price, barcode:null, sku:'', source:'manual', active:true, updated_at:new Date().toISOString()};
+    try{
+      const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}`, {method:'POST', headers:H, body:JSON.stringify(payload)});
+      if(!r.ok) throw new Error(await r.text());
+      window.db.products.push(mapProductRow(payload));
+      notify('Product added ✓');
+      refreshProductDatalists();
+      renderProductsPage();
+    }catch(e){ alert('Product add failed. Supabase said:\n' + (e.message || e)); }
+  };
+
+  function parseCSV(text){
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for(let i=0;i<text.length;i++){
+      const ch = text[i], next = text[i+1];
+      if(ch === '"'){
+        if(inQuotes && next === '"'){ field += '"'; i++; }
+        else inQuotes = !inQuotes;
+      }else if(ch === ',' && !inQuotes){ row.push(field); field = ''; }
+      else if((ch === '\n' || ch === '\r') && !inQuotes){
+        if(ch === '\r' && next === '\n') i++;
+        row.push(field); field = '';
+        if(row.some(v => String(v).trim() !== '')) rows.push(row);
+        row = [];
+      }else field += ch;
+    }
+    row.push(field);
+    if(row.some(v => String(v).trim() !== '')) rows.push(row);
+    return rows;
+  }
+  function headerIndex(headers, names){
+    const hs = headers.map(h => norm(h).replace(/[_-]+/g,' '));
+    for(const n of names){
+      const key = norm(n).replace(/[_-]+/g,' ');
+      let ix = hs.findIndex(h => h === key);
+      if(ix >= 0) return ix;
+      ix = hs.findIndex(h => h.includes(key));
+      if(ix >= 0) return ix;
+    }
+    return -1;
+  }
+  function firstVal(row, indexes){
+    for(const ix of indexes){ if(ix >= 0 && row[ix] != null && String(row[ix]).trim() !== '') return String(row[ix]).trim(); }
+    return '';
+  }
+  function bestPrice(row, priceIndexes){
+    for(const ix of priceIndexes){
+      if(ix >= 0 && String(row[ix] || '').trim() !== ''){
+        const val = pNum(row[ix]);
+        if(val > 0) return val;
+      }
+    }
+    return 0;
+  }
+
+  window.importProductsCSV = async function(){
+    if(!isAdmin()){ notify('Admin access only', false); return; }
+    if(!productsTableAvailable){ alert('Create the Supabase products table first, refresh, then import the CSV.'); return; }
+    const file = document.getElementById('products-csv-file')?.files?.[0];
+    if(!file){ notify('Choose a CSV file first', false); return; }
+    const status = document.getElementById('products-import-status');
+    try{
+      if(status) status.textContent = 'Reading CSV...';
+      const text = await file.text();
+      const rows = parseCSV(text);
+      if(rows.length < 2) throw new Error('CSV appears empty.');
+      const headers = rows[0];
+      const ixName = headerIndex(headers, ['name','title','product name','product','item name']);
+      const ixTitle = headerIndex(headers, ['title']);
+      const ixCat = headerIndex(headers, ['category','categories','product type','type']);
+      const ixBarcode = headerIndex(headers, ['barcode','bar code','ean','gtin','upc']);
+      const ixSKU = headerIndex(headers, ['sku','product id','id','code']);
+      const priceIndexes = [
+        headerIndex(headers, ['price gbp','gbp price','regular price','sale price','price','amount']),
+        headerIndex(headers, ['price'])
+      ];
+      if(ixName < 0 && ixTitle < 0) throw new Error('Could not find a product name/title column.');
+      if(status) status.textContent = 'Preparing products...';
+      await fetchProducts(true);
+      const byName = new Map((window.db.products||[]).map(p => [norm(p.name), p]));
+      const byBarcode = new Map((window.db.products||[]).filter(p=>p.barcode).map(p => [String(p.barcode).trim(), p]));
+      const bySku = new Map((window.db.products||[]).filter(p=>p.sku).map(p => [norm(p.sku), p]));
+      const imported = [];
+      for(const row of rows.slice(1)){
+        const name = firstVal(row,[ixName, ixTitle]);
+        if(!name) continue;
+        let price = bestPrice(row, priceIndexes);
+        const currency = document.getElementById('products-csv-currency')?.value || 'GBP';
+        if(currency === 'EUR' && price) price = Math.round((price / PRODUCT_FX) * 100) / 100;
+        const barcode = firstVal(row,[ixBarcode]);
+        const sku = firstVal(row,[ixSKU]);
+        const category = firstVal(row,[ixCat]);
+        let existing = (barcode && byBarcode.get(barcode)) || (sku && bySku.get(norm(sku))) || byName.get(norm(name));
+        const payload = {id: existing ? existing.id : pUid(), name, category, price_gbp:price, barcode: barcode || null, sku: sku || '', source:'csv', active:true, updated_at:new Date().toISOString()};
+        imported.push(payload);
+        const mapped = mapProductRow(payload);
+        byName.set(norm(name), mapped);
+        if(barcode) byBarcode.set(barcode, mapped);
+        if(sku) bySku.set(norm(sku), mapped);
+      }
+      if(!imported.length) throw new Error('No usable products were found in the CSV.');
+      if(status) status.textContent = `Uploading ${imported.length} products to Supabase...`;
+      for(let i=0;i<imported.length;i+=100){
+        const chunk = imported.slice(i,i+100);
+        const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}?on_conflict=id`, {method:'POST', headers:{...H,'Prefer':'resolution=merge-duplicates,return=representation'}, body:JSON.stringify(chunk)});
+        if(!r.ok) throw new Error(await r.text());
+      }
+      await fetchProducts(true);
+      if(status) status.textContent = `Imported/updated ${imported.length} products ✓`;
+      notify('Product CSV imported ✓');
+    }catch(e){
+      if(status) status.textContent = 'Import failed: ' + (e.message || e);
+      alert('CSV import failed. Details:\n' + (e.message || e));
+    }
+  };
+
+  function ensureBarcodeModal(){
+    if(document.getElementById('modal-unknown-barcode')) return;
+    const m = document.createElement('div');
+    m.id = 'modal-unknown-barcode';
+    m.className = 'modal-ov';
+    m.innerHTML = `
+      <div class="modal" style="width:640px;max-width:96vw">
+        <div class="modal-head"><div class="modal-title">Unknown Barcode</div><button type="button" class="modal-close" onclick="closeUnknownBarcodeModal()">✕</button></div>
+        <div class="modal-body">
+          <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;margin-bottom:12px">
+            <div class="text-xs text-muted">Scanned barcode / code</div>
+            <div class="font-bold" id="unknown-barcode-code" style="font-family:monospace"></div>
+          </div>
+          <datalist id="unknown-product-list"></datalist>
+          <div class="form-grid">
+            <div class="fg fg-full"><label>Link to product</label><input type="text" id="unknown-product-name" list="unknown-product-list" placeholder="Search existing product or type a new product name" oninput="unknownProductSelected()" onchange="unknownProductSelected()"></div>
+            <div class="fg"><label>Sale price GBP</label><input type="number" step="0.01" min="0" id="unknown-product-price" placeholder="0.00"></div>
+            <div class="fg"><label>Category <span class="text-muted">optional</span></label><input type="text" id="unknown-product-category"></div>
+          </div>
+          <div class="text-sm text-muted mt-12">The first time a barcode is scanned, link it to the correct product. Next time, the POS will recognise it automatically.</div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-sec" onclick="closeUnknownBarcodeModal()">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveUnknownBarcodeAndAdd()">Save Barcode + Add to Sale</button>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+  }
+
+  window.closeUnknownBarcodeModal = function(){ document.getElementById('modal-unknown-barcode')?.classList.remove('open'); };
+
+  window.unknownProductSelected = function(){
+    const name = document.getElementById('unknown-product-name')?.value || '';
+    const p = findProductByName(name);
+    if(p){
+      const price = document.getElementById('unknown-product-price');
+      const cat = document.getElementById('unknown-product-category');
+      if(price && !price.value) price.value = pNum(p.price_gbp).toFixed(2);
+      if(cat && !cat.value) cat.value = p.category || '';
+    }
+  };
+
+  function openUnknownBarcodeModal(code){
+    ensureBarcodeModal();
+    unknownBarcodeValue = String(code || '').trim();
+    document.getElementById('unknown-barcode-code').textContent = unknownBarcodeValue;
+    const name = document.getElementById('unknown-product-name');
+    const price = document.getElementById('unknown-product-price');
+    const cat = document.getElementById('unknown-product-category');
+    if(name) name.value = '';
+    if(price) price.value = '';
+    if(cat) cat.value = '';
+    refreshProductDatalists();
+    document.getElementById('modal-unknown-barcode')?.classList.add('open');
+    setTimeout(()=>name?.focus(),50);
+  }
+
+  window.saveUnknownBarcodeAndAdd = async function(){
+    const barcode = unknownBarcodeValue;
+    const name = document.getElementById('unknown-product-name')?.value.trim() || '';
+    const price = pNum(document.getElementById('unknown-product-price')?.value);
+    const category = document.getElementById('unknown-product-category')?.value.trim() || '';
+    if(!barcode){ notify('No barcode found', false); return; }
+    if(!name){ notify('Choose or enter a product name', false); return; }
+    if(!price){ notify('Enter the sale price in GBP', false); return; }
+    if(!productsTableAvailable){
+      addPOSItemRow(name, price, '', barcode, '');
+      closeUnknownBarcodeModal();
+      notify('Added to sale. Barcode not saved because products table is not created yet.', false);
+      return;
+    }
+    let p = findProductByName(name);
+    const payload = p ? {barcode, price_gbp:price, category:category || p.category || '', updated_at:new Date().toISOString()} : {id:pUid(), name, category, price_gbp:price, barcode, sku:'', source:'barcode_scan', active:true, updated_at:new Date().toISOString()};
+    try{
+      if(p){
+        const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}?id=eq.${encodeURIComponent(p.id)}`, {method:'PATCH', headers:{...H,'Prefer':'return=representation'}, body:JSON.stringify(payload)});
+        if(!r.ok) throw new Error(await r.text());
+        Object.assign(p, payload);
+      }else{
+        const r = await fetch(`${SB_URL}/rest/v1/${PRODUCT_TABLE}`, {method:'POST', headers:H, body:JSON.stringify(payload)});
+        if(!r.ok) throw new Error(await r.text());
+        p = mapProductRow(payload);
+        window.db.products.push(p);
+      }
+      refreshProductDatalists();
+      addPOSItemRow(p.name, price, '', barcode, p.id);
+      closeUnknownBarcodeModal();
+      notify('Barcode linked and added to sale ✓');
+    }catch(e){
+      alert('Could not save barcode. Supabase said:\n' + (e.message || e));
+    }
+  };
+
+  function ensurePOSBarcodeUI(){
+    const form = document.getElementById('pos-form');
+    if(!form || document.getElementById('pos-barcode-box')) return;
+    const panel = document.createElement('div');
+    panel.id = 'pos-barcode-box';
+    panel.style.cssText = 'padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;margin:12px 0';
+    panel.innerHTML = `
+      <div class="form-grid">
+        <div class="fg fg-full"><label>Barcode / SKU Scan</label><input type="text" id="pos-barcode-input" placeholder="Click here and scan. Scanner should send Enter after each scan."></div>
+      </div>
+      <div class="text-xs text-muted mt-8">If the barcode is known, the product is added immediately. If not, you can link it once to a product.</div>`;
+    const firstDivider = form.querySelector('.divider');
+    if(firstDivider) firstDivider.insertAdjacentElement('beforebegin', panel);
+    else form.insertAdjacentElement('afterbegin', panel);
+    const input = document.getElementById('pos-barcode-input');
+    input?.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        const code = this.value.trim();
+        this.value = '';
+        if(code) handlePOSBarcodeScan(code);
+      }
+    });
+  }
+
+  window.handlePOSBarcodeScan = async function(code){
+    const clean = String(code || '').trim();
+    if(!clean) return;
+    if(!productsLoaded) await fetchProducts();
+    const p = findProductByCode(clean);
+    if(p){
+      addPOSItemRow(p.name, p.price_gbp || '', '', p.barcode || clean, p.id);
+      notify('Scanned: ' + p.name);
+      return;
+    }
+    openUnknownBarcodeModal(clean);
+  };
+
+  const previousProductSelect = window.posProductSelected || (typeof posProductSelected !== 'undefined' ? posProductSelected : null);
+  window.posProductSelected = posProductSelected = function(input, exactOnly=true){
+    const p = findProductByName(input?.value || '');
+    if(p){
+      const row = input.closest('.pos-item-row');
+      const priceEl = row?.querySelector('.pos-item-sold');
+      const barcodeEl = row?.querySelector('.pos-item-barcode');
+      const productIdEl = row?.querySelector('.pos-item-product-id');
+      const skuEl = row?.querySelector('.pos-item-sku');
+      if(priceEl && !priceEl.value && p.price_gbp) priceEl.value = pNum(p.price_gbp).toFixed(2);
+      if(barcodeEl) barcodeEl.value = p.barcode || '';
+      if(productIdEl) productIdEl.value = p.id || '';
+      if(skuEl) skuEl.value = p.sku || '';
+      if(typeof updatePOSTotals === 'function') updatePOSTotals();
+      return;
+    }
+    if(previousProductSelect) return previousProductSelect.apply(this, arguments);
+  };
+
+  window.addPOSItemRow = addPOSItemRow = function(name='', sold='', cost='', barcode='', productId=''){
+    const wrap = document.getElementById('pos-items');
+    if(!wrap) return;
+    const product = findProductByName(name) || null;
+    const id = 'positem' + pUid();
+    const d = document.createElement('div');
+    d.id = id;
+    d.className = 'pos-item-row flex items-c gap-6 mb-8';
+    d.style.flexWrap = 'wrap';
+    const finalBarcode = barcode || product?.barcode || '';
+    const finalProductId = productId || product?.id || '';
+    const finalSKU = product?.sku || '';
+    const finalSold = sold !== '' ? pNum(sold) : (product?.price_gbp ? pNum(product.price_gbp) : '');
+    d.innerHTML = `<input type="text" class="pos-item-name" list="pos-product-list" placeholder="Item sold" value="${pAttr(name)}" style="flex:2;min-width:220px" onchange="posProductSelected(this)" oninput="posProductSelected(this,false)">
+      <input type="number" step="0.01" min="0" class="pos-item-sold" placeholder="Price sold £" value="${finalSold !== '' ? pNum(finalSold).toFixed(2) : ''}" style="width:130px" oninput="updatePOSTotals()">
+      <input type="number" step="0.01" min="0" class="pos-item-cost" placeholder="Cost £ optional" value="${cost !== '' ? pNum(cost) : ''}" style="width:135px" oninput="updatePOSTotals()">
+      <span class="text-xs text-muted pos-item-eur" style="min-width:130px">${finalSold !== '' ? pEUR(finalSold) : '€0.00'} @ x${PRODUCT_FX.toFixed(2)}</span>
+      <input type="hidden" class="pos-item-barcode" value="${pAttr(finalBarcode)}">
+      <input type="hidden" class="pos-item-product-id" value="${pAttr(finalProductId)}">
+      <input type="hidden" class="pos-item-sku" value="${pAttr(finalSKU)}">
+      <button type="button" class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updatePOSTotals()">✕</button>`;
+    wrap.appendChild(d);
+    if(isStaff()){
+      d.querySelectorAll('.pos-item-cost').forEach(el=>el.style.display='none');
+    }
+    if(typeof updatePOSTotals === 'function') updatePOSTotals();
+  };
+
+  window.collectPOSItems = collectPOSItems = function(){
+    return [...document.querySelectorAll('#pos-items .pos-item-row')].map(r => {
+      const gbp = pNum(r.querySelector('.pos-item-sold')?.value);
+      const costGbp = pNum(r.querySelector('.pos-item-cost')?.value);
+      return {
+        name:(r.querySelector('.pos-item-name')?.value || '').trim(),
+        quoted: Math.round(gbp * PRODUCT_FX * 100) / 100,
+        actual: Math.round(costGbp * PRODUCT_FX * 100) / 100,
+        quoted_gbp: gbp,
+        actual_gbp: costGbp,
+        quoted_eur: Math.round(gbp * PRODUCT_FX * 100) / 100,
+        actual_eur: Math.round(costGbp * PRODUCT_FX * 100) / 100,
+        fx_rate: PRODUCT_FX,
+        barcode: r.querySelector('.pos-item-barcode')?.value || '',
+        product_id: r.querySelector('.pos-item-product-id')?.value || '',
+        sku: r.querySelector('.pos-item-sku')?.value || '',
+        status:'DELIVERED', delivered:true, doa:false, doaResolved:false
+      };
+    }).filter(i => i.name && i.quoted_gbp > 0);
+  };
+
+  function posMetaForSummary(o){
+    const cl = (o?.custLines || o?.cust_lines || [])[0] || {};
+    const m = cl.pos_meta || o.pos_meta || {};
+    const eur = pNum(m.total_eur ?? cl.total_eur ?? o.totalQuoted ?? o.total_quoted ?? cl.quoted);
+    const gbp = pNum(m.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp) || (eur ? Math.round((eur / PRODUCT_FX) * 100) / 100 : 0);
+    return {gbp, eur: eur || Math.round(gbp * PRODUCT_FX * 100) / 100, method:(m.payment_method || cl.payMethod || '').toLowerCase(), paymentMethod:m.payment_method || cl.payMethod || '', paidCurrency:m.paid_currency || cl.payment_currency || ''};
+  }
+  function isPOSOrder(o){ return String(o?.orderType || o?.order_type || '').toLowerCase() === 'pos' || String(o?.num || '').startsWith('POS - ') || !!((o?.custLines || o?.cust_lines || [])[0]?.pos_meta); }
+  function ensureDailySummaryCard(){
+    const page = document.getElementById('page-pos-sale');
+    if(!page || document.getElementById('pos-daily-summary-card')) return;
+    const card = document.createElement('div');
+    card.id = 'pos-daily-summary-card';
+    card.className = 'card';
+    card.style.marginBottom = '14px';
+    card.innerHTML = `<div class="card-head"><div><div class="card-title">📊 Daily POS Sales Summary</div><div class="text-xs text-muted">Based on POS orders saved in the Orders tab for the selected POS date.</div></div><span class="badge b-blue" id="pos-daily-summary-date">Today</span></div>
+      <div class="card-body"><div class="metrics" style="margin-bottom:8px;grid-template-columns:repeat(auto-fit,minmax(145px,1fr))">
+        <div class="metric"><div class="metric-lbl">GBP Received</div><div class="metric-val mv-green" id="pos-sum-gbp-received">£0.00</div></div>
+        <div class="metric"><div class="metric-lbl">EUR Accounting Value</div><div class="metric-val mv-blue" id="pos-sum-eur-accounting">€0.00</div><div class="metric-sub">All POS sales @ x1.20</div></div>
+        <div class="metric"><div class="metric-lbl">Cash</div><div class="metric-val" id="pos-sum-cash">£0.00</div></div>
+        <div class="metric"><div class="metric-lbl">Card / SumUp</div><div class="metric-val" id="pos-sum-card-sumup">£0.00</div></div>
+        <div class="metric"><div class="metric-lbl">Revolut</div><div class="metric-val" id="pos-sum-revolut">£0.00</div></div>
+        <div class="metric"><div class="metric-lbl">PayPal</div><div class="metric-val" id="pos-sum-paypal">£0.00</div></div>
+        <div class="metric"><div class="metric-lbl">Invoice Pending</div><div class="metric-val mv-amber" id="pos-sum-invoice">£0.00</div><div class="metric-sub" id="pos-sum-invoice-eur">€0.00</div></div>
+        <div class="metric"><div class="metric-lbl">Customer Credit Used</div><div class="metric-val mv-amber" id="pos-sum-credit-used">€0.00</div></div>
+      </div><div class="text-xs text-muted" id="pos-sum-count">0 POS sales for this date.</div></div>`;
+    const section = page.querySelector('.section-hd');
+    if(section) section.insertAdjacentElement('afterend', card);
+    else page.insertAdjacentElement('afterbegin', card);
+  }
+  function updateDailySummary(){
+    ensureDailySummaryCard();
+    const date = document.getElementById('pos-date')?.value || todayISO();
+    const summary = {count:0, gbpReceived:0, eurAccounting:0, cash:0, cardSumup:0, revolut:0, paypal:0, invoiceGbp:0, invoiceEur:0, creditEur:0};
+    (window.db.orders || []).filter(o => isPOSOrder(o) && String(o.date || '').slice(0,10) === date).forEach(o => {
+      const m = posMetaForSummary(o);
+      summary.count++;
+      summary.eurAccounting += m.eur;
+      const key = m.method;
+      if(key.includes('invoice') || key.includes('pay later')){ summary.invoiceGbp += m.gbp; summary.invoiceEur += m.eur; }
+      else if(key.includes('credit')){ summary.creditEur += m.eur; }
+      else{
+        summary.gbpReceived += m.gbp;
+        if(key.includes('cash')) summary.cash += m.gbp;
+        else if(key.includes('card') || key.includes('sumup')) summary.cardSumup += m.gbp;
+        else if(key.includes('revolut')) summary.revolut += m.gbp;
+        else if(key.includes('paypal')) summary.paypal += m.gbp;
+      }
+    });
+    const set = (id,val,kind='gbp') => { const el = document.getElementById(id); if(el) el.textContent = kind === 'eur' ? '€' + pNum(val).toFixed(2) : '£' + pNum(val).toFixed(2); };
+    const badge = document.getElementById('pos-daily-summary-date'); if(badge) badge.textContent = date;
+    set('pos-sum-gbp-received', summary.gbpReceived); set('pos-sum-eur-accounting', summary.eurAccounting, 'eur'); set('pos-sum-cash', summary.cash); set('pos-sum-card-sumup', summary.cardSumup); set('pos-sum-revolut', summary.revolut); set('pos-sum-paypal', summary.paypal); set('pos-sum-invoice', summary.invoiceGbp); set('pos-sum-invoice-eur', summary.invoiceEur, 'eur'); set('pos-sum-credit-used', summary.creditEur, 'eur');
+    const count = document.getElementById('pos-sum-count'); if(count) count.textContent = `${summary.count} POS sale${summary.count===1?'':'s'} for this date.`;
+  }
+
+  const oldEnsurePOSPage = window.ensurePOSPage || (typeof ensurePOSPage !== 'undefined' ? ensurePOSPage : null);
+  window.ensurePOSPage = ensurePOSPage = function(){
+    const r = oldEnsurePOSPage ? oldEnsurePOSPage.apply(this, arguments) : undefined;
+    ensurePOSBarcodeUI();
+    refreshProductDatalists();
+    ensureDailySummaryCard();
+    updateDailySummary();
+    return r;
+  };
+
+  const oldUpdatePOSTotals = window.updatePOSTotals || (typeof updatePOSTotals !== 'undefined' ? updatePOSTotals : null);
+  window.updatePOSTotals = updatePOSTotals = function(){
+    if(oldUpdatePOSTotals) oldUpdatePOSTotals.apply(this, arguments);
+    document.querySelectorAll('#pos-items .pos-item-row').forEach(r => {
+      const sold = pNum(r.querySelector('.pos-item-sold')?.value);
+      const eurEl = r.querySelector('.pos-item-eur');
+      if(eurEl) eurEl.textContent = pEUR(sold) + ' @ x' + PRODUCT_FX.toFixed(2);
+    });
+    updateDailySummary();
+  };
+
+  const oldResetPOSForm = window.resetPOSForm || (typeof resetPOSForm !== 'undefined' ? resetPOSForm : null);
+  window.resetPOSForm = resetPOSForm = function(){
+    const r = oldResetPOSForm ? oldResetPOSForm.apply(this, arguments) : undefined;
+    const scan = document.getElementById('pos-barcode-input'); if(scan) scan.value = '';
+    ensurePOSBarcodeUI(); refreshProductDatalists(); updateDailySummary();
+    return r;
+  };
+
+  const oldNav = window.nav || (typeof nav !== 'undefined' ? nav : null);
+  window.nav = nav = function(id, btn){
+    ensureProductsSidebar(); ensureProductsPage();
+    if(id === 'products'){
+      if(!isAdmin()){ notify('Admin access only', false); return; }
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.sb-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('page-products')?.classList.add('active');
+      const title = document.getElementById('page-title'); if(title) title.textContent = 'Products';
+      if(btn) btn.classList.add('active'); else document.getElementById('products-sidebar-btn')?.classList.add('active');
+      fetchProducts(); renderProductsPage();
+      return;
+    }
+    const r = oldNav ? oldNav.apply(this, arguments) : undefined;
+    if(id === 'pos-sale'){
+      fetchProducts(); ensurePOSBarcodeUI(); refreshProductDatalists(); updateDailySummary();
+      setTimeout(updateDailySummary,150);
+    }
+    const prodBtn = document.getElementById('products-sidebar-btn');
+    if(prodBtn) prodBtn.style.display = isAdmin() ? 'flex' : 'none';
+    return r;
+  };
+
+  const oldLoadAll = window.loadAll || (typeof loadAll !== 'undefined' ? loadAll : null);
+  if(oldLoadAll){
+    window.loadAll = loadAll = async function(){
+      const r = await oldLoadAll.apply(this, arguments);
+      ensureProductsSidebar(); ensureProductsPage();
+      await fetchProducts(true);
+      updateDailySummary();
+      return r;
+    };
+  }
+
+  const oldApplyStaff = window.applyStaffMode;
+  window.applyStaffMode = function(){
+    if(oldApplyStaff) oldApplyStaff.apply(this, arguments);
+    document.body.classList.add('role-staff');
+    const prodBtn = document.getElementById('products-sidebar-btn'); if(prodBtn) prodBtn.style.display = 'none';
+    document.querySelectorAll('#page-pos-sale .pos-item-cost').forEach(el=>el.style.display='none');
+  };
+
+  document.addEventListener('change', function(e){
+    if(e.target && e.target.id === 'pos-date') setTimeout(updateDailySummary,50);
+  });
+  document.addEventListener('input', function(e){
+    if(e.target && (e.target.id === 'pos-date' || e.target.classList?.contains('pos-item-sold'))) setTimeout(updateDailySummary,80);
+  });
+
+  window.fetchProducts = fetchProducts;
+  window.renderProductsPage = renderProductsPage;
+  window.refreshProductDatalists = refreshProductDatalists;
+  window.updateDailySummary = updateDailySummary;
+
+  setTimeout(function(){
+    ensureProductsSidebar(); ensureProductsPage(); fetchProducts(); refreshProductDatalists(); updateDailySummary();
+    const prodBtn = document.getElementById('products-sidebar-btn'); if(prodBtn) prodBtn.style.display = isAdmin() ? 'flex' : 'none';
+  }, 1000);
+  setInterval(function(){ if(document.getElementById('page-pos-sale')?.classList.contains('active')) updateDailySummary(); }, 3000);
+})();
+/* ===== END PRODUCTS CSV + BARCODE POS PATCH ===== */
+
+</script>
 </body>
 </html>
