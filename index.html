@@ -7684,5 +7684,1345 @@ function applyStaffMode(){
 /* ===== END PRODUCT CSV IMPORT DUPLICATE FIX ===== */
 </script>
 
+
+<script>
+/* ===== POS CONFIRMATION + GIFT WARNING + STAFF ORDER PROFIT LOCK PATCH 2026-08-31 ===== */
+(function(){
+  const FX_GBP_TO_EUR = 1.20;
+  function moneyGBP(v){return '£' + (parseFloat(v)||0).toFixed(2);}
+  function moneyEUR(v){return '€' + (parseFloat(v)||0).toFixed(2);}
+  function toEUR(gbp){return Math.round(((parseFloat(gbp)||0) * FX_GBP_TO_EUR) * 100) / 100;}
+  function toGBP(eur){return Math.round(((parseFloat(eur)||0) / FX_GBP_TO_EUR) * 100) / 100;}
+  function n(v){return parseFloat(v)||0;}
+  function safe(v){return String(v==null?'':v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function isStaff(){return (window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff');}
+  function isPOSOrderLocal(o){return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos' || String(o?.num||'').startsWith('POS - ') || !!(o?.custLines||o?.cust_lines||[])[0]?.pos_meta;}
+  function firstLine(o){return (o?.custLines||o?.cust_lines||[])[0] || {};}
+  function posDateLabelLocal(iso){
+    const s=String(iso||today());
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const [y,m,d]=s.split('-');return `${d}/${m}/${y}`;}
+    return s;
+  }
+  function customerCreditBalanceLocal(name){
+    const target=String(name||'').trim().toLowerCase();
+    return (db.credits||[]).filter(c=>String(c.customer||'').trim().toLowerCase()===target && c.type==='credit').reduce((a,c)=>a+n(c.amount),0);
+  }
+  function giftTier(totalEur){
+    if(totalEur >= 250) return {limit:10,label:'£10',msg:'This customer qualifies for a free item up to £10 value.'};
+    if(totalEur > 150) return {limit:5,label:'£5',msg:'This customer qualifies for a free item up to £5 value.'};
+    return null;
+  }
+  function getPOSDraft(){
+    const rows=[...document.querySelectorAll('#pos-items .pos-item-row')];
+    const items=rows.map(r=>({
+      name:(r.querySelector('.pos-item-name')?.value||'').trim(),
+      soldGbp:n(r.querySelector('.pos-item-sold')?.value),
+      costGbp:n(r.querySelector('.pos-item-cost')?.value)
+    })).filter(i=>i.name && i.soldGbp>0);
+    const totalGbp=items.reduce((a,i)=>a+i.soldGbp,0);
+    const costGbp=items.reduce((a,i)=>a+i.costGbp,0);
+    const saleDate=document.getElementById('pos-date')?.value||today();
+    const method=document.getElementById('pos-payment')?.value||'Cash';
+    const paidCurrency=document.getElementById('pos-paid-currency')?.value||'GBP';
+    let client=(document.getElementById('pos-client')?.value||'').trim();
+    let company='',dueDate='',invoiceNotes='';
+    if(method==='Invoice / Pay Later'){
+      company=(document.getElementById('pos-company')?.value||'').trim();
+      dueDate=document.getElementById('pos-due-date')?.value||'';
+      invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();
+      if(!client)client=company;
+    }
+    if(!client)client='Walk-in Customer - unknown';
+    const saleNo=(typeof posNextSaleNumber==='function') ? posNextSaleNumber(saleDate) : String((db.orders||[]).filter(o=>String(o.num||'').startsWith('POS - '+posDateLabelLocal(saleDate))).length+1).padStart(3,'0');
+    const invoiceRef=`${posDateLabelLocal(saleDate)} - ${saleNo}`;
+    return {items,totalGbp,totalEur:toEUR(totalGbp),costGbp,costEur:toEUR(costGbp),method,paidCurrency,client,company,dueDate,invoiceNotes,saleDate,invoiceRef,orderNum:`POS - ${invoiceRef}`,gift:giftTier(toEUR(totalGbp))};
+  }
+  function ensurePOSConfirmModal(){
+    if(document.getElementById('modal-pos-confirm')) return;
+    const div=document.createElement('div');
+    div.className='modal-ov';
+    div.id='modal-pos-confirm';
+    div.innerHTML=`
+      <div class="modal" style="width:620px;max-width:96vw">
+        <div class="modal-head"><div class="modal-title" id="pos-confirm-title">Confirm POS Sale</div><button class="modal-close" onclick="closePOSConfirmModal()">✕</button></div>
+        <div class="modal-body" id="pos-confirm-body"></div>
+        <div class="modal-foot"><button class="btn btn-sec" onclick="closePOSConfirmModal()">← Go Back / Edit Sale</button><button class="btn btn-primary" id="pos-confirm-submit" onclick="confirmPOSSaleFinal()">Confirm & Submit Sale</button></div>
+      </div>`;
+    document.body.appendChild(div);
+  }
+  window.closePOSConfirmModal=function(){const m=document.getElementById('modal-pos-confirm'); if(m)m.classList.remove('open');};
+  function showPOSConfirmModal(draft){
+    ensurePOSConfirmModal();
+    window.__pendingPOSDraft=draft;
+    const isInvoice=draft.method==='Invoice / Pay Later';
+    const payRequired = draft.paidCurrency==='EUR' ? moneyEUR(draft.totalEur) : moneyGBP(draft.totalGbp);
+    const altRequired = draft.paidCurrency==='EUR' ? moneyGBP(draft.totalGbp) : moneyEUR(draft.totalEur);
+    const title=document.getElementById('pos-confirm-title');
+    if(title) title.textContent=isInvoice?'Confirm Invoice Sale':'Confirm POS Sale';
+    const submit=document.getElementById('pos-confirm-submit');
+    if(submit) submit.textContent=isInvoice?'Create Invoice Sale':'Confirm & Submit Sale';
+    const giftHtml=draft.gift?`
+      <div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:12px;background:#fff5f5">
+        <div class="font-bold text-red" style="font-size:14px">🎁 Free item required</div>
+        <div class="text-sm mt-8">${safe(draft.gift.msg)}</div>
+        <div class="text-xs text-muted mt-8">Suggested examples: Ocean Nutrition food or another suitable small item below ${safe(draft.gift.label)}.</div>
+        <label class="flex items-c gap-8 mt-12" style="font-size:12px;font-weight:700;color:var(--red)">
+          <input type="checkbox" id="pos-gift-confirmed" style="width:16px;height:16px;accent-color:var(--red)"> I have offered / provided the free item to the client
+        </label>
+        <div class="text-xs text-muted mt-8">Gift threshold calculated using accounting conversion: GBP x ${FX_GBP_TO_EUR.toFixed(2)} = EUR.</div>
+      </div>`:'';
+    const paymentBlock=isInvoice?`
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold text-red">This sale will be recorded as unpaid and added to Pending Payments.</div>
+        <div class="mt-8"><strong>Company:</strong> ${safe(draft.company||draft.client)}</div>
+        <div><strong>Invoice reference:</strong> ${safe(draft.invoiceRef)}</div>
+        <div><strong>Amount owed:</strong> ${moneyGBP(draft.totalGbp)} / ${moneyEUR(draft.totalEur)}</div>
+        <div><strong>Due date:</strong> ${safe(draft.dueDate)}</div>
+      </div>`:`
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold">Please confirm the client has paid the correct amount before submitting.</div>
+        <div class="mt-8"><strong>Amount to confirm:</strong> <span class="font-bold text-green" style="font-size:18px">${payRequired}</span> <span class="text-xs text-muted">(${altRequired} @ x${FX_GBP_TO_EUR.toFixed(2)})</span></div>
+      </div>`;
+    document.getElementById('pos-confirm-body').innerHTML=`
+      <div class="form-grid" style="margin-bottom:12px">
+        <div><div class="text-xs text-muted">Client</div><div class="font-bold">${safe(draft.client)}</div></div>
+        <div><div class="text-xs text-muted">Date</div><div class="font-bold">${safe(posDateLabelLocal(draft.saleDate))}</div></div>
+        <div><div class="text-xs text-muted">Payment method</div><div class="font-bold">${safe(draft.method)}</div></div>
+        <div><div class="text-xs text-muted">Paid currency</div><div class="font-bold">${safe(draft.paidCurrency)}</div></div>
+        <div><div class="text-xs text-muted">Sale total GBP</div><div class="font-bold text-green">${moneyGBP(draft.totalGbp)}</div></div>
+        <div><div class="text-xs text-muted">Accounting total EUR</div><div class="font-bold text-blue">${moneyEUR(draft.totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div></div>
+      </div>
+      ${paymentBlock}
+      <div class="mt-12">
+        <div class="font-bold text-sm mb-8">Items</div>
+        <table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead><tbody>${draft.items.map(i=>`<tr><td>${safe(i.name)}</td><td>${moneyGBP(i.soldGbp)}</td><td>${moneyEUR(toEUR(i.soldGbp))}</td></tr>`).join('')}</tbody></table>
+      </div>
+      ${giftHtml}
+      <div id="pos-confirm-warning" class="text-sm text-red font-bold mt-12" style="display:none"></div>`;
+    document.getElementById('modal-pos-confirm').classList.add('open');
+  }
+
+  const originalSubmitPOSSale = window.submitPOSSale || submitPOSSale;
+  window.submitPOSSale = submitPOSSale = async function(e){
+    if(e)e.preventDefault();
+    if(window.__posConfirmBypass){return originalSubmitPOSSale ? originalSubmitPOSSale(e) : undefined;}
+    if(!canUsePOS()){alert('You do not have access to POS sales.');return;}
+    const draft=getPOSDraft();
+    if(!draft.items.length){toast('Add at least one item and price sold',false);return;}
+    if(draft.method==='Invoice / Pay Later'){
+      if(!draft.company){toast('Company name is required for invoice/pay later',false);return;}
+      if(!draft.dueDate){toast('Due date is required for invoice/pay later',false);return;}
+    }
+    if(draft.method==='Customer Credit'){
+      if(draft.client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}
+      const bal=customerCreditBalanceLocal(draft.client);
+      if(bal + 0.001 < draft.totalEur){alert(`Customer credit is not enough.\n\nCustomer: ${draft.client}\nAvailable credit: ${moneyEUR(bal)}\nSale total: ${moneyGBP(draft.totalGbp)} / ${moneyEUR(draft.totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}`);return;}
+    }
+    showPOSConfirmModal(draft);
+  };
+
+  window.confirmPOSSaleFinal = async function(){
+    const draft=window.__pendingPOSDraft || getPOSDraft();
+    const warn=document.getElementById('pos-confirm-warning');
+    if(draft.gift && !document.getElementById('pos-gift-confirmed')?.checked){
+      if(warn){warn.style.display='block';warn.textContent='Please tick the free item confirmation before submitting this sale.';}
+      return;
+    }
+    if(draft.gift){
+      const notesEl=document.getElementById('pos-notes');
+      if(notesEl && !String(notesEl.value||'').includes('Free item confirmed')){
+        notesEl.value=(notesEl.value?notesEl.value+' | ':'')+`Free item confirmed: offered/provided item up to ${draft.gift.label} value.`;
+      }
+    }
+    closePOSConfirmModal();
+    try{
+      window.__posConfirmBypass=true;
+      await originalSubmitPOSSale({preventDefault:function(){}});
+    }finally{
+      window.__posConfirmBypass=false;
+      window.__pendingPOSDraft=null;
+    }
+  };
+
+  function installStaffProfitLock(){
+    if(document.getElementById('staff-profit-lock-style'))return;
+    const st=document.createElement('style');
+    st.id='staff-profit-lock-style';
+    st.textContent=`
+      body.role-staff #orders-body td:nth-child(6),
+      body.role-staff #orders-body td:nth-child(7),
+      body.role-staff #page-orders table thead th:nth-child(6),
+      body.role-staff #page-orders table thead th:nth-child(7){display:none !important;}
+      body.role-staff #page-pos-sale .pos-item-cost,
+      body.role-staff #page-pos-sale .metric:has(#pos-cost-total),
+      body.role-staff #page-pos-sale .metric:has(#pos-profit){display:none !important;}
+      body.role-staff #profit-body,
+      body.role-staff #page-profits{display:none !important;}
+    `;
+    document.head.appendChild(st);
+  }
+  installStaffProfitLock();
+  const oldApplyStaffMode=window.applyStaffMode;
+  window.applyStaffMode=function(){
+    if(oldApplyStaffMode) oldApplyStaffMode.apply(this,arguments);
+    document.body.classList.add('role-staff');
+    installStaffProfitLock();
+  };
+
+  const baseViewOrderStaffSafe = window.viewOrder || viewOrder;
+  window.viewOrder = viewOrder = function(id){
+    if(!isStaff()) return baseViewOrderStaffSafe ? baseViewOrderStaffSafe(id) : undefined;
+    const o=(db.orders||[]).find(x=>String(x.id)===String(id));
+    if(!o){toast('Order not found',false);return;}
+    const cls=o.custLines||o.cust_lines||[];
+    document.getElementById('od-title').textContent=`Order #${o.num}`;
+    const quoted=n(o.totalQuoted ?? o.total_quoted);
+    document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${safe(o.date||'—')}</div></div><div><div class="ostat-lbl">Supplier</div><div class="ostat-val">${safe((o.suppliers||[]).join(', ')||'—')}</div></div><div><div class="ostat-lbl">Quoted / Sale</div><div class="ostat-val text-green">${isPOSOrderLocal(o)?moneyEUR(quoted):fmt(quoted)}</div></div><div><div class="ostat-lbl">Status</div><div class="ostat-val">${o.manualComplete?'Completed':'Active'}</div></div>`;
+    let html='';
+    cls.forEach(cl=>{
+      const paid=(cl.payments||[]).reduce((a,p)=>a+n(p.amount),0);
+      const balance=Math.max(0,n(cl.quoted)-paid);
+      html+=`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff"><div class="flex items-c gap-8 mb-8"><div class="cust-init ${typeof dlClass==='function'?dlClass(cl.delivery):'ci-none'}">${typeof inits==='function'?inits(cl.name||''):'?'}</div><div style="flex:1"><div class="font-bold">${safe(cl.name||'Walk-in Customer - unknown')}</div><div class="flex gap-6 items-c mt-8"><span class="badge ${balance>0.01?'b-red':'b-green'}">${balance>0.01?'TO BE PAID':'PAID'}</span>${cl.payMethod?`<span class="badge b-grey">${safe(cl.payMethod)}</span>`:''}</div></div><div class="text-right"><div class="font-bold text-green">${isPOSOrderLocal(o)?moneyEUR(n(cl.quoted)):fmt(cl.quoted)}</div></div></div>`;
+      if((cl.items||[]).length){
+        html+=`<table class="itbl"><thead><tr><th>Item</th><th>Quoted / Sold</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${(cl.items||[]).map(it=>`<tr><td>${safe(it.name||'')}</td><td>${isPOSOrderLocal(o)?`${moneyGBP(it.quoted_gbp ?? toGBP(it.quoted))}<div class="text-xs text-muted">${moneyEUR(it.quoted_eur ?? it.quoted)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div>`:fmt(it.quoted)}</td><td>${safe(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`;
+      }
+      html+='</div>';
+    });
+    if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${safe(o.notes)}</p>`;
+    document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No order details.</p>';
+    const del=document.getElementById('od-del-btn'); if(del)del.style.display='none';
+    openModal('modal-order-detail');
+  };
+
+  const baseRenderOrdersStaff = window.renderOrders || renderOrders;
+  window.renderOrders = renderOrders = function(filter=''){
+    const out=baseRenderOrdersStaff ? baseRenderOrdersStaff(filter) : undefined;
+    if(isStaff()){
+      installStaffProfitLock();
+      document.querySelectorAll('#orders-body td:nth-child(5)').forEach(td=>td.classList.add('font-bold','text-green'));
+    }
+    return out;
+  };
+})();
+/* ===== END POS CONFIRMATION + GIFT WARNING + STAFF ORDER PROFIT LOCK PATCH ===== */
+
+
+/* ===== FINAL POS CONFIRMATION + STAFF VIEW LOCK PATCH 2026-08-31 =====
+   Runs after all earlier POS/order overrides so the confirmation popup and staff restrictions cannot be overwritten. */
+(function(){
+  const RATE_FINAL = (typeof FX_GBP_TO_EUR !== 'undefined' && Number(FX_GBP_TO_EUR)) ? Number(FX_GBP_TO_EUR) : 1.20;
+  const safeFinal = (v)=>String(v ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const nFinal = (v)=>parseFloat(v)||0;
+  const gbpFinal = (v)=>'£'+nFinal(v).toFixed(2);
+  const eurFinal = (v)=>'€'+nFinal(v).toFixed(2);
+  const toEurFinal = (v)=>nFinal(v)*RATE_FINAL;
+
+  function isStaffFinal(){
+    return (window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff');
+  }
+
+  function finalPosDateLabel(dateStr){
+    if(typeof posDateLabelLocal === 'function') return posDateLabelLocal(dateStr);
+    if(typeof posDateLabel === 'function') return posDateLabel(dateStr);
+    const d = new Date((dateStr || today()) + 'T00:00:00');
+    if(isNaN(d)) return dateStr || today();
+    return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+  }
+
+  function finalNextSaleNumber(dateStr){
+    if(typeof posNextSaleNumber === 'function') return posNextSaleNumber(dateStr);
+    const prefix = 'POS - ' + finalPosDateLabel(dateStr);
+    const count = (db.orders || []).filter(o=>String(o.num||'').startsWith(prefix)).length + 1;
+    return String(count).padStart(3,'0');
+  }
+
+  function finalCollectPOSItems(){
+    return [...document.querySelectorAll('#pos-items .pos-item-row')].map(r=>{
+      const name=(r.querySelector('.pos-item-name')?.value||'').trim();
+      const soldGbp=nFinal(r.querySelector('.pos-item-sold')?.value);
+      const costGbp=nFinal(r.querySelector('.pos-item-cost')?.value);
+      return {name,soldGbp,costGbp};
+    }).filter(i=>i.name && i.soldGbp>0);
+  }
+
+  function finalCustomerCreditBalance(customer){
+    if(typeof customerCreditBalanceLocal === 'function') return nFinal(customerCreditBalanceLocal(customer));
+    return (db.credits||[])
+      .filter(c=>String(c.customer||'').toLowerCase()===String(customer||'').toLowerCase() && c.type==='credit')
+      .reduce((a,c)=>a+nFinal(c.amount),0);
+  }
+
+  function finalGiftTier(totalEur){
+    if(totalEur >= 250) return {
+      label:'£10',
+      msg:'This customer qualifies for a free item up to £10 value. Please offer/provide a suitable free item before completing the sale.'
+    };
+    if(totalEur > 150) return {
+      label:'£5',
+      msg:'This customer qualifies for a free item up to £5 value. Please offer/provide a suitable free item before completing the sale.'
+    };
+    return null;
+  }
+
+  function finalGetPOSDraft(){
+    const items = finalCollectPOSItems();
+    const totalGbp = items.reduce((a,i)=>a+nFinal(i.soldGbp),0);
+    const costGbp = items.reduce((a,i)=>a+nFinal(i.costGbp),0);
+    const totalEur = toEurFinal(totalGbp);
+    const saleDate = document.getElementById('pos-date')?.value || today();
+    const method = document.getElementById('pos-payment')?.value || 'Cash';
+    const paidCurrency = document.getElementById('pos-paid-currency')?.value || 'GBP';
+    let client = (document.getElementById('pos-client')?.value || '').trim();
+    let company = '', dueDate = '', invoiceNotes = '';
+
+    if(method === 'Invoice / Pay Later'){
+      company = (document.getElementById('pos-company')?.value || '').trim();
+      dueDate = document.getElementById('pos-due-date')?.value || '';
+      invoiceNotes = (document.getElementById('pos-invoice-notes')?.value || '').trim();
+      if(!client) client = company;
+    }
+
+    if(!client) client = 'Walk-in Customer - unknown';
+
+    if(typeof updatePOSInvoiceFields === 'function'){
+      try{ updatePOSInvoiceFields(); }catch(e){}
+    }
+    const invoiceRef = (document.getElementById('pos-invoice-ref')?.value || '').trim()
+      || `${finalPosDateLabel(saleDate)} - ${finalNextSaleNumber(saleDate)}`;
+
+    return {
+      items,totalGbp,totalEur,costGbp,costEur:toEurFinal(costGbp),
+      profitGbp:totalGbp-costGbp,profitEur:toEurFinal(totalGbp-costGbp),
+      method,paidCurrency,client,company,dueDate,invoiceNotes,saleDate,
+      invoiceRef,orderNum:'POS - '+invoiceRef,gift:finalGiftTier(totalEur)
+    };
+  }
+
+  function ensureFinalPOSConfirmModal(){
+    if(document.getElementById('modal-pos-confirm-final')) return;
+    const div=document.createElement('div');
+    div.className='modal-ov';
+    div.id='modal-pos-confirm-final';
+    div.innerHTML=`
+      <div class="modal" style="width:650px;max-width:96vw">
+        <div class="modal-head">
+          <div class="modal-title" id="pos-confirm-final-title">Confirm POS Sale</div>
+          <button class="modal-close" onclick="closeFinalPOSConfirm()">✕</button>
+        </div>
+        <div class="modal-body" id="pos-confirm-final-body"></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-sec" onclick="closeFinalPOSConfirm()">← Go Back / Edit Sale</button>
+          <button type="button" class="btn btn-primary" id="pos-confirm-final-submit" onclick="confirmFinalPOSSale()">Confirm & Submit Sale</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+  }
+
+  window.closeFinalPOSConfirm = function(){
+    const m=document.getElementById('modal-pos-confirm-final');
+    if(m) m.classList.remove('open');
+  };
+
+  function showFinalPOSConfirmModal(draft){
+    ensureFinalPOSConfirmModal();
+    window.__finalPendingPOSDraft = draft;
+    const isInvoice = draft.method === 'Invoice / Pay Later';
+    const payRequired = draft.paidCurrency === 'EUR' ? eurFinal(draft.totalEur) : gbpFinal(draft.totalGbp);
+    const altRequired = draft.paidCurrency === 'EUR' ? gbpFinal(draft.totalGbp) : eurFinal(draft.totalEur);
+
+    const title=document.getElementById('pos-confirm-final-title');
+    if(title) title.textContent = isInvoice ? 'Confirm Invoice Sale' : 'Confirm POS Sale';
+
+    const submit=document.getElementById('pos-confirm-final-submit');
+    if(submit) submit.textContent = isInvoice ? 'Create Invoice Sale' : 'Confirm & Submit Sale';
+
+    const paymentBlock = isInvoice ? `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold text-red">This sale will be recorded as unpaid and added to Pending Payments.</div>
+        <div class="mt-8"><strong>Company:</strong> ${safeFinal(draft.company || draft.client)}</div>
+        <div><strong>Invoice reference:</strong> ${safeFinal(draft.invoiceRef)}</div>
+        <div><strong>Amount owed:</strong> ${gbpFinal(draft.totalGbp)} / ${eurFinal(draft.totalEur)}</div>
+        <div><strong>Due date:</strong> ${safeFinal(draft.dueDate)}</div>
+      </div>` : `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold">Please confirm the client has paid the correct amount before submitting.</div>
+        <div class="mt-8"><strong>Amount to confirm:</strong> ${payRequired}</div>
+        <div class="text-xs text-muted">Equivalent: ${altRequired} @ x${RATE_FINAL.toFixed(2)}</div>
+        <div><strong>Payment method:</strong> ${safeFinal(draft.method)}</div>
+        <div><strong>Paid in:</strong> ${safeFinal(draft.paidCurrency)}</div>
+      </div>`;
+
+    const giftBlock = draft.gift ? `
+      <div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:12px;background:#fff5f5">
+        <div class="font-bold text-red" style="font-size:14px">🎁 Free item required</div>
+        <div class="text-sm mt-8">${safeFinal(draft.gift.msg)}</div>
+        <div class="text-xs text-muted mt-8">Suggested examples: Ocean Nutrition food or another suitable small item below ${safeFinal(draft.gift.label)}.</div>
+        <label class="flex items-c gap-8 mt-12" style="font-size:12px;font-weight:700;color:var(--red)">
+          <input type="checkbox" id="pos-gift-confirmed-final" style="width:16px;height:16px;accent-color:var(--red)">
+          I have offered / provided the free item to the client
+        </label>
+        <div class="text-xs text-muted mt-8">Gift threshold calculated using accounting conversion: GBP x ${RATE_FINAL.toFixed(2)} = EUR.</div>
+      </div>` : '';
+
+    document.getElementById('pos-confirm-final-body').innerHTML = `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;margin-bottom:12px">
+        <div><strong>Client:</strong> ${safeFinal(draft.client)}</div>
+        <div><strong>Sale total:</strong> ${gbpFinal(draft.totalGbp)}</div>
+        <div><strong>Accounting total:</strong> ${eurFinal(draft.totalEur)} @ x${RATE_FINAL.toFixed(2)}</div>
+      </div>
+      ${paymentBlock}
+      <div class="mt-12">
+        <div class="font-bold text-sm mb-8">Items</div>
+        <table class="itbl">
+          <thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead>
+          <tbody>${draft.items.map(i=>`<tr><td>${safeFinal(i.name)}</td><td>${gbpFinal(i.soldGbp)}</td><td>${eurFinal(toEurFinal(i.soldGbp))}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      ${giftBlock}
+      <div id="pos-confirm-final-warning" class="text-sm text-red font-bold mt-12" style="display:none"></div>`;
+
+    document.getElementById('modal-pos-confirm-final').classList.add('open');
+  }
+
+  const finalBaseSubmitPOS = window.submitPOSSale || (typeof submitPOSSale === 'function' ? submitPOSSale : null);
+
+  window.submitPOSSale = async function(e){
+    if(e) e.preventDefault();
+    if(window.__finalPOSConfirmed){
+      return finalBaseSubmitPOS ? finalBaseSubmitPOS(e) : undefined;
+    }
+
+    if(typeof canUsePOS === 'function' && !canUsePOS()){
+      alert('You do not have access to POS sales.');
+      return;
+    }
+
+    const draft = finalGetPOSDraft();
+    if(!draft.items.length){
+      toast('Add at least one item and price sold',false);
+      return;
+    }
+
+    if(draft.method === 'Invoice / Pay Later'){
+      if(!draft.company){ toast('Company name is required for invoice/pay later',false); return; }
+      if(!draft.dueDate){ toast('Due date is required for invoice/pay later',false); return; }
+    }
+
+    if(draft.method === 'Customer Credit'){
+      if(draft.client === 'Walk-in Customer - unknown'){
+        toast('Customer credit requires a named customer',false);
+        return;
+      }
+      const available = finalCustomerCreditBalance(draft.client);
+      if(available + 0.001 < draft.totalEur){
+        alert(`Customer credit is not enough.\n\nCustomer: ${draft.client}\nAvailable credit: ${eurFinal(available)}\nSale total: ${gbpFinal(draft.totalGbp)} / ${eurFinal(draft.totalEur)} @ x${RATE_FINAL.toFixed(2)}`);
+        return;
+      }
+    }
+
+    showFinalPOSConfirmModal(draft);
+  };
+
+  try{ submitPOSSale = window.submitPOSSale; }catch(e){}
+
+  window.confirmFinalPOSSale = async function(){
+    const draft = window.__finalPendingPOSDraft || finalGetPOSDraft();
+    const warn = document.getElementById('pos-confirm-final-warning');
+
+    if(draft.gift && !document.getElementById('pos-gift-confirmed-final')?.checked){
+      if(warn){
+        warn.style.display='block';
+        warn.textContent='Please tick the free item confirmation before submitting this sale.';
+      }
+      return;
+    }
+
+    if(draft.gift){
+      const notesEl=document.getElementById('pos-notes');
+      if(notesEl && !String(notesEl.value||'').includes('Free item confirmed')){
+        notesEl.value=(notesEl.value ? notesEl.value+' | ' : '')+`Free item confirmed: offered/provided item up to ${draft.gift.label} value.`;
+      }
+    }
+
+    closeFinalPOSConfirm();
+    window.__finalPOSConfirmed = true;
+    try{
+      if(finalBaseSubmitPOS) await finalBaseSubmitPOS({preventDefault:function(){}});
+    }finally{
+      window.__finalPOSConfirmed = false;
+      window.__finalPendingPOSDraft = null;
+    }
+  };
+
+  function installFinalStaffStyle(){
+    if(document.getElementById('final-staff-profit-lock-style')) return;
+    const style=document.createElement('style');
+    style.id='final-staff-profit-lock-style';
+    style.textContent=`
+      body.role-staff #page-orders table thead th:nth-child(6),
+      body.role-staff #page-orders table thead th:nth-child(7),
+      body.role-staff #orders-body td:nth-child(6),
+      body.role-staff #orders-body td:nth-child(7){display:none !important;}
+      body.role-staff #orders-body button[onclick*="editOrder"],
+      body.role-staff #orders-body button[onclick*="deleteOrder"],
+      body.role-staff #orders-body button[onclick*="toggleOrderComplete"]{display:none !important;}
+      body.role-staff #page-pos-sale .pos-item-cost{display:none !important;}
+      body.role-staff #page-profits,
+      body.role-staff .profit-only{display:none !important;}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function enforceFinalStaffView(){
+    installFinalStaffStyle();
+    if(!isStaffFinal()) return;
+    document.body.classList.add('role-staff');
+    document.querySelectorAll('#page-pos-sale .pos-item-cost').forEach(el=>{ el.style.display='none'; });
+    ['pos-cost-total','pos-profit'].forEach(id=>{
+      const el=document.getElementById(id);
+      const card=el ? el.closest('.metric') : null;
+      if(card) card.style.display='none';
+    });
+  }
+
+  const finalBaseEnsurePOS = window.ensurePOSPage || (typeof ensurePOSPage === 'function' ? ensurePOSPage : null);
+  if(finalBaseEnsurePOS){
+    window.ensurePOSPage = function(){
+      const r = finalBaseEnsurePOS.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ ensurePOSPage = window.ensurePOSPage; }catch(e){}
+  }
+
+  const finalBaseApplyStaffMode = window.applyStaffMode || (typeof applyStaffMode === 'function' ? applyStaffMode : null);
+  window.applyStaffMode = function(){
+    if(finalBaseApplyStaffMode) finalBaseApplyStaffMode.apply(this,arguments);
+    enforceFinalStaffView();
+  };
+  try{ applyStaffMode = window.applyStaffMode; }catch(e){}
+
+  const finalBaseNav = window.nav || (typeof nav === 'function' ? nav : null);
+  if(finalBaseNav){
+    window.nav = function(id,btn){
+      const r = finalBaseNav.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ nav = window.nav; }catch(e){}
+  }
+
+  const finalBaseRenderOrders = window.renderOrders || (typeof renderOrders === 'function' ? renderOrders : null);
+  if(finalBaseRenderOrders){
+    window.renderOrders = function(){
+      const r = finalBaseRenderOrders.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ renderOrders = window.renderOrders; }catch(e){}
+  }
+
+  const finalBaseViewOrder = window.viewOrder || (typeof viewOrder === 'function' ? viewOrder : null);
+  if(finalBaseViewOrder){
+    window.viewOrder = function(id){
+      if(!isStaffFinal()) return finalBaseViewOrder.apply(this,arguments);
+      const o=(db.orders||[]).find(x=>String(x.id)===String(id));
+      if(!o){ toast('Order not found',false); return; }
+      const cls=o.custLines||o.cust_lines||[];
+      const isPos = String(o.orderType||o.order_type||'').toLowerCase()==='pos' || String(o.num||'').startsWith('POS - ');
+      const total = nFinal(o.totalQuoted ?? o.total_quoted);
+      const cl0 = cls[0] || {};
+      const meta = cl0.pos_meta || {};
+      const paidCurrency = meta.paid_currency || cl0.payment_currency || '';
+      const paymentMethod = meta.payment_method || cl0.payMethod || '';
+      document.getElementById('od-title').textContent = isPos ? `POS Sale #${o.num}` : `Order #${o.num}`;
+      document.getElementById('od-statbar').innerHTML = `
+        <div><div class="ostat-lbl">Date</div><div class="ostat-val">${safeFinal(o.date||'—')}</div></div>
+        <div><div class="ostat-lbl">Supplier</div><div class="ostat-val">${safeFinal((o.suppliers||[]).join(', ')||'—')}</div></div>
+        <div><div class="ostat-lbl">Quoted / Sale</div><div class="ostat-val text-green">${isPos ? (gbpFinal(meta.total_gbp || cl0.total_gbp || (total/RATE_FINAL))+' / '+eurFinal(total)) : fmt(total)}</div></div>
+        <div><div class="ostat-lbl">Payment</div><div class="ostat-val">${safeFinal(paymentMethod || '—')}${paidCurrency ? ' · '+safeFinal(paidCurrency) : ''}</div></div>
+        <div><div class="ostat-lbl">Status</div><div class="ostat-val">${o.manualComplete ? 'Completed' : 'Active'}</div></div>`;
+      let html='';
+      cls.forEach(cl=>{
+        const paid=(cl.payments||[]).reduce((a,p)=>a+nFinal(p.amount),0);
+        const balance=Math.max(0,nFinal(cl.quoted)-paid);
+        html+=`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff">
+          <div class="flex items-c gap-8 mb-8">
+            <div class="cust-init ${typeof dlClass==='function'?dlClass(cl.delivery):'ci-none'}">${typeof inits==='function'?inits(cl.name||''):'?'}</div>
+            <div style="flex:1">
+              <div class="font-bold">${safeFinal(cl.name||'Walk-in Customer - unknown')}</div>
+              <div class="flex gap-6 items-c mt-8">
+                <span class="badge ${balance>0.01?'b-red':'b-green'}">${balance>0.01?'TO BE PAID':'PAID'}</span>
+                ${cl.delivery?`<span class="badge ${typeof dlBadge==='function'?dlBadge(cl.delivery):'b-grey'}">${typeof dlLabel==='function'?dlLabel(cl.delivery):safeFinal(cl.delivery)}</span>`:''}
+              </div>
+            </div>
+            <div class="text-right"><div class="font-bold">${isPos && cl.total_gbp ? gbpFinal(cl.total_gbp)+' / '+eurFinal(cl.total_eur||cl.quoted) : fmt(cl.quoted)}</div></div>
+          </div>
+          ${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Sold / Quoted</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${(cl.items||[]).map(it=>`<tr><td>${safeFinal(it.name||'')}</td><td>${isPos && (it.quoted_gbp!==undefined) ? gbpFinal(it.quoted_gbp)+' / '+eurFinal(it.quoted_eur||it.quoted) : fmt(it.quoted)}</td><td>${safeFinal(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}
+        </div>`;
+      });
+      if(o.notes) html+=`<p class="text-sm text-muted mt-8">📝 ${safeFinal(o.notes)}</p>`;
+      document.getElementById('od-body').innerHTML = html || '<p class="text-muted">No items.</p>';
+      const del=document.getElementById('od-del-btn');
+      if(del) del.style.display='none';
+      openModal('modal-order-detail');
+    };
+    try{ viewOrder = window.viewOrder; }catch(e){}
+  }
+
+  installFinalStaffStyle();
+  setTimeout(enforceFinalStaffView,0);
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(enforceFinalStaffView,0));
+})();
+/* ===== END FINAL POS CONFIRMATION + STAFF VIEW LOCK PATCH ===== */
+
+
+/* ===== POS DAILY SALES SUMMARY PATCH 2026-08-31 ===== */
+(function(){
+  const POS_DAILY_FX = 1.20;
+  function dsNum(v){
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function dsGBP(v){return '£' + dsNum(v).toFixed(2);}
+  function dsEUR(v){return '€' + dsNum(v).toFixed(2);}
+  function dsDateKey(v){
+    if(!v) return '';
+    const s = String(v).trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d = new Date(s);
+    return isNaN(d) ? '' : d.toISOString().slice(0,10);
+  }
+  function dsDateLabel(v){
+    const k = dsDateKey(v);
+    if(!k) return '—';
+    const [y,m,d] = k.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  function dsSafe(v){
+    return String(v ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+  function dsIsPOSOrder(o){
+    const cls = o?.custLines || o?.cust_lines || [];
+    return String(o?.orderType || o?.order_type || '').toLowerCase() === 'pos'
+      || String(o?.num || '').startsWith('POS - ')
+      || !!(cls[0] && (cls[0].pos_meta || cls[0].quoted_gbp !== undefined || cls[0].total_gbp !== undefined));
+  }
+  function dsLine(o){return (o?.custLines || o?.cust_lines || [])[0] || {};}
+  function dsItems(o){return dsLine(o).items || [];} 
+  function dsToGBP(eur){return dsNum(eur) / POS_DAILY_FX;}
+  function dsToEUR(gbp){return dsNum(gbp) * POS_DAILY_FX;}
+  function dsMethodNormal(v){
+    const s = String(v || '').trim().toLowerCase();
+    if(s.includes('invoice') || s.includes('pay later')) return 'invoice';
+    if(s.includes('customer credit')) return 'credit';
+    if(s.includes('sum')) return 'sumup';
+    if(s.includes('card')) return 'card';
+    if(s.includes('revolut')) return 'revolut';
+    if(s.includes('paypal') || s.includes('pay pal')) return 'paypal';
+    if(s.includes('bank')) return 'bank';
+    if(s.includes('cash')) return 'cash';
+    return s || 'unknown';
+  }
+  function dsPOSMeta(o){
+    const cl = dsLine(o);
+    const meta = cl.pos_meta || o.pos_meta || {};
+    const items = dsItems(o);
+    const itemsGbp = items.reduce((a,it)=>a + dsNum(it.quoted_gbp !== undefined ? it.quoted_gbp : dsToGBP(it.quoted)), 0);
+    const itemsEur = items.reduce((a,it)=>a + dsNum(it.quoted_eur !== undefined ? it.quoted_eur : it.quoted !== undefined ? it.quoted : dsToEUR(it.quoted_gbp)), 0);
+    let totalGbp = dsNum(meta.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp ?? o.total_gbp);
+    let totalEur = dsNum(meta.total_eur ?? cl.total_eur ?? o.totalQuoted ?? o.total_quoted ?? cl.quoted ?? o.total_eur);
+    if(!totalGbp && itemsGbp) totalGbp = itemsGbp;
+    if(!totalEur && itemsEur) totalEur = itemsEur;
+    if(!totalGbp && totalEur) totalGbp = dsToGBP(totalEur);
+    if(!totalEur && totalGbp) totalEur = dsToEUR(totalGbp);
+    const payments = cl.payments || [];
+    const method = meta.payment_method || cl.payMethod || (payments[0] && payments[0].method) || '';
+    const paidCurrency = meta.paid_currency || cl.payment_currency || (payments[0] && payments[0].currency) || 'GBP';
+    return {totalGbp,totalEur,method,methodKey:dsMethodNormal(method),paidCurrency};
+  }
+  function dsCompute(dateKey){
+    const s = {count:0, gbpReceived:0, eurAccounting:0, cash:0, cardSumup:0, revolut:0, paypal:0, bank:0, invoiceGbp:0, invoiceEur:0, creditEur:0};
+    (window.db?.orders || []).forEach(o=>{
+      if(!dsIsPOSOrder(o)) return;
+      if(dsDateKey(o.date || o.created) !== dateKey) return;
+      const m = dsPOSMeta(o);
+      if(!m.totalGbp && !m.totalEur) return;
+      s.count += 1;
+      s.eurAccounting += m.totalEur;
+      if(m.methodKey === 'invoice'){
+        s.invoiceGbp += m.totalGbp;
+        s.invoiceEur += m.totalEur;
+      }else if(m.methodKey === 'credit'){
+        s.creditEur += m.totalEur;
+      }else{
+        s.gbpReceived += m.totalGbp;
+        if(m.methodKey === 'cash') s.cash += m.totalGbp;
+        else if(m.methodKey === 'card' || m.methodKey === 'sumup') s.cardSumup += m.totalGbp;
+        else if(m.methodKey === 'revolut') s.revolut += m.totalGbp;
+        else if(m.methodKey === 'paypal') s.paypal += m.totalGbp;
+        else if(m.methodKey === 'bank') s.bank += m.totalGbp;
+      }
+    });
+    return s;
+  }
+  function dsEnsureSummaryCard(){
+    const page = document.getElementById('page-pos-sale');
+    if(!page) return null;
+    let card = document.getElementById('pos-daily-summary-card');
+    if(card) return card;
+    const section = page.querySelector('.section-hd');
+    card = document.createElement('div');
+    card.id = 'pos-daily-summary-card';
+    card.className = 'card';
+    card.style.marginBottom = '14px';
+    card.innerHTML = `
+      <div class="card-head">
+        <div>
+          <div class="card-title">📊 Daily POS Sales Summary</div>
+          <div class="text-xs text-muted">Based on POS orders saved in the Orders tab for the selected POS date.</div>
+        </div>
+        <span class="badge b-blue" id="pos-daily-summary-date">Today</span>
+      </div>
+      <div class="card-body">
+        <div class="metrics" style="margin-bottom:8px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+          <div class="metric"><div class="metric-lbl">GBP Received</div><div class="metric-val mv-green" id="pos-sum-gbp-received">£0.00</div><div class="metric-sub">Paid now, excluding credit/invoice</div></div>
+          <div class="metric"><div class="metric-lbl">EUR Accounting Value</div><div class="metric-val mv-blue" id="pos-sum-eur-accounting">€0.00</div><div class="metric-sub">Total POS sales @ x1.20</div></div>
+          <div class="metric"><div class="metric-lbl">Cash</div><div class="metric-val" id="pos-sum-cash">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Card / SumUp</div><div class="metric-val" id="pos-sum-card-sumup">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Revolut</div><div class="metric-val" id="pos-sum-revolut">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">PayPal</div><div class="metric-val" id="pos-sum-paypal">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Bank Transfer</div><div class="metric-val" id="pos-sum-bank">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Invoice Pending</div><div class="metric-val mv-amber" id="pos-sum-invoice">£0.00</div><div class="metric-sub" id="pos-sum-invoice-eur">€0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Customer Credit Used</div><div class="metric-val mv-amber" id="pos-sum-credit-used">€0.00</div><div class="metric-sub">Deducted from credit ledger</div></div>
+        </div>
+        <div class="text-xs text-muted" id="pos-sum-count">0 POS sales for this date.</div>
+      </div>`;
+    if(section) section.insertAdjacentElement('afterend', card);
+    else page.prepend(card);
+    return card;
+  }
+  function dsUpdateSummary(){
+    const page = document.getElementById('page-pos-sale');
+    if(!page) return;
+    dsEnsureSummaryCard();
+    const selectedDate = document.getElementById('pos-date')?.value || (typeof today === 'function' ? today() : new Date().toISOString().slice(0,10));
+    const key = dsDateKey(selectedDate);
+    const s = dsCompute(key);
+    const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value; };
+    set('pos-daily-summary-date', dsDateLabel(key));
+    set('pos-sum-gbp-received', dsGBP(s.gbpReceived));
+    set('pos-sum-eur-accounting', dsEUR(s.eurAccounting));
+    set('pos-sum-cash', dsGBP(s.cash));
+    set('pos-sum-card-sumup', dsGBP(s.cardSumup));
+    set('pos-sum-revolut', dsGBP(s.revolut));
+    set('pos-sum-paypal', dsGBP(s.paypal));
+    set('pos-sum-bank', dsGBP(s.bank));
+    set('pos-sum-invoice', dsGBP(s.invoiceGbp));
+    set('pos-sum-invoice-eur', dsEUR(s.invoiceEur));
+    set('pos-sum-credit-used', dsEUR(s.creditEur));
+    set('pos-sum-count', `${s.count} POS sale${s.count===1?'':'s'} for ${dsDateLabel(key)}.`);
+    const dateInput = document.getElementById('pos-date');
+    if(dateInput && !dateInput.dataset.dailySummaryHooked){
+      dateInput.addEventListener('change',()=>setTimeout(dsUpdateSummary,50));
+      dateInput.dataset.dailySummaryHooked = '1';
+    }
+  }
+  window.updatePOSDailySummary = dsUpdateSummary;
+
+  const oldEnsurePOSPage = window.ensurePOSPage || (typeof ensurePOSPage !== 'undefined' ? ensurePOSPage : null);
+  if(oldEnsurePOSPage){
+    window.ensurePOSPage = ensurePOSPage = function(){
+      const r = oldEnsurePOSPage.apply(this,arguments);
+      setTimeout(dsUpdateSummary,50);
+      return r;
+    };
+  }
+  const oldUpdatePOSTotals = window.updatePOSTotals || (typeof updatePOSTotals !== 'undefined' ? updatePOSTotals : null);
+  if(oldUpdatePOSTotals){
+    window.updatePOSTotals = updatePOSTotals = function(){
+      const r = oldUpdatePOSTotals.apply(this,arguments);
+      setTimeout(dsUpdateSummary,50);
+      return r;
+    };
+  }
+  const oldResetPOSForm = window.resetPOSForm || (typeof resetPOSForm !== 'undefined' ? resetPOSForm : null);
+  if(oldResetPOSForm){
+    window.resetPOSForm = resetPOSForm = function(){
+      const r = oldResetPOSForm.apply(this,arguments);
+      setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  const oldRenderOrders = window.renderOrders || (typeof renderOrders !== 'undefined' ? renderOrders : null);
+  if(oldRenderOrders){
+    window.renderOrders = renderOrders = function(){
+      const r = oldRenderOrders.apply(this,arguments);
+      setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  const oldNav = window.nav || (typeof nav !== 'undefined' ? nav : null);
+  if(oldNav){
+    window.nav = nav = function(id,btn){
+      const r = oldNav.apply(this,arguments);
+      if(id === 'pos-sale') setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  document.addEventListener('input',function(e){
+    if(e.target && e.target.id === 'pos-date') setTimeout(dsUpdateSummary,50);
+  });
+  setTimeout(dsUpdateSummary,500);
+  setInterval(function(){
+    if(document.getElementById('page-pos-sale')?.classList.contains('active')) dsUpdateSummary();
+  },2500);
+})();
+/* ===== END POS DAILY SALES SUMMARY PATCH ===== */
+</script>
+
+<script>
+/* ===== STRAITS AQUATICS BUSINESS CALENDAR PATCH 2026-09-01 =====
+   Shared business calendar for appointments, maintenance, shipments and project dates.
+   Supports all-day/timed events, multi-day date spans, custom colours and recurring events. */
+(function(){
+  const CAL_TABLE = 'calendar_events';
+  let calendarEvents = [];
+  let calendarLoaded = false;
+  let calendarTableAvailable = true;
+  let calendarCurrent = new Date();
+  calendarCurrent.setDate(1);
+  let calendarView = 'month';
+  let calendarCategoryFilter = 'all';
+  let editingCalendarEventId = null;
+
+  const CAL_CATEGORIES = [
+    {name:'Appointment', color:'#1172d8'},
+    {name:'Maintenance', color:'#16a34a'},
+    {name:'Shipment', color:'#dc2626'},
+    {name:'Project', color:'#7c3aed'},
+    {name:'Task Reminder', color:'#f59e0b'},
+    {name:'Staff / Internal', color:'#0f766e'},
+    {name:'Other', color:'#64748b'}
+  ];
+
+  function calEsc(v){return String(v == null ? '' : v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function calAttr(v){return calEsc(v).replace(/`/g,'&#96;');}
+  function calUid(){return (typeof uid === 'function') ? uid() : Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+  function calToast(msg,ok=true){ if(typeof toast==='function') toast(msg,ok); else alert(msg); }
+  function calIsAdmin(){return window._session && window._session.role === 'admin';}
+  function calTodayISO(){const d=new Date();return calISO(d);}
+  function calISO(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+  function calParseDate(s){
+    if(!s) return null;
+    const parts=String(s).slice(0,10).split('-').map(Number);
+    if(parts.length!==3 || !parts[0] || !parts[1] || !parts[2]) return null;
+    return new Date(parts[0],parts[1]-1,parts[2]);
+  }
+  function calAddDays(d,n){const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()+n);return x;}
+  function calAddMonths(d,n){const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());const day=x.getDate();x.setDate(1);x.setMonth(x.getMonth()+n);const last=new Date(x.getFullYear(),x.getMonth()+1,0).getDate();x.setDate(Math.min(day,last));return x;}
+  function calDiffDays(a,b){return Math.round((calParseDate(b)-calParseDate(a))/(24*60*60*1000));}
+  function calMonthName(d){return d.toLocaleDateString('en-GB',{month:'long',year:'numeric'});}
+  function calDateLabel(s){
+    const d=calParseDate(s); if(!d)return calEsc(s||'—');
+    return d.toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});
+  }
+  function calShortDateLabel(s){
+    const d=calParseDate(s); if(!d)return calEsc(s||'—');
+    return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'});
+  }
+  function calPrettyTime(t){return t ? String(t).slice(0,5) : '';}
+  function calDefaultColor(cat){return (CAL_CATEGORIES.find(c=>c.name===cat)||CAL_CATEGORIES[0]).color;}
+  function calStatusBadge(status){
+    const s=String(status||'Scheduled');
+    const cls=s==='Completed'?'b-green':s==='Cancelled'?'b-red':'b-blue';
+    return `<span class="badge ${cls}">${calEsc(s)}</span>`;
+  }
+  function calCategoryBadge(cat,color){return `<span class="badge" style="background:${calEsc(color||calDefaultColor(cat))}22;color:${calEsc(color||calDefaultColor(cat))};border:1px solid ${calEsc(color||calDefaultColor(cat))}66">${calEsc(cat||'Other')}</span>`;}
+  function calEventEnd(ev){return ev.event_end || ev.eventStart || ev.event_start || ev.start || ev.date;}
+  function calEventStart(ev){return ev.event_start || ev.eventStart || ev.start || ev.date;}
+  function calMapEvent(e){
+    return {
+      id:e.id,
+      title:e.title||'',
+      category:e.category||'Other',
+      color:e.color||calDefaultColor(e.category||'Other'),
+      event_start:e.event_start||e.eventStart||e.start_date||e.date||calTodayISO(),
+      event_end:e.event_end||e.eventEnd||e.end_date||e.event_start||e.date||calTodayISO(),
+      all_day:e.all_day!==false,
+      start_time:e.start_time||'',
+      end_time:e.end_time||'',
+      customer_name:e.customer_name||e.customer||'',
+      location:e.location||'',
+      assigned_to:e.assigned_to||'',
+      supplier:e.supplier||'',
+      notes:e.notes||'',
+      repeat_type:e.repeat_type||'none',
+      repeat_until:e.repeat_until||'',
+      status:e.status||'Scheduled',
+      created_by:e.created_by||'',
+      created_at:e.created_at||'',
+      updated_at:e.updated_at||''
+    };
+  }
+  function calDateRangeText(ev){
+    const start=calEventStart(ev), end=calEventEnd(ev);
+    let range = start===end ? calDateLabel(start) : `${calDateLabel(start)} → ${calDateLabel(end)}`;
+    if(ev.all_day) return range + ' · All day';
+    const st=calPrettyTime(ev.start_time), et=calPrettyTime(ev.end_time);
+    if(st && et) return range + ` · ${st}–${et}`;
+    if(st) return range + ` · ${st}`;
+    if(et) return range + ` · until ${et}`;
+    return range;
+  }
+  function calVisible(ev){return calendarCategoryFilter==='all' || ev.category===calendarCategoryFilter;}
+  function calOverlaps(start,end,rangeStart,rangeEnd){return calParseDate(start) <= calParseDate(rangeEnd) && calParseDate(end) >= calParseDate(rangeStart);}
+
+  function calExpandEvent(ev,rangeStart,rangeEnd){
+    if(!calVisible(ev) || ev.status==='Cancelled') return [];
+    const start=calEventStart(ev), end=calEventEnd(ev)||start;
+    const duration=Math.max(0,calDiffDays(start,end));
+    const type=String(ev.repeat_type||'none').toLowerCase();
+    const until=ev.repeat_until || rangeEnd;
+    const hardUntil = calParseDate(until) && calParseDate(until) < calParseDate(rangeEnd) ? until : rangeEnd;
+    const out=[];
+    if(type==='none'){
+      if(calOverlaps(start,end,rangeStart,rangeEnd)) out.push({...ev,occ_start:start,occ_end:end,series_id:ev.id});
+      return out;
+    }
+    let cur=calParseDate(start);
+    let guard=0;
+    while(cur && calISO(cur) <= hardUntil && guard < 750){
+      const os=calISO(cur), oe=calISO(calAddDays(cur,duration));
+      if(calOverlaps(os,oe,rangeStart,rangeEnd)) out.push({...ev,occ_start:os,occ_end:oe,series_id:ev.id});
+      if(type==='weekly') cur=calAddDays(cur,7);
+      else if(type==='fortnightly') cur=calAddDays(cur,14);
+      else if(type==='monthly') cur=calAddMonths(cur,1);
+      else break;
+      guard++;
+    }
+    return out;
+  }
+  function calOccurrences(rangeStart,rangeEnd){
+    return (calendarEvents||[]).flatMap(ev=>calExpandEvent(ev,rangeStart,rangeEnd)).sort((a,b)=>{
+      const da=String(a.occ_start||a.event_start).localeCompare(String(b.occ_start||b.event_start));
+      if(da!==0)return da;
+      return String(a.start_time||'').localeCompare(String(b.start_time||''));
+    });
+  }
+
+  async function loadCalendarEvents(force=false){
+    if(calendarLoaded && !force) return calendarEvents;
+    try{
+      const r=await fetch(`${SB_URL}/rest/v1/${CAL_TABLE}?select=*&order=event_start.asc`,{headers:H});
+      if(!r.ok){
+        calendarTableAvailable=false;
+        throw new Error(await r.text());
+      }
+      calendarTableAvailable=true;
+      const data=await r.json();
+      calendarEvents=(data||[]).map(calMapEvent);
+      calendarLoaded=true;
+      renderCalendarUpcoming();
+      return calendarEvents;
+    }catch(e){
+      console.warn('Calendar load failed',e);
+      calendarEvents=[];
+      calendarLoaded=true;
+      renderCalendarTableWarning(e.message||e);
+      return calendarEvents;
+    }
+  }
+
+  function ensureCalendarSidebar(){
+    if(document.getElementById('calendar-sidebar-btn')) return;
+    const btn=document.createElement('button');
+    btn.className='sb-btn';
+    btn.id='calendar-sidebar-btn';
+    btn.setAttribute('onclick',"nav('calendar',this)");
+    btn.innerHTML='<span class="ic">📅</span><span>Business Calendar</span>';
+    const dash=document.querySelector('.sb-btn[onclick*="overview"]');
+    if(dash) dash.insertAdjacentElement('afterend',btn);
+    else document.querySelector('.sidebar div[style*="padding"]')?.appendChild(btn);
+  }
+
+  function ensureCalendarStyles(){
+    if(document.getElementById('business-calendar-style')) return;
+    const st=document.createElement('style');
+    st.id='business-calendar-style';
+    st.textContent=`
+      .cal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+      .cal-view-btn.active,.cal-filter-btn.active{background:#eefbff !important;border-color:var(--reef) !important;color:var(--ocean) !important;box-shadow:0 0 0 3px rgba(0,200,232,.09)}
+      .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));border:1px solid var(--border);border-radius:14px;overflow:hidden;background:#fff}
+      .cal-dow{background:#f8fafc;color:var(--text3);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:8px 10px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+      .cal-day{min-height:118px;padding:8px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:#fff;position:relative}
+      .cal-day:nth-child(7n),.cal-dow:nth-child(7n){border-right:none}
+      .cal-day.out{background:#f8fafc;color:var(--text3)}
+      .cal-day.today{box-shadow:inset 0 0 0 2px rgba(0,200,232,.45)}
+      .cal-date-num{font-size:11px;font-weight:800;color:var(--text2);margin-bottom:6px}
+      .cal-event-pill{display:block;width:100%;text-align:left;border:none;border-radius:8px;padding:4px 6px;margin:3px 0;cursor:pointer;font-size:10.5px;font-weight:700;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#eef2f7;color:var(--text);border-left:4px solid var(--reef)}
+      .cal-event-pill:hover{filter:brightness(.98);transform:translateY(-1px)}
+      .cal-list-row{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border)}
+      .cal-list-color{width:10px;align-self:stretch;border-radius:999px;min-height:42px;flex-shrink:0}
+      .cal-muted{font-size:11px;color:var(--text3)}
+      .cal-detail-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px}
+      .cal-swatches{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+      .cal-swatch{width:24px;height:24px;border-radius:8px;border:2px solid rgba(0,0,0,.08);cursor:pointer}
+      .cal-swatch.active{box-shadow:0 0 0 3px rgba(0,200,232,.18);border-color:#fff}
+      .cal-event-readonly input,.cal-event-readonly select,.cal-event-readonly textarea{background:#f8fafc !important;color:var(--text2)}
+      @media(max-width:980px){.cal-grid{grid-template-columns:repeat(1,1fr)}.cal-dow{display:none}.cal-day{min-height:auto}.cal-day.out{display:none}}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function ensureCalendarPage(){
+    ensureCalendarStyles();
+    if(document.getElementById('page-calendar')) return;
+    const page=document.createElement('div');
+    page.id='page-calendar';
+    page.className='page';
+    page.innerHTML=`
+      <div class="section-hd">
+        <div>
+          <div class="section-title">Business Calendar</div>
+          <div class="text-sm text-muted">Appointments, maintenance dates, shipments, project dates and staff reminders.</div>
+        </div>
+        <div class="flex gap-8" style="flex-wrap:wrap">
+          <button class="btn btn-sec" onclick="loadCalendarEvents(true).then(renderCalendarPage)">↻ Refresh</button>
+          <button class="btn btn-primary cal-admin-only" onclick="openCalendarEventModal()">+ Add Event</button>
+        </div>
+      </div>
+      <div id="calendar-table-warning"></div>
+      <div class="card"><div class="card-body" id="calendar-body"><div class="empty"><div class="ei">📅</div><p>Loading calendar...</p></div></div></div>`;
+    document.querySelector('.content')?.appendChild(page);
+  }
+
+  function renderCalendarTableWarning(msg){
+    const el=document.getElementById('calendar-table-warning');
+    if(!el) return;
+    if(calendarTableAvailable){el.innerHTML='';return;}
+    el.innerHTML=`<div class="card" style="border-color:#fca5a5;background:#fff5f5;margin-bottom:14px"><div class="card-body"><div class="font-bold text-red">Calendar table not connected yet</div><div class="text-sm text-muted mt-8">Run the Supabase SQL provided with this file, then refresh. Details: ${calEsc(msg||'calendar_events table missing')}</div></div></div>`;
+  }
+
+  function calendarRange(){
+    const start=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth(),1);
+    const end=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth()+1,0);
+    return {start:calISO(start),end:calISO(end)};
+  }
+  function calendarGridRange(){
+    const first=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth(),1);
+    const last=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth()+1,0);
+    const gridStart=calAddDays(first,-first.getDay());
+    const gridEnd=calAddDays(last,6-last.getDay());
+    return {start:calISO(gridStart),end:calISO(gridEnd),gridStart,gridEnd};
+  }
+
+  function renderCalendarPage(){
+    ensureCalendarSidebar(); ensureCalendarPage(); ensureCalendarModal(); renderCalendarTableWarning();
+    const addBtn=document.querySelector('#page-calendar .cal-admin-only'); if(addBtn) addBtn.style.display=calIsAdmin()?'inline-flex':'none';
+    const body=document.getElementById('calendar-body'); if(!body)return;
+    const cats=['all',...CAL_CATEGORIES.map(c=>c.name)];
+    body.innerHTML=`
+      <div class="cal-toolbar">
+        <div class="flex gap-8 items-c" style="flex-wrap:wrap">
+          <button class="btn btn-sec btn-sm" onclick="calendarMoveMonth(-1)">← Previous</button>
+          <button class="btn btn-sec btn-sm" onclick="calendarToday()">Today</button>
+          <button class="btn btn-sec btn-sm" onclick="calendarMoveMonth(1)">Next →</button>
+          <span class="font-bold" style="font-size:16px;color:var(--ocean);margin-left:6px">${calMonthName(calendarCurrent)}</span>
+        </div>
+        <div class="flex gap-8 items-c" style="flex-wrap:wrap">
+          <button class="btn btn-sec btn-sm cal-view-btn ${calendarView==='month'?'active':''}" onclick="calendarSetView('month')">Month</button>
+          <button class="btn btn-sec btn-sm cal-view-btn ${calendarView==='list'?'active':''}" onclick="calendarSetView('list')">List</button>
+          <select id="calendar-category-filter" onchange="calendarSetCategoryFilter(this.value)" style="min-width:170px"><option value="all">All categories</option>${CAL_CATEGORIES.map(c=>`<option value="${calAttr(c.name)}" ${calendarCategoryFilter===c.name?'selected':''}>${calEsc(c.name)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="flex gap-6 mb-12" style="flex-wrap:wrap">${CAL_CATEGORIES.map(c=>`<span class="badge" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}66">${calEsc(c.name)}</span>`).join('')}</div>
+      <div id="calendar-view-wrap"></div>`;
+    if(calendarView==='list') renderCalendarList(); else renderCalendarMonth();
+  }
+
+  function renderCalendarMonth(){
+    const wrap=document.getElementById('calendar-view-wrap'); if(!wrap)return;
+    const rg=calendarGridRange();
+    const occ=calOccurrences(rg.start,rg.end);
+    const byDay={};
+    occ.forEach(ev=>{
+      let d=calParseDate(ev.occ_start); const end=calParseDate(ev.occ_end||ev.occ_start); let guard=0;
+      while(d && d<=end && guard<370){
+        const key=calISO(d); (byDay[key]=byDay[key]||[]).push(ev); d=calAddDays(d,1); guard++;
+      }
+    });
+    const days=[]; let d=rg.gridStart;
+    while(d<=rg.gridEnd){days.push(new Date(d)); d=calAddDays(d,1);}
+    const today=calTodayISO();
+    wrap.innerHTML=`<div class="cal-grid">
+      ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(x=>`<div class="cal-dow">${x}</div>`).join('')}
+      ${days.map(day=>{
+        const iso=calISO(day), inMonth=day.getMonth()===calendarCurrent.getMonth();
+        const list=(byDay[iso]||[]).slice(0,5);
+        const more=(byDay[iso]||[]).length-list.length;
+        return `<div class="cal-day ${inMonth?'':'out'} ${iso===today?'today':''}" ${calIsAdmin()?`ondblclick="openCalendarEventModal(null,'${iso}')" title="Double-click to add event"`:''}>
+          <div class="cal-date-num">${day.getDate()}</div>
+          ${list.map(ev=>`<button class="cal-event-pill" style="border-left-color:${calEsc(ev.color)};background:${calEsc(ev.color)}18" onclick="event.stopPropagation();openCalendarEventModal('${calAttr(ev.id)}')">${ev.all_day?'':calPrettyTime(ev.start_time)+' '}${calEsc(ev.title)}</button>`).join('')}
+          ${more?`<div class="cal-muted">+${more} more</div>`:''}
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function renderCalendarList(){
+    const wrap=document.getElementById('calendar-view-wrap'); if(!wrap)return;
+    const rg=calendarRange();
+    const occ=calOccurrences(rg.start,rg.end);
+    if(!occ.length){wrap.innerHTML='<div class="empty"><div class="ei">📅</div><p>No calendar events for this month.</p></div>';return;}
+    wrap.innerHTML=`<div>${occ.map(ev=>`<div class="cal-list-row">
+      <div class="cal-list-color" style="background:${calEsc(ev.color)}"></div>
+      <div style="flex:1;min-width:0"><div class="flex items-c gap-8" style="flex-wrap:wrap"><span class="font-bold">${calEsc(ev.title)}</span>${calCategoryBadge(ev.category,ev.color)}${calStatusBadge(ev.status)}${ev.repeat_type&&ev.repeat_type!=='none'?`<span class="badge b-grey">Repeats ${calEsc(ev.repeat_type)}</span>`:''}</div>
+        <div class="cal-muted mt-8">${calDateRangeText({...ev,event_start:ev.occ_start,event_end:ev.occ_end})}</div>
+        <div class="cal-detail-line">${ev.customer_name?`<span class="cal-muted">Client: <strong>${calEsc(ev.customer_name)}</strong></span>`:''}${ev.supplier?`<span class="cal-muted">Supplier: <strong>${calEsc(ev.supplier)}</strong></span>`:''}${ev.assigned_to?`<span class="cal-muted">Assigned: <strong>${calEsc(ev.assigned_to)}</strong></span>`:''}${ev.location?`<span class="cal-muted">Location: <strong>${calEsc(ev.location)}</strong></span>`:''}</div>
+      </div>
+      <button class="btn btn-sec btn-xs" onclick="openCalendarEventModal('${calAttr(ev.id)}')">View${calIsAdmin()?' / Edit':''}</button>
+    </div>`).join('')}</div>`;
+  }
+
+  function ensureCalendarModal(){
+    if(document.getElementById('modal-calendar-event')) return;
+    const modal=document.createElement('div');
+    modal.className='modal-ov';
+    modal.id='modal-calendar-event';
+    modal.innerHTML=`
+      <div class="modal" style="width:720px;max-width:96vw">
+        <div class="modal-head"><div class="modal-title" id="cal-modal-title">Add Calendar Event</div><button class="modal-close" onclick="closeCalendarEventModal()">✕</button></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="fg fg-full"><label>Event title</label><input type="text" id="cal-title" placeholder="e.g. Elite Barber maintenance / De Jong shipment"></div>
+            <div class="fg"><label>Category</label><select id="cal-category" onchange="calendarApplyCategoryColour()">${CAL_CATEGORIES.map(c=>`<option>${calEsc(c.name)}</option>`).join('')}</select></div>
+            <div class="fg"><label>Status</label><select id="cal-status"><option>Scheduled</option><option>Completed</option><option>Cancelled</option></select></div>
+            <div class="fg"><label>Start date</label><input type="date" id="cal-start-date"></div>
+            <div class="fg"><label>End date</label><input type="date" id="cal-end-date"></div>
+            <div class="fg"><label>Start time</label><input type="time" id="cal-start-time"></div>
+            <div class="fg"><label>End time</label><input type="time" id="cal-end-time"></div>
+            <div class="fg fg-full"><label class="flex items-c gap-8" style="font-size:12px"><input type="checkbox" id="cal-all-day" onchange="calendarToggleAllDay()" style="width:16px;height:16px"> All-day / full-day event</label><div class="text-xs text-muted">Untick for timed appointments. Timed events can still span more than one day.</div></div>
+            <div class="fg"><label>Client / Customer</label><input type="text" id="cal-customer" list="calendar-customer-list" placeholder="Optional"><datalist id="calendar-customer-list"></datalist></div>
+            <div class="fg"><label>Supplier</label><input type="text" id="cal-supplier" list="calendar-supplier-list" placeholder="Optional"><datalist id="calendar-supplier-list"></datalist></div>
+            <div class="fg"><label>Assigned to</label><input type="text" id="cal-assigned" placeholder="Ryan / Destiny / Mikey / Willy"></div>
+            <div class="fg"><label>Location</label><input type="text" id="cal-location" placeholder="Shop / client address / supplier"></div>
+            <div class="fg"><label>Repeat</label><select id="cal-repeat"><option value="none">No repeat</option><option value="weekly">Weekly</option><option value="fortnightly">Every 2 weeks</option><option value="monthly">Monthly</option></select></div>
+            <div class="fg"><label>Repeat until</label><input type="date" id="cal-repeat-until"></div>
+            <div class="fg fg-full"><label>Colour</label><div class="cal-swatches" id="cal-swatches">${CAL_CATEGORIES.map(c=>`<button type="button" class="cal-swatch" title="${calAttr(c.name)}" style="background:${c.color}" onclick="calendarChooseColour('${c.color}')"></button>`).join('')}<input type="color" id="cal-colour" value="#1172d8" oninput="calendarSyncSwatches()" style="width:46px;height:28px;padding:2px"></div></div>
+            <div class="fg fg-full"><label>Notes</label><textarea id="cal-notes" rows="3" placeholder="Anything staff need to know..."></textarea></div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn btn-danger cal-admin-only" id="cal-delete-btn" onclick="deleteCalendarEvent()">Delete</button>
+          <button class="btn btn-sec" onclick="closeCalendarEventModal()">Close</button>
+          <button class="btn btn-primary cal-admin-only" id="cal-save-btn" onclick="saveCalendarEvent()">Save Event</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',function(e){if(e.target===modal) closeCalendarEventModal();});
+  }
+
+  function refreshCalendarDatalists(){
+    const cust=document.getElementById('calendar-customer-list');
+    if(cust && window.db) cust.innerHTML=(db.customers||[]).map(c=>`<option value="${calAttr(c.name)}">`).join('');
+    const sup=document.getElementById('calendar-supplier-list');
+    if(sup){
+      const names=[];
+      try{if(Array.isArray(SUPPLIERS)) SUPPLIERS.forEach(s=>names.push(s.name));}catch(e){}
+      ['De Jong Marine Life','Reef Fish Centre','Amblard','Aquaco DK','Dream Corals','Aq-arium','Lunaqua','Straits Aquatics','Other'].forEach(s=>{if(!names.includes(s))names.push(s);});
+      sup.innerHTML=names.map(s=>`<option value="${calAttr(s)}">`).join('');
+    }
+  }
+
+  function setCalendarFields(ev){
+    const set=(id,val)=>{const el=document.getElementById(id); if(el)el.value=val==null?'':val;};
+    set('cal-title',ev?.title||'');
+    set('cal-category',ev?.category||'Appointment');
+    set('cal-status',ev?.status||'Scheduled');
+    set('cal-start-date',ev?.event_start||calTodayISO());
+    set('cal-end-date',ev?.event_end||ev?.event_start||calTodayISO());
+    set('cal-start-time',ev?.start_time||'');
+    set('cal-end-time',ev?.end_time||'');
+    set('cal-customer',ev?.customer_name||'');
+    set('cal-supplier',ev?.supplier||'');
+    set('cal-assigned',ev?.assigned_to||'');
+    set('cal-location',ev?.location||'');
+    set('cal-repeat',ev?.repeat_type||'none');
+    set('cal-repeat-until',ev?.repeat_until||'');
+    set('cal-colour',ev?.color||calDefaultColor(ev?.category||'Appointment'));
+    set('cal-notes',ev?.notes||'');
+    const ad=document.getElementById('cal-all-day'); if(ad) ad.checked=ev ? !!ev.all_day : true;
+    calendarToggleAllDay(); calendarSyncSwatches();
+  }
+
+  function setCalendarReadonly(readonly){
+    const modal=document.getElementById('modal-calendar-event'); if(!modal)return;
+    modal.classList.toggle('cal-event-readonly',readonly);
+    modal.querySelectorAll('input,select,textarea').forEach(el=>{el.disabled=readonly;});
+    modal.querySelectorAll('.cal-admin-only').forEach(el=>{el.style.display=readonly?'none':'inline-flex';});
+  }
+
+  window.openCalendarEventModal=function(id=null,presetDate=null){
+    ensureCalendarModal(); refreshCalendarDatalists(); editingCalendarEventId=id;
+    const ev=id?calendarEvents.find(e=>String(e.id)===String(id)):null;
+    const readonly=!calIsAdmin();
+    const title=document.getElementById('cal-modal-title');
+    if(title) title.textContent = readonly ? 'View Calendar Event' : (ev?'Edit Calendar Event':'Add Calendar Event');
+    setCalendarFields(ev||{event_start:presetDate||calTodayISO(),event_end:presetDate||calTodayISO(),category:'Appointment',status:'Scheduled',all_day:true,color:calDefaultColor('Appointment')});
+    const del=document.getElementById('cal-delete-btn'); if(del)del.style.display=(!readonly && ev)?'inline-flex':'none';
+    setCalendarReadonly(readonly);
+    document.getElementById('modal-calendar-event')?.classList.add('open');
+  };
+  window.closeCalendarEventModal=function(){document.getElementById('modal-calendar-event')?.classList.remove('open'); editingCalendarEventId=null;};
+  window.calendarChooseColour=function(color){const el=document.getElementById('cal-colour'); if(el)el.value=color; calendarSyncSwatches();};
+  window.calendarSyncSwatches=function(){
+    const val=(document.getElementById('cal-colour')?.value||'').toLowerCase();
+    document.querySelectorAll('#cal-swatches .cal-swatch').forEach(b=>{b.classList.toggle('active',(b.style.backgroundColor && rgbToHex(b.style.backgroundColor)===val) || (b.getAttribute('style')||'').toLowerCase().includes(val));});
+  };
+  function rgbToHex(rgb){const m=String(rgb).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/); if(!m)return rgb; return '#'+[m[1],m[2],m[3]].map(x=>Number(x).toString(16).padStart(2,'0')).join('');}
+  window.calendarApplyCategoryColour=function(){const cat=document.getElementById('cal-category')?.value||'Appointment'; calendarChooseColour(calDefaultColor(cat));};
+  window.calendarToggleAllDay=function(){
+    const all=!!document.getElementById('cal-all-day')?.checked;
+    ['cal-start-time','cal-end-time'].forEach(id=>{const el=document.getElementById(id); if(el){el.disabled=all || !calIsAdmin(); if(all)el.value='';}});
+  };
+
+  window.saveCalendarEvent=async function(){
+    if(!calIsAdmin()){calToast('Admin access only',false);return;}
+    const title=(document.getElementById('cal-title')?.value||'').trim();
+    const start=document.getElementById('cal-start-date')?.value||'';
+    const end=document.getElementById('cal-end-date')?.value||start;
+    if(!title){calToast('Enter an event title',false);return;}
+    if(!start){calToast('Choose a start date',false);return;}
+    if(calParseDate(end) < calParseDate(start)){calToast('End date cannot be before start date',false);return;}
+    const allDay=!!document.getElementById('cal-all-day')?.checked;
+    const payload={
+      title,
+      category:document.getElementById('cal-category')?.value||'Other',
+      color:document.getElementById('cal-colour')?.value||calDefaultColor('Other'),
+      event_start:start,
+      event_end:end||start,
+      all_day:allDay,
+      start_time:allDay?'':(document.getElementById('cal-start-time')?.value||''),
+      end_time:allDay?'':(document.getElementById('cal-end-time')?.value||''),
+      customer_name:(document.getElementById('cal-customer')?.value||'').trim(),
+      supplier:(document.getElementById('cal-supplier')?.value||'').trim(),
+      assigned_to:(document.getElementById('cal-assigned')?.value||'').trim(),
+      location:(document.getElementById('cal-location')?.value||'').trim(),
+      repeat_type:document.getElementById('cal-repeat')?.value||'none',
+      repeat_until:document.getElementById('cal-repeat-until')?.value||null,
+      status:document.getElementById('cal-status')?.value||'Scheduled',
+      notes:(document.getElementById('cal-notes')?.value||'').trim(),
+      created_by:window._session?.displayName||window._session?.username||'',
+      updated_at:new Date().toISOString()
+    };
+    try{
+      let saved;
+      if(editingCalendarEventId){
+        const r=await fetch(`${SB_URL}/rest/v1/${CAL_TABLE}?id=eq.${encodeURIComponent(editingCalendarEventId)}`,{method:'PATCH',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify(payload)});
+        if(!r.ok) throw new Error(await r.text());
+        saved=(await r.json())[0];
+      }else{
+        payload.id=calUid(); payload.created_at=new Date().toISOString();
+        const r=await fetch(`${SB_URL}/rest/v1/${CAL_TABLE}`,{method:'POST',headers:{...H,'Prefer':'return=representation'},body:JSON.stringify(payload)});
+        if(!r.ok) throw new Error(await r.text());
+        saved=(await r.json())[0];
+      }
+      calendarLoaded=false; await loadCalendarEvents(true); closeCalendarEventModal(); renderCalendarPage(); renderCalendarUpcoming(); calToast(saved?'Calendar event saved ✓':'Saved ✓');
+    }catch(e){console.error(e);calToast('Calendar save failed: '+(e.message||e),false);}
+  };
+
+  window.deleteCalendarEvent=async function(){
+    if(!calIsAdmin()||!editingCalendarEventId)return;
+    if(!confirm('Delete this calendar event?'))return;
+    try{
+      const r=await fetch(`${SB_URL}/rest/v1/${CAL_TABLE}?id=eq.${encodeURIComponent(editingCalendarEventId)}`,{method:'DELETE',headers:{...H,'Prefer':'return=minimal'}});
+      if(!r.ok) throw new Error(await r.text());
+      calendarEvents=calendarEvents.filter(e=>String(e.id)!==String(editingCalendarEventId));
+      closeCalendarEventModal(); renderCalendarPage(); renderCalendarUpcoming(); calToast('Calendar event deleted');
+    }catch(e){console.error(e);calToast('Delete failed: '+(e.message||e),false);}
+  };
+
+  window.calendarSetView=function(v){calendarView=v;renderCalendarPage();};
+  window.calendarMoveMonth=function(n){calendarCurrent.setMonth(calendarCurrent.getMonth()+n);renderCalendarPage();};
+  window.calendarToday=function(){calendarCurrent=new Date();calendarCurrent.setDate(1);renderCalendarPage();};
+  window.calendarSetCategoryFilter=function(v){calendarCategoryFilter=v;renderCalendarPage();};
+
+  function ensureOverviewCalendarCard(){
+    const overview=document.getElementById('page-overview'); if(!overview||document.getElementById('overview-calendar-card'))return;
+    const card=document.createElement('div');
+    card.className='card';
+    card.id='overview-calendar-card';
+    card.innerHTML=`<div class="card-head"><div class="card-title">📅 Upcoming Calendar</div><button class="btn btn-sec btn-sm" onclick="nav('calendar')">View Calendar</button></div><div class="card-body" id="overview-calendar-upcoming"><div class="empty"><div class="ei">📅</div><p>No upcoming events</p></div></div>`;
+    const firstTwoCol=overview.querySelector('.two-col');
+    if(firstTwoCol) firstTwoCol.insertAdjacentElement('beforebegin',card);
+    else overview.appendChild(card);
+  }
+  function renderCalendarUpcoming(){
+    ensureOverviewCalendarCard();
+    const el=document.getElementById('overview-calendar-upcoming'); if(!el)return;
+    const today=calTodayISO(); const future=calISO(calAddDays(new Date(),60));
+    const occ=calOccurrences(today,future).filter(e=>e.status!=='Completed').slice(0,5);
+    if(!occ.length){el.innerHTML='<div class="empty"><div class="ei">📅</div><p>No upcoming events</p></div>';return;}
+    el.innerHTML=occ.map(ev=>`<div class="cal-list-row" style="padding:7px 0"><div class="cal-list-color" style="background:${calEsc(ev.color)};min-height:34px"></div><div style="flex:1"><div class="flex gap-8 items-c" style="flex-wrap:wrap"><span class="font-bold">${calEsc(ev.title)}</span>${calCategoryBadge(ev.category,ev.color)}</div><div class="cal-muted">${calDateRangeText({...ev,event_start:ev.occ_start,event_end:ev.occ_end})}${ev.assigned_to?' · '+calEsc(ev.assigned_to):''}</div></div><button class="btn btn-sec btn-xs" onclick="nav('calendar')">Open</button></div>`).join('');
+  }
+
+  function installCalendarNav(){
+    ensureCalendarSidebar(); ensureCalendarPage(); ensureCalendarModal(); ensureOverviewCalendarCard();
+    const oldNav=window.nav || (typeof nav !== 'undefined' ? nav : null);
+    window.nav = nav = function(id,btn){
+      if(id==='calendar'){
+        if(!window._session && typeof showLogin==='function'){showLogin();return;}
+        document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+        document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+        document.getElementById('page-calendar')?.classList.add('active');
+        const title=document.getElementById('page-title'); if(title)title.textContent='Business Calendar';
+        if(btn)btn.classList.add('active'); else document.getElementById('calendar-sidebar-btn')?.classList.add('active');
+        loadCalendarEvents(false).then(renderCalendarPage);
+        return;
+      }
+      const r=oldNav ? oldNav.apply(this,arguments) : undefined;
+      setTimeout(()=>{renderCalendarUpcoming();},50);
+      return r;
+    };
+  }
+
+  function initCalendar(){
+    installCalendarNav();
+    loadCalendarEvents(false).then(()=>{renderCalendarUpcoming(); if(document.getElementById('page-calendar')?.classList.contains('active')) renderCalendarPage();});
+  }
+
+  const oldLoadAll=window.loadAll || (typeof loadAll !== 'undefined' ? loadAll : null);
+  if(oldLoadAll){
+    window.loadAll = loadAll = async function(){
+      const r=await oldLoadAll.apply(this,arguments);
+      ensureCalendarSidebar(); ensureCalendarPage(); ensureOverviewCalendarCard();
+      await loadCalendarEvents(true);
+      renderCalendarUpcoming();
+      return r;
+    };
+  }
+
+  const oldRenderOverview=window.renderOverview || (typeof renderOverview !== 'undefined' ? renderOverview : null);
+  if(oldRenderOverview){
+    window.renderOverview = renderOverview = function(){
+      const r=oldRenderOverview.apply(this,arguments);
+      setTimeout(renderCalendarUpcoming,50);
+      return r;
+    };
+  }
+
+  window.loadCalendarEvents=loadCalendarEvents;
+  window.renderCalendarPage=renderCalendarPage;
+  window.renderCalendarUpcoming=renderCalendarUpcoming;
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',initCalendar);
+  else initCalendar();
+})();
+/* ===== END STRAITS AQUATICS BUSINESS CALENDAR PATCH ===== */
+</script>
+
 </body>
 </html>
