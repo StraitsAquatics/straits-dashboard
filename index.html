@@ -1643,6 +1643,212 @@ body:not(.auth-locked) #login-screen{display:none !important;}
 })();
 /* ===== END FINAL POS CONFIRMATION + STAFF VIEW LOCK PATCH ===== */
 
+
+/* ===== POS DAILY SALES SUMMARY PATCH 2026-08-31 ===== */
+(function(){
+  const POS_DAILY_FX = 1.20;
+  function dsNum(v){
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function dsGBP(v){return '£' + dsNum(v).toFixed(2);}
+  function dsEUR(v){return '€' + dsNum(v).toFixed(2);}
+  function dsDateKey(v){
+    if(!v) return '';
+    const s = String(v).trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d = new Date(s);
+    return isNaN(d) ? '' : d.toISOString().slice(0,10);
+  }
+  function dsDateLabel(v){
+    const k = dsDateKey(v);
+    if(!k) return '—';
+    const [y,m,d] = k.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  function dsSafe(v){
+    return String(v ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+  function dsIsPOSOrder(o){
+    const cls = o?.custLines || o?.cust_lines || [];
+    return String(o?.orderType || o?.order_type || '').toLowerCase() === 'pos'
+      || String(o?.num || '').startsWith('POS - ')
+      || !!(cls[0] && (cls[0].pos_meta || cls[0].quoted_gbp !== undefined || cls[0].total_gbp !== undefined));
+  }
+  function dsLine(o){return (o?.custLines || o?.cust_lines || [])[0] || {};}
+  function dsItems(o){return dsLine(o).items || [];} 
+  function dsToGBP(eur){return dsNum(eur) / POS_DAILY_FX;}
+  function dsToEUR(gbp){return dsNum(gbp) * POS_DAILY_FX;}
+  function dsMethodNormal(v){
+    const s = String(v || '').trim().toLowerCase();
+    if(s.includes('invoice') || s.includes('pay later')) return 'invoice';
+    if(s.includes('customer credit')) return 'credit';
+    if(s.includes('sum')) return 'sumup';
+    if(s.includes('card')) return 'card';
+    if(s.includes('revolut')) return 'revolut';
+    if(s.includes('paypal') || s.includes('pay pal')) return 'paypal';
+    if(s.includes('bank')) return 'bank';
+    if(s.includes('cash')) return 'cash';
+    return s || 'unknown';
+  }
+  function dsPOSMeta(o){
+    const cl = dsLine(o);
+    const meta = cl.pos_meta || o.pos_meta || {};
+    const items = dsItems(o);
+    const itemsGbp = items.reduce((a,it)=>a + dsNum(it.quoted_gbp !== undefined ? it.quoted_gbp : dsToGBP(it.quoted)), 0);
+    const itemsEur = items.reduce((a,it)=>a + dsNum(it.quoted_eur !== undefined ? it.quoted_eur : it.quoted !== undefined ? it.quoted : dsToEUR(it.quoted_gbp)), 0);
+    let totalGbp = dsNum(meta.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp ?? o.total_gbp);
+    let totalEur = dsNum(meta.total_eur ?? cl.total_eur ?? o.totalQuoted ?? o.total_quoted ?? cl.quoted ?? o.total_eur);
+    if(!totalGbp && itemsGbp) totalGbp = itemsGbp;
+    if(!totalEur && itemsEur) totalEur = itemsEur;
+    if(!totalGbp && totalEur) totalGbp = dsToGBP(totalEur);
+    if(!totalEur && totalGbp) totalEur = dsToEUR(totalGbp);
+    const payments = cl.payments || [];
+    const method = meta.payment_method || cl.payMethod || (payments[0] && payments[0].method) || '';
+    const paidCurrency = meta.paid_currency || cl.payment_currency || (payments[0] && payments[0].currency) || 'GBP';
+    return {totalGbp,totalEur,method,methodKey:dsMethodNormal(method),paidCurrency};
+  }
+  function dsCompute(dateKey){
+    const s = {count:0, gbpReceived:0, eurAccounting:0, cash:0, cardSumup:0, revolut:0, paypal:0, bank:0, invoiceGbp:0, invoiceEur:0, creditEur:0};
+    (window.db?.orders || []).forEach(o=>{
+      if(!dsIsPOSOrder(o)) return;
+      if(dsDateKey(o.date || o.created) !== dateKey) return;
+      const m = dsPOSMeta(o);
+      if(!m.totalGbp && !m.totalEur) return;
+      s.count += 1;
+      s.eurAccounting += m.totalEur;
+      if(m.methodKey === 'invoice'){
+        s.invoiceGbp += m.totalGbp;
+        s.invoiceEur += m.totalEur;
+      }else if(m.methodKey === 'credit'){
+        s.creditEur += m.totalEur;
+      }else{
+        s.gbpReceived += m.totalGbp;
+        if(m.methodKey === 'cash') s.cash += m.totalGbp;
+        else if(m.methodKey === 'card' || m.methodKey === 'sumup') s.cardSumup += m.totalGbp;
+        else if(m.methodKey === 'revolut') s.revolut += m.totalGbp;
+        else if(m.methodKey === 'paypal') s.paypal += m.totalGbp;
+        else if(m.methodKey === 'bank') s.bank += m.totalGbp;
+      }
+    });
+    return s;
+  }
+  function dsEnsureSummaryCard(){
+    const page = document.getElementById('page-pos-sale');
+    if(!page) return null;
+    let card = document.getElementById('pos-daily-summary-card');
+    if(card) return card;
+    const section = page.querySelector('.section-hd');
+    card = document.createElement('div');
+    card.id = 'pos-daily-summary-card';
+    card.className = 'card';
+    card.style.marginBottom = '14px';
+    card.innerHTML = `
+      <div class="card-head">
+        <div>
+          <div class="card-title">📊 Daily POS Sales Summary</div>
+          <div class="text-xs text-muted">Based on POS orders saved in the Orders tab for the selected POS date.</div>
+        </div>
+        <span class="badge b-blue" id="pos-daily-summary-date">Today</span>
+      </div>
+      <div class="card-body">
+        <div class="metrics" style="margin-bottom:8px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+          <div class="metric"><div class="metric-lbl">GBP Received</div><div class="metric-val mv-green" id="pos-sum-gbp-received">£0.00</div><div class="metric-sub">Paid now, excluding credit/invoice</div></div>
+          <div class="metric"><div class="metric-lbl">EUR Accounting Value</div><div class="metric-val mv-blue" id="pos-sum-eur-accounting">€0.00</div><div class="metric-sub">Total POS sales @ x1.20</div></div>
+          <div class="metric"><div class="metric-lbl">Cash</div><div class="metric-val" id="pos-sum-cash">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Card / SumUp</div><div class="metric-val" id="pos-sum-card-sumup">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Revolut</div><div class="metric-val" id="pos-sum-revolut">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">PayPal</div><div class="metric-val" id="pos-sum-paypal">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Bank Transfer</div><div class="metric-val" id="pos-sum-bank">£0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Invoice Pending</div><div class="metric-val mv-amber" id="pos-sum-invoice">£0.00</div><div class="metric-sub" id="pos-sum-invoice-eur">€0.00</div></div>
+          <div class="metric"><div class="metric-lbl">Customer Credit Used</div><div class="metric-val mv-amber" id="pos-sum-credit-used">€0.00</div><div class="metric-sub">Deducted from credit ledger</div></div>
+        </div>
+        <div class="text-xs text-muted" id="pos-sum-count">0 POS sales for this date.</div>
+      </div>`;
+    if(section) section.insertAdjacentElement('afterend', card);
+    else page.prepend(card);
+    return card;
+  }
+  function dsUpdateSummary(){
+    const page = document.getElementById('page-pos-sale');
+    if(!page) return;
+    dsEnsureSummaryCard();
+    const selectedDate = document.getElementById('pos-date')?.value || (typeof today === 'function' ? today() : new Date().toISOString().slice(0,10));
+    const key = dsDateKey(selectedDate);
+    const s = dsCompute(key);
+    const set = (id, value) => { const el = document.getElementById(id); if(el) el.textContent = value; };
+    set('pos-daily-summary-date', dsDateLabel(key));
+    set('pos-sum-gbp-received', dsGBP(s.gbpReceived));
+    set('pos-sum-eur-accounting', dsEUR(s.eurAccounting));
+    set('pos-sum-cash', dsGBP(s.cash));
+    set('pos-sum-card-sumup', dsGBP(s.cardSumup));
+    set('pos-sum-revolut', dsGBP(s.revolut));
+    set('pos-sum-paypal', dsGBP(s.paypal));
+    set('pos-sum-bank', dsGBP(s.bank));
+    set('pos-sum-invoice', dsGBP(s.invoiceGbp));
+    set('pos-sum-invoice-eur', dsEUR(s.invoiceEur));
+    set('pos-sum-credit-used', dsEUR(s.creditEur));
+    set('pos-sum-count', `${s.count} POS sale${s.count===1?'':'s'} for ${dsDateLabel(key)}.`);
+    const dateInput = document.getElementById('pos-date');
+    if(dateInput && !dateInput.dataset.dailySummaryHooked){
+      dateInput.addEventListener('change',()=>setTimeout(dsUpdateSummary,50));
+      dateInput.dataset.dailySummaryHooked = '1';
+    }
+  }
+  window.updatePOSDailySummary = dsUpdateSummary;
+
+  const oldEnsurePOSPage = window.ensurePOSPage || (typeof ensurePOSPage !== 'undefined' ? ensurePOSPage : null);
+  if(oldEnsurePOSPage){
+    window.ensurePOSPage = ensurePOSPage = function(){
+      const r = oldEnsurePOSPage.apply(this,arguments);
+      setTimeout(dsUpdateSummary,50);
+      return r;
+    };
+  }
+  const oldUpdatePOSTotals = window.updatePOSTotals || (typeof updatePOSTotals !== 'undefined' ? updatePOSTotals : null);
+  if(oldUpdatePOSTotals){
+    window.updatePOSTotals = updatePOSTotals = function(){
+      const r = oldUpdatePOSTotals.apply(this,arguments);
+      setTimeout(dsUpdateSummary,50);
+      return r;
+    };
+  }
+  const oldResetPOSForm = window.resetPOSForm || (typeof resetPOSForm !== 'undefined' ? resetPOSForm : null);
+  if(oldResetPOSForm){
+    window.resetPOSForm = resetPOSForm = function(){
+      const r = oldResetPOSForm.apply(this,arguments);
+      setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  const oldRenderOrders = window.renderOrders || (typeof renderOrders !== 'undefined' ? renderOrders : null);
+  if(oldRenderOrders){
+    window.renderOrders = renderOrders = function(){
+      const r = oldRenderOrders.apply(this,arguments);
+      setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  const oldNav = window.nav || (typeof nav !== 'undefined' ? nav : null);
+  if(oldNav){
+    window.nav = nav = function(id,btn){
+      const r = oldNav.apply(this,arguments);
+      if(id === 'pos-sale') setTimeout(dsUpdateSummary,100);
+      return r;
+    };
+  }
+  document.addEventListener('input',function(e){
+    if(e.target && e.target.id === 'pos-date') setTimeout(dsUpdateSummary,50);
+  });
+  setTimeout(dsUpdateSummary,500);
+  setInterval(function(){
+    if(document.getElementById('page-pos-sale')?.classList.contains('active')) dsUpdateSummary();
+  },2500);
+})();
+/* ===== END POS DAILY SALES SUMMARY PATCH ===== */
+
 </script>
 <script>
 
