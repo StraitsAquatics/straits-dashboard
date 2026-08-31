@@ -5276,6 +5276,355 @@ function applyStaffMode(){
 })();
 /* ===== END STAFF ROLE + SIMPLE POS PATCH ===== */
 
+
+
+/* ===== STAFF ROLE DB ERROR HELPER + POS GBP/EUR ACCOUNTING PATCH 2026-08-31 =====
+   - POS sale prices are entered in GBP from website price list.
+   - Accounting/order totals are stored in EUR at x1.20.
+   - POS order rows and details show both GBP sale total and EUR accounting total.
+   - Payment currency is captured as GBP or EUR.
+   - Customer credit checks/deductions use EUR to match the existing credits ledger. */
+(function(){
+  const FX_GBP_TO_EUR = 1.20;
+
+  function moneyGBP(v){return '£' + (parseFloat(v)||0).toFixed(2);}
+  function moneyEUR(v){return '€' + (parseFloat(v)||0).toFixed(2);}
+  function toEUR(gbp){return Math.round(((parseFloat(gbp)||0) * FX_GBP_TO_EUR) * 100) / 100;}
+  function toGBP(eur){return Math.round(((parseFloat(eur)||0) / FX_GBP_TO_EUR) * 100) / 100;}
+  function safe(v){return String(v==null?'':v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function plainDateLabel(iso){
+    const s=String(iso||today());
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const [y,m,d]=s.split('-');return `${d}/${m}/${y}`;}
+    return s;
+  }
+  function isPOSOrder(o){
+    return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos' || String(o?.num||'').startsWith('POS - ') || !!(o?.custLines||o?.cust_lines||[])[0]?.pos_meta;
+  }
+  function firstLine(o){return (o?.custLines||o?.cust_lines||[])[0] || {};}
+  function posMeta(o){
+    const cl=firstLine(o);
+    const m=cl.pos_meta || o.pos_meta || {};
+    const totalEur=(parseFloat(o.totalQuoted ?? o.total_quoted ?? cl.quoted)||0);
+    const actualEur=(parseFloat(o.totalActual ?? o.total_actual ?? cl.actual)||0);
+    const profitEur=(parseFloat(o.profit ?? (totalEur-actualEur))||0);
+    const totalGbp=parseFloat(m.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp ?? o.total_gbp);
+    const costGbp=parseFloat(m.cost_gbp ?? cl.cost_gbp ?? cl.actual_gbp ?? o.cost_gbp);
+    const profitGbp=parseFloat(m.profit_gbp ?? o.profit_gbp);
+    return {
+      fx:parseFloat(m.fx_rate)||FX_GBP_TO_EUR,
+      totalGbp:Number.isFinite(totalGbp)?totalGbp:toGBP(totalEur),
+      totalEur:parseFloat(m.total_eur ?? cl.total_eur ?? o.total_eur ?? totalEur)||0,
+      costGbp:Number.isFinite(costGbp)?costGbp:toGBP(actualEur),
+      costEur:parseFloat(m.cost_eur ?? cl.cost_eur ?? o.cost_eur ?? actualEur)||0,
+      profitGbp:Number.isFinite(profitGbp)?profitGbp:toGBP(profitEur),
+      profitEur:parseFloat(m.profit_eur ?? o.profit_eur ?? profitEur)||0,
+      paidCurrency:m.paid_currency || cl.payment_currency || '',
+      paymentMethod:m.payment_method || cl.payMethod || '',
+      invoiceRef:m.invoice_ref || '',
+      company:m.company || '',
+      dueDate:m.due_date || cl.payBy || '',
+      enteredBy:m.entered_by || ''
+    };
+  }
+  function dualMain(gbp, eur){
+    return `<div><div class="font-bold">${moneyGBP(gbp)}</div><div class="text-xs text-muted">${moneyEUR(eur)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div></div>`;
+  }
+  function dualInline(gbp, eur){return `${moneyGBP(gbp)} / ${moneyEUR(eur)}`;}
+
+  // Override user save just to provide a clearer message if the Supabase role constraint has not been updated.
+  const oldSaveUser = window.saveUser || saveUser;
+  window.saveUser = saveUser = async function(){
+    const name=document.getElementById('u-name')?.value.trim();
+    const username=document.getElementById('u-username')?.value.trim().toUpperCase();
+    const password=document.getElementById('u-password')?.value || '';
+    const role=document.getElementById('u-role')?.value || 'viewer';
+    if(!name||!username||!password){toast('Fill in all fields',false);return;}
+    try{
+      const salt=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
+      const hash=await sha256(salt+password);
+      const payload={username,display_name:name,password_hash:salt+':'+hash,role,is_active:true};
+      const r=await fetch(SB_URL+'/rest/v1/users',{method:'POST',headers:H,body:JSON.stringify(payload)});
+      if(!r.ok)throw new Error(await r.text());
+      closeModal('modal-add-user');
+      ['u-name','u-username','u-password'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+      await renderUsers();
+      toast('User created ✓');
+    }catch(e){
+      const msg=String(e.message||e);
+      if(msg.includes('users_role_check') || msg.includes('check constraint')){
+        alert('User was not created because Supabase still only allows the old roles.\n\nRun the SQL I give you in Supabase to allow the new staff role, then refresh and try again.\n\nSupabase said:\n'+msg);
+      }else{
+        alert('User creation failed. Supabase said:\n'+msg);
+      }
+    }
+  };
+
+  window.posPaymentOptions = posPaymentOptions = function(selected='Cash'){
+    return ['Cash','Revolut','Card','Bank Transfer','PayPal','Customer Credit','SumUp','Invoice / Pay Later'].map(m=>`<option value="${safe(m)}" ${m===selected?'selected':''}>${safe(m)}</option>`).join('');
+  };
+
+  window.ensurePOSPage = ensurePOSPage = function(){
+    if(document.getElementById('page-pos-sale'))return;
+    const content=document.querySelector('.content');
+    if(!content)return;
+    const datalist=(POS_PRODUCT_SUGGESTIONS||[]).slice(0,1500).map(p=>`<option value="${safe(p.title)}" label="${safe('£'+Number(p.price||0).toFixed(2))}"></option>`).join('');
+    const custList=(db.customers||[]).map(c=>`<option value="${safe(c.name)}"></option>`).join('');
+    const page=document.createElement('div');
+    page.id='page-pos-sale'; page.className='page';
+    page.innerHTML=`
+      <div class="section-hd">
+        <div>
+          <div class="section-title">POS Sale</div>
+          <div class="text-sm text-muted">Prices are entered in GBP. Accounting total is converted to EUR at x${FX_GBP_TO_EUR.toFixed(2)}.</div>
+        </div>
+      </div>
+      <datalist id="pos-product-list">${datalist}</datalist>
+      <datalist id="pos-customer-list">${custList}</datalist>
+      <div class="card">
+        <div class="card-head"><div class="card-title">New POS Sale</div><span class="text-sm text-muted">Enter the sale and press Enter / Submit</span></div>
+        <div class="card-body">
+          <form id="pos-form" onsubmit="submitPOSSale(event)">
+            <div class="form-grid">
+              <div class="fg"><label>Date</label><input type="date" id="pos-date" value="${today()}" onchange="updatePOSInvoiceFields()"></div>
+              <div class="fg"><label>Client Name <span class="text-muted">optional</span></label><input type="text" id="pos-client" list="pos-customer-list" placeholder="Walk-in Customer - unknown"></div>
+              <div class="fg"><label>Payment Method</label><select id="pos-payment" onchange="updatePOSPaymentFields()">${posPaymentOptions()}</select></div>
+              <div class="fg"><label>Currency Paid</label><select id="pos-paid-currency" onchange="updatePOSTotals()"><option value="GBP">GBP £</option><option value="EUR">EUR €</option></select></div>
+              <div class="fg fg-full"><label>Optional Notes</label><input type="text" id="pos-notes" placeholder="Any sale notes"></div>
+            </div>
+            <div class="divider"></div>
+            <div class="flex items-c gap-8 mb-8"><div class="font-bold text-sm">Items Sold</div><button type="button" class="btn btn-sec btn-xs" onclick="addPOSItemRow()">+ Add Item</button></div>
+            <div id="pos-items"></div>
+            <div id="pos-invoice-fields" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc">
+              <div class="font-bold text-sm mb-8">Invoice / Pay Later Details</div>
+              <div class="form-grid">
+                <div class="fg"><label>Company Name <span class="text-red">required</span></label><input type="text" id="pos-company" placeholder="Business customer name"></div>
+                <div class="fg"><label>Invoice Reference</label><input type="text" id="pos-invoice-ref" readonly></div>
+                <div class="fg"><label>Due Date <span class="text-red">required</span></label><input type="date" id="pos-due-date"></div>
+                <div class="fg"><label>Invoice Notes</label><input type="text" id="pos-invoice-notes" placeholder="Invoice/payment notes"></div>
+              </div>
+            </div>
+            <div class="metrics mt-12">
+              <div class="metric"><div class="metric-lbl">Sale Total GBP</div><div class="metric-val mv-green" id="pos-total-gbp">£0.00</div><div class="metric-sub">Price list / counter sale</div></div>
+              <div class="metric"><div class="metric-lbl">Accounting Total EUR</div><div class="metric-val mv-blue" id="pos-total-eur">€0.00</div><div class="metric-sub">GBP x${FX_GBP_TO_EUR.toFixed(2)}</div></div>
+              <div class="metric"><div class="metric-lbl">Optional Cost</div><div class="metric-val mv-amber" id="pos-cost-total">£0.00</div><div class="metric-sub">Cost entered in GBP</div></div>
+              <div class="metric"><div class="metric-lbl">Estimated Profit</div><div class="metric-val mv-green" id="pos-profit">£0.00</div><div class="metric-sub" id="pos-profit-eur">€0.00 accounting</div></div>
+            </div>
+            <div class="flex gap-8 mt-12" style="justify-content:flex-end"><button type="button" class="btn btn-sec" onclick="resetPOSForm()">Clear</button><button type="submit" class="btn btn-primary" id="pos-submit-btn">Submit Sale</button></div>
+          </form>
+        </div>
+      </div>`;
+    content.appendChild(page);
+    addPOSItemRow(); updatePOSPaymentFields(); updatePOSTotals();
+  };
+
+  window.refreshPOSDatalists = refreshPOSDatalists = function(){
+    const dl=document.getElementById('pos-customer-list');
+    if(dl)dl.innerHTML=(db.customers||[]).map(c=>`<option value="${safe(c.name)}"></option>`).join('');
+  };
+
+  window.addPOSItemRow = addPOSItemRow = function(name='',sold='',cost=''){
+    const wrap=document.getElementById('pos-items'); if(!wrap)return;
+    const id='positem'+uid();
+    const d=document.createElement('div'); d.id=id; d.className='pos-item-row flex items-c gap-6 mb-8'; d.style.flexWrap='wrap';
+    d.innerHTML=`<input type="text" class="pos-item-name" list="pos-product-list" placeholder="Item sold" value="${safe(name)}" style="flex:2;min-width:220px" onchange="posProductSelected(this)" oninput="posProductSelected(this,false)">
+      <input type="number" step="0.01" min="0" class="pos-item-sold" placeholder="Price sold £" value="${sold!==''?posNum(sold):''}" style="width:130px" oninput="updatePOSTotals()">
+      <input type="number" step="0.01" min="0" class="pos-item-cost" placeholder="Cost £ optional" value="${cost!==''?posNum(cost):''}" style="width:135px" oninput="updatePOSTotals()">
+      <span class="text-xs text-muted pos-item-eur" style="min-width:130px">€0.00 @ x${FX_GBP_TO_EUR.toFixed(2)}</span>
+      <button type="button" class="btn btn-danger btn-xs" onclick="document.getElementById('${id}').remove();updatePOSTotals()">✕</button>`;
+    wrap.appendChild(d); updatePOSTotals();
+  };
+
+  window.posProductSelected = posProductSelected = function(input, exactOnly=true){
+    const value=String(input.value||'').trim().toLowerCase();
+    if(!value)return;
+    const product=(POS_PRODUCT_SUGGESTIONS||[]).find(p=>String(p.title||'').trim().toLowerCase()===value) || null;
+    if(product){
+      const row=input.closest('.pos-item-row');
+      const priceEl=row?.querySelector('.pos-item-sold');
+      if(priceEl && !priceEl.value && product.price) priceEl.value=Number(product.price).toFixed(2);
+      updatePOSTotals();
+    }
+  };
+
+  window.updatePOSTotals = updatePOSTotals = function(){
+    let totalGbp=0,costGbp=0;
+    document.querySelectorAll('#pos-items .pos-item-row').forEach(r=>{
+      const sold=posNum(r.querySelector('.pos-item-sold')?.value);
+      const cost=posNum(r.querySelector('.pos-item-cost')?.value);
+      totalGbp+=sold; costGbp+=cost;
+      const eurEl=r.querySelector('.pos-item-eur'); if(eurEl)eurEl.textContent=moneyEUR(toEUR(sold))+' @ x'+FX_GBP_TO_EUR.toFixed(2);
+    });
+    const set=(id,val,gbp=true)=>{const el=document.getElementById(id); if(el)el.textContent=gbp?moneyGBP(val):moneyEUR(val);};
+    set('pos-total-gbp',totalGbp,true); set('pos-total-eur',toEUR(totalGbp),false); set('pos-cost-total',costGbp,true); set('pos-profit',totalGbp-costGbp,true);
+    const pe=document.getElementById('pos-profit-eur'); if(pe)pe.textContent=moneyEUR(toEUR(totalGbp-costGbp))+' accounting';
+    const p=document.getElementById('pos-profit'); if(p)p.className='metric-val '+(totalGbp-costGbp>=0?'mv-green':'mv-red');
+  };
+
+  window.updatePOSInvoiceFields = updatePOSInvoiceFields = function(){
+    const ref=document.getElementById('pos-invoice-ref'); if(ref)ref.value=posInvoiceRef(document.getElementById('pos-date')?.value||today());
+  };
+
+  window.updatePOSPaymentFields = updatePOSPaymentFields = function(){
+    const method=document.getElementById('pos-payment')?.value||'Cash';
+    const invoice=document.getElementById('pos-invoice-fields');
+    if(invoice)invoice.style.display=method==='Invoice / Pay Later'?'block':'none';
+    updatePOSInvoiceFields(); updatePOSTotals();
+  };
+
+  window.collectPOSItems = collectPOSItems = function(){
+    return [...document.querySelectorAll('#pos-items .pos-item-row')].map(r=>{
+      const gbp=posNum(r.querySelector('.pos-item-sold')?.value);
+      const costGbp=posNum(r.querySelector('.pos-item-cost')?.value);
+      return {
+        name:(r.querySelector('.pos-item-name')?.value||'').trim(),
+        quoted:toEUR(gbp), actual:toEUR(costGbp),
+        quoted_gbp:gbp, actual_gbp:costGbp,
+        quoted_eur:toEUR(gbp), actual_eur:toEUR(costGbp), fx_rate:FX_GBP_TO_EUR,
+        status:'DELIVERED', delivered:true, doa:false, doaResolved:false
+      };
+    }).filter(i=>i.name && i.quoted_gbp>0);
+  };
+
+  window.resetPOSForm = resetPOSForm = function(){
+    const f=document.getElementById('pos-form'); if(f)f.reset();
+    const date=document.getElementById('pos-date'); if(date)date.value=today();
+    const cur=document.getElementById('pos-paid-currency'); if(cur)cur.value='GBP';
+    const items=document.getElementById('pos-items'); if(items)items.innerHTML='';
+    addPOSItemRow(); updatePOSPaymentFields(); updatePOSTotals();
+  };
+
+  window.submitPOSSale = submitPOSSale = async function(e){
+    if(e)e.preventDefault();
+    if(!canUsePOS()){alert('You do not have access to POS sales.');return;}
+    const items=collectPOSItems();
+    if(!items.length){toast('Add at least one item and price sold',false);return;}
+    const saleDate=document.getElementById('pos-date')?.value||today();
+    const method=document.getElementById('pos-payment')?.value||'Cash';
+    const paidCurrency=document.getElementById('pos-paid-currency')?.value||'GBP';
+    const totalGbp=items.reduce((a,i)=>a+posNum(i.quoted_gbp),0);
+    const costGbp=items.reduce((a,i)=>a+posNum(i.actual_gbp),0);
+    const totalEur=toEUR(totalGbp), costEur=toEUR(costGbp), profitGbp=totalGbp-costGbp, profitEur=toEUR(profitGbp);
+    let client=(document.getElementById('pos-client')?.value||'').trim();
+    const notes=(document.getElementById('pos-notes')?.value||'').trim();
+    const saleNo=posNextSaleNumber(saleDate);
+    const invoiceRef=`${plainDateLabel(saleDate)} - ${saleNo}`;
+    const orderNum=`POS - ${invoiceRef}`;
+    let company='',dueDate='',invoiceNotes='';
+    if(method==='Invoice / Pay Later'){
+      company=(document.getElementById('pos-company')?.value||'').trim();
+      dueDate=document.getElementById('pos-due-date')?.value||'';
+      invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();
+      if(!company){toast('Company name is required for invoice/pay later',false);return;}
+      if(!dueDate){toast('Due date is required for invoice/pay later',false);return;}
+      if(!client)client=company;
+    }
+    if(!client)client='Walk-in Customer - unknown';
+    if(method==='Customer Credit'){
+      if(client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}
+      const bal=customerCreditBalance(client); // existing credits ledger is EUR
+      if(bal + 0.001 < totalEur){alert(`Customer credit is not enough.\n\nCustomer: ${client}\nAvailable credit: ${moneyEUR(bal)}\nSale total: ${moneyGBP(totalGbp)} / ${moneyEUR(totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}`);return;}
+    }
+    const paidNow = method !== 'Invoice / Pay Later';
+    const payment = paidNow ? [{amount:totalEur,amount_gbp:totalGbp,amount_eur:totalEur,currency:paidCurrency,fx_rate:FX_GBP_TO_EUR,date:saleDate,method,note:method==='Customer Credit'?'Paid using customer credit':'Paid at POS'}] : [];
+    const pos_meta={total_gbp:totalGbp,total_eur:totalEur,cost_gbp:costGbp,cost_eur:costEur,profit_gbp:profitGbp,profit_eur:profitEur,fx_rate:FX_GBP_TO_EUR,paid_currency:paidCurrency,payment_method:method,invoice_ref:invoiceRef,company,due_date:dueDate,invoice_notes:invoiceNotes,entered_by:window._session?.displayName||window._session?.username||'Unknown'};
+    const line={id:uid(),name:client,location:'',delivery:'local',status:paidNow?'PAID':'TO BE PAID',quoted:totalEur,actual:costEur,actualBase:costEur,quoted_gbp:totalGbp,actual_gbp:costGbp,total_gbp:totalGbp,total_eur:totalEur,cost_gbp:costGbp,cost_eur:costEur,payment_currency:paidCurrency,items,payments:payment,payBy:dueDate,payMethod:method,doaTotal:0,freeShipping:false,actualShippingCost:0,trackingNumber:'',tracking_number:'',pos_meta};
+    const order={id:uid(),num:orderNum,order_type:'pos',date:saleDate,suppliers:['Straits Aquatics'],shipping:0,other_costs:0,notes:`POS sale entered by ${pos_meta.entered_by} | Sale ${moneyGBP(totalGbp)} / ${moneyEUR(totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)} | Paid currency: ${paidCurrency}${method?` | Payment: ${method}`:''}${company?` | Company: ${company}`:''}${dueDate?` | Due: ${dueDate}`:''}${invoiceNotes?` | Invoice notes: ${invoiceNotes}`:''}${notes?` | Notes: ${notes}`:''}`,cust_lines:[line],sa_lines:[],total_quoted:totalEur,total_actual:costEur,profit:profitEur,doa_total:0,total_pending:paidNow?0:totalEur,manual_complete:paidNow,created:today()};
+    try{
+      setSyncStatus('sync-busy','Saving POS sale...');
+      await sbInsert('orders',order);
+      db.orders.push({id:order.id,num:order.num,orderType:'pos',date:order.date,suppliers:order.suppliers,shipping:0,otherCosts:0,notes:order.notes,custLines:[line],saLines:[],totalQuoted:totalEur,totalActual:costEur,profit:profitEur,doaTotal:0,totalPending:paidNow?0:totalEur,manualComplete:paidNow,created:order.created});
+      if(method==='Customer Credit'){
+        const cr={id:uid(),customer:client,type:'credit',amount:-totalEur,reason:`POS sale paid using customer credit (${orderNum}) - ${moneyGBP(totalGbp)} / ${moneyEUR(totalEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}`,order_num:orderNum,date:saleDate};
+        await sbInsert('credits',cr);
+        db.credits.push({id:cr.id,customer:cr.customer,type:cr.type,amount:cr.amount,reason:cr.reason,order:cr.order_num,date:cr.date});
+      }
+      if(client && client!=='Walk-in Customer - unknown' && !db.customers.find(c=>String(c.name).toLowerCase()===client.toLowerCase())){
+        const nc={id:uid(),name:client,location:'',phone:'',email:'',notes:method==='Invoice / Pay Later'?'Created from POS invoice':'Created from POS sale',created:today()};
+        await sbInsert('customers',nc);
+        db.customers.push(nc);
+        refreshDatalist(); refreshPOSDatalists();
+      }
+      setSyncStatus('sync-ok','✓ Synced');
+      renderOverview(); renderOrders(); renderCredits();
+      toast(`POS sale saved: ${orderNum}`);
+      resetPOSForm();
+    }catch(err){
+      console.error('POS save failed',err);
+      setSyncStatus('sync-err','✗ Error');
+      alert('POS sale failed. Supabase said:\n'+(err.message||err));
+    }
+  };
+
+  function decoratePOSOrderRows(){
+    const rows=[...document.querySelectorAll('#orders-body tr')];
+    rows.forEach(tr=>{
+      const first=tr.querySelector('td'); if(!first)return;
+      const txt=first.textContent.replace(/^#/,'').trim();
+      const o=(db.orders||[]).find(x=>String(x.num||'')===txt || ('#'+String(x.num||''))===first.textContent.trim());
+      if(!o || !isPOSOrder(o))return;
+      const m=posMeta(o), tds=tr.children;
+      if(tds[0] && !tds[0].innerHTML.includes('POS Sale')) tds[0].innerHTML += ' <span class="badge b-green">POS Sale</span>';
+      if(tds[4])tds[4].innerHTML=dualMain(m.totalGbp,m.totalEur);
+      if(tds[5])tds[5].innerHTML=dualMain(m.costGbp,m.costEur);
+      if(tds[6])tds[6].innerHTML=`<div class="font-bold ${m.profitEur>=0?'text-green':'text-red'}">${moneyGBP(m.profitGbp)}</div><div class="text-xs text-muted">${moneyEUR(m.profitEur)} @ x${FX_GBP_TO_EUR.toFixed(2)}</div>`;
+      if(tds[7])tds[7].innerHTML=(m.paymentMethod==='Invoice / Pay Later')?`<span class="font-bold text-red">${moneyEUR(m.totalEur)}</span><div class="text-xs text-muted">invoice pending</div>`:`<span class="font-bold text-green">Paid</span><div class="text-xs text-muted">${safe(m.paidCurrency||'—')} · ${safe(m.paymentMethod||'')}</div>`;
+      if(tds[8])tds[8].innerHTML += `<div class="text-xs text-muted">Paid: ${safe(m.paidCurrency||'—')} · ${safe(m.paymentMethod||'')}</div>`;
+    });
+  }
+
+  const baseRenderOrdersCurrency = window.renderOrders || renderOrders;
+  window.renderOrders = renderOrders = function(filter=''){
+    const r=baseRenderOrdersCurrency ? baseRenderOrdersCurrency(filter) : undefined;
+    try{decoratePOSOrderRows();}catch(e){console.warn('POS row decoration skipped',e);}
+    return r;
+  };
+
+  const baseRenderOverviewCurrency = window.renderOverview || renderOverview;
+  window.renderOverview = renderOverview = function(){
+    const r=baseRenderOverviewCurrency ? baseRenderOverviewCurrency() : undefined;
+    try{
+      const revSub=document.querySelector('#ov-rev')?.parentElement?.querySelector('.metric-sub');
+      if(revSub)revSub.textContent='Accounting total in EUR; POS converted at x'+FX_GBP_TO_EUR.toFixed(2);
+      const profitSub=document.querySelector('#ov-profit')?.parentElement?.querySelector('.metric-sub');
+      if(profitSub)profitSub.textContent='Accounting profit in EUR';
+      const rec=[...(db.orders||[])].reverse().slice(0,5);
+      const re=document.getElementById('ov-recent');
+      if(re && rec.length){
+        re.innerHTML=rec.map(o=>{
+          if(isPOSOrder(o)){
+            const m=posMeta(o);
+            return `<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-green">#${safe(o.num)}</span><span class="text-sm" style="flex:1">POS · ${safe(m.paymentMethod||'')} · paid ${safe(m.paidCurrency||'—')}</span><span class="font-bold ${m.profitEur>=0?'text-green':'text-red'}">${moneyGBP(m.profitGbp)} <span class="text-xs text-muted">/ ${moneyEUR(m.profitEur)}</span></span></div>`;
+          }
+          return `<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${safe(o.num)}</span><span class="text-sm" style="flex:1">${(o.suppliers||[]).map(safe).join(', ')}</span><span class="font-bold ${posNum(o.profit)>=0?'text-green':'text-red'}">${fmt(o.profit)}</span></div>`;
+        }).join('');
+      }
+    }catch(e){console.warn('POS overview decoration skipped',e);}
+    return r;
+  };
+
+  const baseViewOrderCurrency = window.viewOrder || viewOrder;
+  window.viewOrder = viewOrder = function(id){
+    const o=(db.orders||[]).find(x=>String(x.id)===String(id));
+    if(!o || !isPOSOrder(o)) return baseViewOrderCurrency ? baseViewOrderCurrency(id) : undefined;
+    const m=posMeta(o), cl=firstLine(o), items=cl.items||[];
+    document.getElementById('od-title').textContent=`POS Sale #${o.num}`;
+    document.getElementById('od-statbar').innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${safe(o.date||'—')}</div></div><div><div class="ostat-lbl">Sale GBP</div><div class="ostat-val text-green">${moneyGBP(m.totalGbp)}</div></div><div><div class="ostat-lbl">Accounting EUR</div><div class="ostat-val text-blue">${moneyEUR(m.totalEur)}</div></div><div><div class="ostat-lbl">FX</div><div class="ostat-val">x${m.fx.toFixed(2)}</div></div><div><div class="ostat-lbl">Payment</div><div class="ostat-val">${safe(m.paymentMethod||'—')} · ${safe(m.paidCurrency||'—')}</div></div>`;
+    let html=`<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-bottom:12px"><div class="font-bold mb-8">Customer</div><div>${safe(cl.name||'Walk-in Customer - unknown')}</div>${m.company?`<div class="text-sm text-muted">Company: ${safe(m.company)}</div>`:''}${m.dueDate?`<div class="text-sm text-muted">Due: ${safe(m.dueDate)}</div>`:''}${m.invoiceRef?`<div class="text-sm text-muted">Invoice ref: ${safe(m.invoiceRef)}</div>`:''}</div>`;
+    html+=`<table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th><th>Cost GBP</th><th>Cost EUR</th></tr></thead><tbody>${items.map(it=>`<tr><td>${safe(it.name||'')}</td><td>${moneyGBP(it.quoted_gbp ?? toGBP(it.quoted))}</td><td>${moneyEUR(it.quoted_eur ?? it.quoted)}</td><td>${moneyGBP(it.actual_gbp ?? toGBP(it.actual))}</td><td>${moneyEUR(it.actual_eur ?? it.actual)}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${moneyGBP(m.totalGbp)}</td><td class="font-bold text-blue">${moneyEUR(m.totalEur)}</td><td class="font-bold text-amber">${moneyGBP(m.costGbp)}</td><td class="font-bold text-amber">${moneyEUR(m.costEur)}</td></tr></tfoot></table>`;
+    html+=`<div class="mt-12 text-sm"><strong>Profit:</strong> <span class="${m.profitGbp>=0?'text-green':'text-red'} font-bold">${moneyGBP(m.profitGbp)} / ${moneyEUR(m.profitEur)}</span></div>`;
+    if(o.notes)html+=`<p class="text-sm text-muted mt-8">📝 ${safe(o.notes)}</p>`;
+    document.getElementById('od-body').innerHTML=html;
+    const del=document.getElementById('od-del-btn'); if(del)del.onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+    openModal('modal-order-detail');
+  };
+
+  // If POS page was created by an older function during this session, rebuild it once so the new currency fields appear.
+  window.rebuildPOSPageWithCurrency=function(){
+    const old=document.getElementById('page-pos-sale'); if(old)old.remove(); ensurePOSPage();
+  };
+})();
+/* ===== END STAFF ROLE DB ERROR HELPER + POS GBP/EUR ACCOUNTING PATCH ===== */
+
 </script>
 </body>
 </html>
