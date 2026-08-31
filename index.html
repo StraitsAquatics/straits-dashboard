@@ -1273,6 +1273,376 @@ body:not(.auth-locked) #login-screen{display:none !important;}
 })();
 /* ===== END POS CONFIRMATION + GIFT WARNING + STAFF ORDER PROFIT LOCK PATCH ===== */
 
+
+/* ===== FINAL POS CONFIRMATION + STAFF VIEW LOCK PATCH 2026-08-31 =====
+   Runs after all earlier POS/order overrides so the confirmation popup and staff restrictions cannot be overwritten. */
+(function(){
+  const RATE_FINAL = (typeof FX_GBP_TO_EUR !== 'undefined' && Number(FX_GBP_TO_EUR)) ? Number(FX_GBP_TO_EUR) : 1.20;
+  const safeFinal = (v)=>String(v ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const nFinal = (v)=>parseFloat(v)||0;
+  const gbpFinal = (v)=>'£'+nFinal(v).toFixed(2);
+  const eurFinal = (v)=>'€'+nFinal(v).toFixed(2);
+  const toEurFinal = (v)=>nFinal(v)*RATE_FINAL;
+
+  function isStaffFinal(){
+    return (window._session && window._session.role === 'staff') || document.body.classList.contains('role-staff');
+  }
+
+  function finalPosDateLabel(dateStr){
+    if(typeof posDateLabelLocal === 'function') return posDateLabelLocal(dateStr);
+    if(typeof posDateLabel === 'function') return posDateLabel(dateStr);
+    const d = new Date((dateStr || today()) + 'T00:00:00');
+    if(isNaN(d)) return dateStr || today();
+    return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();
+  }
+
+  function finalNextSaleNumber(dateStr){
+    if(typeof posNextSaleNumber === 'function') return posNextSaleNumber(dateStr);
+    const prefix = 'POS - ' + finalPosDateLabel(dateStr);
+    const count = (db.orders || []).filter(o=>String(o.num||'').startsWith(prefix)).length + 1;
+    return String(count).padStart(3,'0');
+  }
+
+  function finalCollectPOSItems(){
+    return [...document.querySelectorAll('#pos-items .pos-item-row')].map(r=>{
+      const name=(r.querySelector('.pos-item-name')?.value||'').trim();
+      const soldGbp=nFinal(r.querySelector('.pos-item-sold')?.value);
+      const costGbp=nFinal(r.querySelector('.pos-item-cost')?.value);
+      return {name,soldGbp,costGbp};
+    }).filter(i=>i.name && i.soldGbp>0);
+  }
+
+  function finalCustomerCreditBalance(customer){
+    if(typeof customerCreditBalanceLocal === 'function') return nFinal(customerCreditBalanceLocal(customer));
+    return (db.credits||[])
+      .filter(c=>String(c.customer||'').toLowerCase()===String(customer||'').toLowerCase() && c.type==='credit')
+      .reduce((a,c)=>a+nFinal(c.amount),0);
+  }
+
+  function finalGiftTier(totalEur){
+    if(totalEur >= 250) return {
+      label:'£10',
+      msg:'This customer qualifies for a free item up to £10 value. Please offer/provide a suitable free item before completing the sale.'
+    };
+    if(totalEur > 150) return {
+      label:'£5',
+      msg:'This customer qualifies for a free item up to £5 value. Please offer/provide a suitable free item before completing the sale.'
+    };
+    return null;
+  }
+
+  function finalGetPOSDraft(){
+    const items = finalCollectPOSItems();
+    const totalGbp = items.reduce((a,i)=>a+nFinal(i.soldGbp),0);
+    const costGbp = items.reduce((a,i)=>a+nFinal(i.costGbp),0);
+    const totalEur = toEurFinal(totalGbp);
+    const saleDate = document.getElementById('pos-date')?.value || today();
+    const method = document.getElementById('pos-payment')?.value || 'Cash';
+    const paidCurrency = document.getElementById('pos-paid-currency')?.value || 'GBP';
+    let client = (document.getElementById('pos-client')?.value || '').trim();
+    let company = '', dueDate = '', invoiceNotes = '';
+
+    if(method === 'Invoice / Pay Later'){
+      company = (document.getElementById('pos-company')?.value || '').trim();
+      dueDate = document.getElementById('pos-due-date')?.value || '';
+      invoiceNotes = (document.getElementById('pos-invoice-notes')?.value || '').trim();
+      if(!client) client = company;
+    }
+
+    if(!client) client = 'Walk-in Customer - unknown';
+
+    if(typeof updatePOSInvoiceFields === 'function'){
+      try{ updatePOSInvoiceFields(); }catch(e){}
+    }
+    const invoiceRef = (document.getElementById('pos-invoice-ref')?.value || '').trim()
+      || `${finalPosDateLabel(saleDate)} - ${finalNextSaleNumber(saleDate)}`;
+
+    return {
+      items,totalGbp,totalEur,costGbp,costEur:toEurFinal(costGbp),
+      profitGbp:totalGbp-costGbp,profitEur:toEurFinal(totalGbp-costGbp),
+      method,paidCurrency,client,company,dueDate,invoiceNotes,saleDate,
+      invoiceRef,orderNum:'POS - '+invoiceRef,gift:finalGiftTier(totalEur)
+    };
+  }
+
+  function ensureFinalPOSConfirmModal(){
+    if(document.getElementById('modal-pos-confirm-final')) return;
+    const div=document.createElement('div');
+    div.className='modal-ov';
+    div.id='modal-pos-confirm-final';
+    div.innerHTML=`
+      <div class="modal" style="width:650px;max-width:96vw">
+        <div class="modal-head">
+          <div class="modal-title" id="pos-confirm-final-title">Confirm POS Sale</div>
+          <button class="modal-close" onclick="closeFinalPOSConfirm()">✕</button>
+        </div>
+        <div class="modal-body" id="pos-confirm-final-body"></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-sec" onclick="closeFinalPOSConfirm()">← Go Back / Edit Sale</button>
+          <button type="button" class="btn btn-primary" id="pos-confirm-final-submit" onclick="confirmFinalPOSSale()">Confirm & Submit Sale</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+  }
+
+  window.closeFinalPOSConfirm = function(){
+    const m=document.getElementById('modal-pos-confirm-final');
+    if(m) m.classList.remove('open');
+  };
+
+  function showFinalPOSConfirmModal(draft){
+    ensureFinalPOSConfirmModal();
+    window.__finalPendingPOSDraft = draft;
+    const isInvoice = draft.method === 'Invoice / Pay Later';
+    const payRequired = draft.paidCurrency === 'EUR' ? eurFinal(draft.totalEur) : gbpFinal(draft.totalGbp);
+    const altRequired = draft.paidCurrency === 'EUR' ? gbpFinal(draft.totalGbp) : eurFinal(draft.totalEur);
+
+    const title=document.getElementById('pos-confirm-final-title');
+    if(title) title.textContent = isInvoice ? 'Confirm Invoice Sale' : 'Confirm POS Sale';
+
+    const submit=document.getElementById('pos-confirm-final-submit');
+    if(submit) submit.textContent = isInvoice ? 'Create Invoice Sale' : 'Confirm & Submit Sale';
+
+    const paymentBlock = isInvoice ? `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold text-red">This sale will be recorded as unpaid and added to Pending Payments.</div>
+        <div class="mt-8"><strong>Company:</strong> ${safeFinal(draft.company || draft.client)}</div>
+        <div><strong>Invoice reference:</strong> ${safeFinal(draft.invoiceRef)}</div>
+        <div><strong>Amount owed:</strong> ${gbpFinal(draft.totalGbp)} / ${eurFinal(draft.totalEur)}</div>
+        <div><strong>Due date:</strong> ${safeFinal(draft.dueDate)}</div>
+      </div>` : `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#fff">
+        <div class="font-bold">Please confirm the client has paid the correct amount before submitting.</div>
+        <div class="mt-8"><strong>Amount to confirm:</strong> ${payRequired}</div>
+        <div class="text-xs text-muted">Equivalent: ${altRequired} @ x${RATE_FINAL.toFixed(2)}</div>
+        <div><strong>Payment method:</strong> ${safeFinal(draft.method)}</div>
+        <div><strong>Paid in:</strong> ${safeFinal(draft.paidCurrency)}</div>
+      </div>`;
+
+    const giftBlock = draft.gift ? `
+      <div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:12px;background:#fff5f5">
+        <div class="font-bold text-red" style="font-size:14px">🎁 Free item required</div>
+        <div class="text-sm mt-8">${safeFinal(draft.gift.msg)}</div>
+        <div class="text-xs text-muted mt-8">Suggested examples: Ocean Nutrition food or another suitable small item below ${safeFinal(draft.gift.label)}.</div>
+        <label class="flex items-c gap-8 mt-12" style="font-size:12px;font-weight:700;color:var(--red)">
+          <input type="checkbox" id="pos-gift-confirmed-final" style="width:16px;height:16px;accent-color:var(--red)">
+          I have offered / provided the free item to the client
+        </label>
+        <div class="text-xs text-muted mt-8">Gift threshold calculated using accounting conversion: GBP x ${RATE_FINAL.toFixed(2)} = EUR.</div>
+      </div>` : '';
+
+    document.getElementById('pos-confirm-final-body').innerHTML = `
+      <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;margin-bottom:12px">
+        <div><strong>Client:</strong> ${safeFinal(draft.client)}</div>
+        <div><strong>Sale total:</strong> ${gbpFinal(draft.totalGbp)}</div>
+        <div><strong>Accounting total:</strong> ${eurFinal(draft.totalEur)} @ x${RATE_FINAL.toFixed(2)}</div>
+      </div>
+      ${paymentBlock}
+      <div class="mt-12">
+        <div class="font-bold text-sm mb-8">Items</div>
+        <table class="itbl">
+          <thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead>
+          <tbody>${draft.items.map(i=>`<tr><td>${safeFinal(i.name)}</td><td>${gbpFinal(i.soldGbp)}</td><td>${eurFinal(toEurFinal(i.soldGbp))}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      ${giftBlock}
+      <div id="pos-confirm-final-warning" class="text-sm text-red font-bold mt-12" style="display:none"></div>`;
+
+    document.getElementById('modal-pos-confirm-final').classList.add('open');
+  }
+
+  const finalBaseSubmitPOS = window.submitPOSSale || (typeof submitPOSSale === 'function' ? submitPOSSale : null);
+
+  window.submitPOSSale = async function(e){
+    if(e) e.preventDefault();
+    if(window.__finalPOSConfirmed){
+      return finalBaseSubmitPOS ? finalBaseSubmitPOS(e) : undefined;
+    }
+
+    if(typeof canUsePOS === 'function' && !canUsePOS()){
+      alert('You do not have access to POS sales.');
+      return;
+    }
+
+    const draft = finalGetPOSDraft();
+    if(!draft.items.length){
+      toast('Add at least one item and price sold',false);
+      return;
+    }
+
+    if(draft.method === 'Invoice / Pay Later'){
+      if(!draft.company){ toast('Company name is required for invoice/pay later',false); return; }
+      if(!draft.dueDate){ toast('Due date is required for invoice/pay later',false); return; }
+    }
+
+    if(draft.method === 'Customer Credit'){
+      if(draft.client === 'Walk-in Customer - unknown'){
+        toast('Customer credit requires a named customer',false);
+        return;
+      }
+      const available = finalCustomerCreditBalance(draft.client);
+      if(available + 0.001 < draft.totalEur){
+        alert(`Customer credit is not enough.\n\nCustomer: ${draft.client}\nAvailable credit: ${eurFinal(available)}\nSale total: ${gbpFinal(draft.totalGbp)} / ${eurFinal(draft.totalEur)} @ x${RATE_FINAL.toFixed(2)}`);
+        return;
+      }
+    }
+
+    showFinalPOSConfirmModal(draft);
+  };
+
+  try{ submitPOSSale = window.submitPOSSale; }catch(e){}
+
+  window.confirmFinalPOSSale = async function(){
+    const draft = window.__finalPendingPOSDraft || finalGetPOSDraft();
+    const warn = document.getElementById('pos-confirm-final-warning');
+
+    if(draft.gift && !document.getElementById('pos-gift-confirmed-final')?.checked){
+      if(warn){
+        warn.style.display='block';
+        warn.textContent='Please tick the free item confirmation before submitting this sale.';
+      }
+      return;
+    }
+
+    if(draft.gift){
+      const notesEl=document.getElementById('pos-notes');
+      if(notesEl && !String(notesEl.value||'').includes('Free item confirmed')){
+        notesEl.value=(notesEl.value ? notesEl.value+' | ' : '')+`Free item confirmed: offered/provided item up to ${draft.gift.label} value.`;
+      }
+    }
+
+    closeFinalPOSConfirm();
+    window.__finalPOSConfirmed = true;
+    try{
+      if(finalBaseSubmitPOS) await finalBaseSubmitPOS({preventDefault:function(){}});
+    }finally{
+      window.__finalPOSConfirmed = false;
+      window.__finalPendingPOSDraft = null;
+    }
+  };
+
+  function installFinalStaffStyle(){
+    if(document.getElementById('final-staff-profit-lock-style')) return;
+    const style=document.createElement('style');
+    style.id='final-staff-profit-lock-style';
+    style.textContent=`
+      body.role-staff #page-orders table thead th:nth-child(6),
+      body.role-staff #page-orders table thead th:nth-child(7),
+      body.role-staff #orders-body td:nth-child(6),
+      body.role-staff #orders-body td:nth-child(7){display:none !important;}
+      body.role-staff #orders-body button[onclick*="editOrder"],
+      body.role-staff #orders-body button[onclick*="deleteOrder"],
+      body.role-staff #orders-body button[onclick*="toggleOrderComplete"]{display:none !important;}
+      body.role-staff #page-pos-sale .pos-item-cost{display:none !important;}
+      body.role-staff #page-profits,
+      body.role-staff .profit-only{display:none !important;}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function enforceFinalStaffView(){
+    installFinalStaffStyle();
+    if(!isStaffFinal()) return;
+    document.body.classList.add('role-staff');
+    document.querySelectorAll('#page-pos-sale .pos-item-cost').forEach(el=>{ el.style.display='none'; });
+    ['pos-cost-total','pos-profit'].forEach(id=>{
+      const el=document.getElementById(id);
+      const card=el ? el.closest('.metric') : null;
+      if(card) card.style.display='none';
+    });
+  }
+
+  const finalBaseEnsurePOS = window.ensurePOSPage || (typeof ensurePOSPage === 'function' ? ensurePOSPage : null);
+  if(finalBaseEnsurePOS){
+    window.ensurePOSPage = function(){
+      const r = finalBaseEnsurePOS.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ ensurePOSPage = window.ensurePOSPage; }catch(e){}
+  }
+
+  const finalBaseApplyStaffMode = window.applyStaffMode || (typeof applyStaffMode === 'function' ? applyStaffMode : null);
+  window.applyStaffMode = function(){
+    if(finalBaseApplyStaffMode) finalBaseApplyStaffMode.apply(this,arguments);
+    enforceFinalStaffView();
+  };
+  try{ applyStaffMode = window.applyStaffMode; }catch(e){}
+
+  const finalBaseNav = window.nav || (typeof nav === 'function' ? nav : null);
+  if(finalBaseNav){
+    window.nav = function(id,btn){
+      const r = finalBaseNav.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ nav = window.nav; }catch(e){}
+  }
+
+  const finalBaseRenderOrders = window.renderOrders || (typeof renderOrders === 'function' ? renderOrders : null);
+  if(finalBaseRenderOrders){
+    window.renderOrders = function(){
+      const r = finalBaseRenderOrders.apply(this,arguments);
+      setTimeout(enforceFinalStaffView,0);
+      return r;
+    };
+    try{ renderOrders = window.renderOrders; }catch(e){}
+  }
+
+  const finalBaseViewOrder = window.viewOrder || (typeof viewOrder === 'function' ? viewOrder : null);
+  if(finalBaseViewOrder){
+    window.viewOrder = function(id){
+      if(!isStaffFinal()) return finalBaseViewOrder.apply(this,arguments);
+      const o=(db.orders||[]).find(x=>String(x.id)===String(id));
+      if(!o){ toast('Order not found',false); return; }
+      const cls=o.custLines||o.cust_lines||[];
+      const isPos = String(o.orderType||o.order_type||'').toLowerCase()==='pos' || String(o.num||'').startsWith('POS - ');
+      const total = nFinal(o.totalQuoted ?? o.total_quoted);
+      const cl0 = cls[0] || {};
+      const meta = cl0.pos_meta || {};
+      const paidCurrency = meta.paid_currency || cl0.payment_currency || '';
+      const paymentMethod = meta.payment_method || cl0.payMethod || '';
+      document.getElementById('od-title').textContent = isPos ? `POS Sale #${o.num}` : `Order #${o.num}`;
+      document.getElementById('od-statbar').innerHTML = `
+        <div><div class="ostat-lbl">Date</div><div class="ostat-val">${safeFinal(o.date||'—')}</div></div>
+        <div><div class="ostat-lbl">Supplier</div><div class="ostat-val">${safeFinal((o.suppliers||[]).join(', ')||'—')}</div></div>
+        <div><div class="ostat-lbl">Quoted / Sale</div><div class="ostat-val text-green">${isPos ? (gbpFinal(meta.total_gbp || cl0.total_gbp || (total/RATE_FINAL))+' / '+eurFinal(total)) : fmt(total)}</div></div>
+        <div><div class="ostat-lbl">Payment</div><div class="ostat-val">${safeFinal(paymentMethod || '—')}${paidCurrency ? ' · '+safeFinal(paidCurrency) : ''}</div></div>
+        <div><div class="ostat-lbl">Status</div><div class="ostat-val">${o.manualComplete ? 'Completed' : 'Active'}</div></div>`;
+      let html='';
+      cls.forEach(cl=>{
+        const paid=(cl.payments||[]).reduce((a,p)=>a+nFinal(p.amount),0);
+        const balance=Math.max(0,nFinal(cl.quoted)-paid);
+        html+=`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff">
+          <div class="flex items-c gap-8 mb-8">
+            <div class="cust-init ${typeof dlClass==='function'?dlClass(cl.delivery):'ci-none'}">${typeof inits==='function'?inits(cl.name||''):'?'}</div>
+            <div style="flex:1">
+              <div class="font-bold">${safeFinal(cl.name||'Walk-in Customer - unknown')}</div>
+              <div class="flex gap-6 items-c mt-8">
+                <span class="badge ${balance>0.01?'b-red':'b-green'}">${balance>0.01?'TO BE PAID':'PAID'}</span>
+                ${cl.delivery?`<span class="badge ${typeof dlBadge==='function'?dlBadge(cl.delivery):'b-grey'}">${typeof dlLabel==='function'?dlLabel(cl.delivery):safeFinal(cl.delivery)}</span>`:''}
+              </div>
+            </div>
+            <div class="text-right"><div class="font-bold">${isPos && cl.total_gbp ? gbpFinal(cl.total_gbp)+' / '+eurFinal(cl.total_eur||cl.quoted) : fmt(cl.quoted)}</div></div>
+          </div>
+          ${(cl.items||[]).length?`<table class="itbl"><thead><tr><th>Item</th><th>Sold / Quoted</th><th>Status</th><th>Delivered</th></tr></thead><tbody>${(cl.items||[]).map(it=>`<tr><td>${safeFinal(it.name||'')}</td><td>${isPos && (it.quoted_gbp!==undefined) ? gbpFinal(it.quoted_gbp)+' / '+eurFinal(it.quoted_eur||it.quoted) : fmt(it.quoted)}</td><td>${safeFinal(it.status||'')}</td><td>${it.delivered?'✓':'—'}</td></tr>`).join('')}</tbody></table>`:''}
+        </div>`;
+      });
+      if(o.notes) html+=`<p class="text-sm text-muted mt-8">📝 ${safeFinal(o.notes)}</p>`;
+      document.getElementById('od-body').innerHTML = html || '<p class="text-muted">No items.</p>';
+      const del=document.getElementById('od-del-btn');
+      if(del) del.style.display='none';
+      openModal('modal-order-detail');
+    };
+    try{ viewOrder = window.viewOrder; }catch(e){}
+  }
+
+  installFinalStaffStyle();
+  setTimeout(enforceFinalStaffView,0);
+  document.addEventListener('DOMContentLoaded',()=>setTimeout(enforceFinalStaffView,0));
+})();
+/* ===== END FINAL POS CONFIRMATION + STAFF VIEW LOCK PATCH ===== */
+
 </script>
 <script>
 
