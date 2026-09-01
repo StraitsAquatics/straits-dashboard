@@ -9024,5 +9024,458 @@ function applyStaffMode(){
 /* ===== END STRAITS AQUATICS BUSINESS CALENDAR PATCH ===== */
 </script>
 
+<script>
+/* ===== POS RECEIPT / WHATSAPP / PDF PATCH 2026-09-01 =====
+   Adds post-sale receipts for POS orders: WhatsApp copy, PDF download and bilingual output. */
+(function(){
+  const RECEIPT_FX = 1.20;
+  const BUSINESS_NAME = 'Straits Aquatics';
+  const BUSINESS_LINE_1 = 'Unit D, Don Arcade, Main Street';
+  const BUSINESS_LINE_2 = 'Gibraltar';
+  const BUSINESS_WHATSAPP = '+350 56002080';
+  const JSPDF_CDN = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+
+  function rNum(v){
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  function rGBP(v){ return '£' + rNum(v).toFixed(2); }
+  function rEUR(v){ return '€' + rNum(v).toFixed(2); }
+  function rToEUR(gbp){ return Math.round(rNum(gbp) * RECEIPT_FX * 100) / 100; }
+  function rToGBP(eur){ return Math.round((rNum(eur) / RECEIPT_FX) * 100) / 100; }
+  function rSafe(v){ return String(v == null ? '' : v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+  function rPlain(v){ return String(v == null ? '' : v); }
+  function rDateLabel(v){
+    const s = String(v || '').trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)){
+      const [y,m,d] = s.slice(0,10).split('-');
+      return `${d}/${m}/${y}`;
+    }
+    return s || new Date().toLocaleDateString('en-GB');
+  }
+  function rDateKey(v){
+    const s = String(v || '').trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d = new Date(s);
+    return isNaN(d) ? '' : d.toISOString().slice(0,10);
+  }
+  function rIsPOSOrder(o){
+    const cls = o?.custLines || o?.cust_lines || [];
+    return String(o?.orderType || o?.order_type || '').toLowerCase() === 'pos'
+      || String(o?.num || '').startsWith('POS - ')
+      || !!(cls[0] && (cls[0].pos_meta || cls[0].quoted_gbp !== undefined || cls[0].total_gbp !== undefined));
+  }
+  function rFirstLine(o){ return (o?.custLines || o?.cust_lines || [])[0] || {}; }
+  function rDraftFromForm(){
+    const rows = [...document.querySelectorAll('#pos-items .pos-item-row')];
+    const items = rows.map(row=>{
+      const soldGbp = rNum(row.querySelector('.pos-item-sold')?.value);
+      return {
+        name: (row.querySelector('.pos-item-name')?.value || '').trim(),
+        soldGbp,
+        soldEur: rToEUR(soldGbp)
+      };
+    }).filter(i=>i.name && i.soldGbp > 0);
+    const totalGbp = items.reduce((a,i)=>a+rNum(i.soldGbp),0);
+    const totalEur = rToEUR(totalGbp);
+    const saleDate = document.getElementById('pos-date')?.value || (typeof today === 'function' ? today() : new Date().toISOString().slice(0,10));
+    const method = document.getElementById('pos-payment')?.value || 'Cash';
+    const paidCurrency = document.getElementById('pos-paid-currency')?.value || 'GBP';
+    let client = (document.getElementById('pos-client')?.value || '').trim();
+    let company = '', dueDate = '', invoiceNotes = '';
+    if(method === 'Invoice / Pay Later'){
+      company = (document.getElementById('pos-company')?.value || '').trim();
+      dueDate = document.getElementById('pos-due-date')?.value || '';
+      invoiceNotes = (document.getElementById('pos-invoice-notes')?.value || '').trim();
+      if(!client && company) client = company;
+    }
+    if(!client) client = 'Walk-in Customer - unknown';
+    const invoiceRef = document.getElementById('pos-invoice-ref')?.value || '';
+    return {
+      orderId:'',
+      orderNum: invoiceRef ? 'POS - ' + invoiceRef : '',
+      receiptRef: invoiceRef || '',
+      saleDate,
+      client,
+      company,
+      dueDate,
+      invoiceNotes,
+      method,
+      paidCurrency,
+      totalGbp,
+      totalEur,
+      items,
+      notes: (document.getElementById('pos-notes')?.value || '').trim(),
+      enteredBy: window._session?.displayName || window._session?.username || '',
+      giftLimit: totalEur >= 250 ? 10 : (totalEur > 150 ? 5 : 0)
+    };
+  }
+  function rReceiptFromDraft(d){
+    if(!d) d = rDraftFromForm();
+    const items = (d.items || []).map(i=>{
+      const soldGbp = rNum(i.soldGbp ?? i.quoted_gbp ?? i.total_gbp ?? rToGBP(i.quoted ?? i.quoted_eur));
+      const soldEur = rNum(i.soldEur ?? i.quoted_eur ?? i.quoted ?? rToEUR(soldGbp));
+      return {name:i.name || '', soldGbp, soldEur};
+    }).filter(i=>i.name);
+    const totalGbp = rNum(d.totalGbp ?? d.total_gbp ?? items.reduce((a,i)=>a+i.soldGbp,0));
+    const totalEur = rNum(d.totalEur ?? d.total_eur ?? rToEUR(totalGbp));
+    return {
+      orderId: d.orderId || '',
+      orderNum: d.orderNum || (d.invoiceRef ? 'POS - ' + d.invoiceRef : ''),
+      receiptRef: d.invoiceRef || d.receiptRef || String(d.orderNum || '').replace(/^POS -\s*/,'') || '',
+      saleDate: d.saleDate || d.date || '',
+      client: d.client || 'Walk-in Customer - unknown',
+      company: d.company || '',
+      dueDate: d.dueDate || d.due_date || '',
+      invoiceNotes: d.invoiceNotes || d.invoice_notes || '',
+      method: d.method || d.paymentMethod || '',
+      paidCurrency: d.paidCurrency || d.paid_currency || 'GBP',
+      totalGbp,
+      totalEur,
+      items,
+      notes: d.notes || '',
+      enteredBy: d.enteredBy || d.entered_by || window._session?.displayName || window._session?.username || '',
+      giftLimit: d.giftLimit || (d.gift && String(d.gift.label||'').includes('10') ? 10 : d.gift ? 5 : (totalEur >= 250 ? 10 : (totalEur > 150 ? 5 : 0)))
+    };
+  }
+  function rReceiptFromOrder(o){
+    const cl = rFirstLine(o);
+    const meta = cl.pos_meta || o.pos_meta || {};
+    const rawItems = cl.items || [];
+    const items = rawItems.map(it=>{
+      const soldGbp = rNum(it.quoted_gbp ?? it.total_gbp ?? rToGBP(it.quoted ?? it.quoted_eur));
+      const soldEur = rNum(it.quoted_eur ?? it.quoted ?? rToEUR(soldGbp));
+      return {name:it.name || '', soldGbp, soldEur};
+    }).filter(i=>i.name);
+    let totalGbp = rNum(meta.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp ?? o.total_gbp);
+    let totalEur = rNum(meta.total_eur ?? cl.total_eur ?? o.totalQuoted ?? o.total_quoted ?? cl.quoted ?? o.total_eur);
+    if(!totalGbp && items.length) totalGbp = items.reduce((a,i)=>a+i.soldGbp,0);
+    if(!totalEur && items.length) totalEur = items.reduce((a,i)=>a+i.soldEur,0);
+    if(!totalGbp && totalEur) totalGbp = rToGBP(totalEur);
+    if(!totalEur && totalGbp) totalEur = rToEUR(totalGbp);
+    return {
+      orderId: o.id || '',
+      orderNum: o.num || '',
+      receiptRef: meta.invoice_ref || String(o.num || '').replace(/^POS -\s*/,'') || '',
+      saleDate: o.date || o.created || '',
+      client: cl.name || 'Walk-in Customer - unknown',
+      company: meta.company || '',
+      dueDate: meta.due_date || cl.payBy || '',
+      invoiceNotes: meta.invoice_notes || '',
+      method: meta.payment_method || cl.payMethod || (cl.payments && cl.payments[0] && cl.payments[0].method) || '',
+      paidCurrency: meta.paid_currency || cl.payment_currency || (cl.payments && cl.payments[0] && cl.payments[0].currency) || 'GBP',
+      totalGbp,
+      totalEur,
+      items,
+      notes: o.notes || '',
+      enteredBy: meta.entered_by || '',
+      giftLimit: String(o.notes || '').toLowerCase().includes('£10') ? 10 : (String(o.notes || '').toLowerCase().includes('£5') ? 5 : (totalEur >= 250 ? 10 : (totalEur > 150 ? 5 : 0)))
+    };
+  }
+  function receiptData(source){
+    if(source && rIsPOSOrder(source)) return rReceiptFromOrder(source);
+    return rReceiptFromDraft(source || rDraftFromForm());
+  }
+  function rPaidAmountLine(d, lang){
+    const isInvoice = d.method === 'Invoice / Pay Later';
+    if(lang === 'es'){
+      return isInvoice
+        ? `Importe pendiente: ${rGBP(d.totalGbp)} / ${rEUR(d.totalEur)}`
+        : `Total pagado: ${d.paidCurrency === 'EUR' ? rEUR(d.totalEur) : rGBP(d.totalGbp)}`;
+    }
+    return isInvoice
+      ? `Amount due: ${rGBP(d.totalGbp)} / ${rEUR(d.totalEur)}`
+      : `Total paid: ${d.paidCurrency === 'EUR' ? rEUR(d.totalEur) : rGBP(d.totalGbp)}`;
+  }
+  function buildReceiptTextEN(d){
+    const isInvoice = d.method === 'Invoice / Pay Later';
+    const lines = [];
+    lines.push(`Thank you for your purchase at ${BUSINESS_NAME} 🐠`);
+    lines.push('');
+    lines.push(`${isInvoice ? 'Invoice / Pay Later Ref' : 'Receipt'}: ${d.orderNum || ('POS - ' + d.receiptRef)}`);
+    lines.push(`Date: ${rDateLabel(d.saleDate)}`);
+    lines.push(`Customer: ${d.client || 'Walk-in Customer - unknown'}`);
+    if(d.company) lines.push(`Company: ${d.company}`);
+    if(d.dueDate) lines.push(`Due date: ${rDateLabel(d.dueDate)}`);
+    if(d.enteredBy) lines.push(`Served by: ${d.enteredBy}`);
+    lines.push('');
+    lines.push('Items:');
+    (d.items || []).forEach(i=>lines.push(`- ${i.name} — ${rGBP(i.soldGbp)}`));
+    lines.push('');
+    lines.push(rPaidAmountLine(d,'en'));
+    lines.push(`Payment method: ${d.method || 'Not specified'}`);
+    if(!isInvoice) lines.push(`Paid in: ${d.paidCurrency || 'GBP'}`);
+    lines.push(`Accounting value: ${rEUR(d.totalEur)} @ x${RECEIPT_FX.toFixed(2)}`);
+    if(isInvoice) lines.push('Payment status: Invoice / Pay Later');
+    if(d.giftLimit && String(d.notes || '').toLowerCase().includes('free item')) lines.push(`Free item provided: item up to £${rNum(d.giftLimit).toFixed(2)} value`);
+    if(d.invoiceNotes) lines.push(`Invoice notes: ${d.invoiceNotes}`);
+    const cleanNotes = String(d.notes || '').replace(/POS sale entered by[^|]*(\||$)/i,'').trim();
+    if(cleanNotes && !cleanNotes.toLowerCase().includes('sale £')) lines.push(`Notes: ${cleanNotes}`);
+    lines.push('');
+    lines.push(BUSINESS_NAME);
+    lines.push(BUSINESS_LINE_1);
+    lines.push(BUSINESS_LINE_2);
+    lines.push(`WhatsApp: ${BUSINESS_WHATSAPP}`);
+    return lines.join('\n');
+  }
+  function buildReceiptTextES(d){
+    const isInvoice = d.method === 'Invoice / Pay Later';
+    const lines = [];
+    lines.push(`Gracias por su compra en ${BUSINESS_NAME} 🐠`);
+    lines.push('');
+    lines.push(`${isInvoice ? 'Referencia de factura / pago pendiente' : 'Recibo'}: ${d.orderNum || ('POS - ' + d.receiptRef)}`);
+    lines.push(`Fecha: ${rDateLabel(d.saleDate)}`);
+    lines.push(`Cliente: ${d.client || 'Cliente de tienda'}`);
+    if(d.company) lines.push(`Empresa: ${d.company}`);
+    if(d.dueDate) lines.push(`Fecha de vencimiento: ${rDateLabel(d.dueDate)}`);
+    if(d.enteredBy) lines.push(`Atendido por: ${d.enteredBy}`);
+    lines.push('');
+    lines.push('Artículos:');
+    (d.items || []).forEach(i=>lines.push(`- ${i.name} — ${rGBP(i.soldGbp)}`));
+    lines.push('');
+    lines.push(rPaidAmountLine(d,'es'));
+    lines.push(`Método de pago: ${d.method || 'No especificado'}`);
+    if(!isInvoice) lines.push(`Pagado en: ${d.paidCurrency || 'GBP'}`);
+    lines.push(`Valor contable: ${rEUR(d.totalEur)} @ x${RECEIPT_FX.toFixed(2)}`);
+    if(isInvoice) lines.push('Estado del pago: Factura / pendiente de pago');
+    if(d.giftLimit && String(d.notes || '').toLowerCase().includes('free item')) lines.push(`Artículo gratuito entregado: artículo hasta £${rNum(d.giftLimit).toFixed(2)} de valor`);
+    if(d.invoiceNotes) lines.push(`Notas de factura: ${d.invoiceNotes}`);
+    const cleanNotes = String(d.notes || '').replace(/POS sale entered by[^|]*(\||$)/i,'').trim();
+    if(cleanNotes && !cleanNotes.toLowerCase().includes('sale £')) lines.push(`Notas: ${cleanNotes}`);
+    lines.push('');
+    lines.push(BUSINESS_NAME);
+    lines.push(BUSINESS_LINE_1);
+    lines.push(BUSINESS_LINE_2);
+    lines.push(`WhatsApp: ${BUSINESS_WHATSAPP}`);
+    return lines.join('\n');
+  }
+  function currentReceiptText(){
+    const d = window.__currentPOSReceiptData || receiptData();
+    const lang = document.getElementById('receipt-language')?.value || 'en';
+    if(lang === 'es') return buildReceiptTextES(d);
+    if(lang === 'bi') return buildReceiptTextEN(d) + '\n\n------------------------------\n\n' + buildReceiptTextES(d);
+    return buildReceiptTextEN(d);
+  }
+  function ensureReceiptModal(){
+    if(document.getElementById('modal-pos-receipt')) return;
+    const modal = document.createElement('div');
+    modal.className = 'modal-ov';
+    modal.id = 'modal-pos-receipt';
+    modal.innerHTML = `
+      <div class="modal" style="width:720px;max-width:96vw">
+        <div class="modal-head">
+          <div><div class="modal-title">POS Receipt</div><div class="text-xs text-muted">Copy for WhatsApp or download PDF for email.</div></div>
+          <button class="modal-close" type="button" onclick="closePOSReceiptModal()">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid mb-12">
+            <div class="fg"><label>Receipt language</label><select id="receipt-language" onchange="renderPOSReceiptPreview()"><option value="en">English</option><option value="es">Spanish</option><option value="bi">Bilingual EN + ES</option></select></div>
+            <div class="fg"><label>Reference</label><input type="text" id="receipt-ref-display" readonly></div>
+          </div>
+          <div id="receipt-preview" style="white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px;line-height:1.45;background:#f8fafc;border:1px solid var(--border);border-radius:12px;padding:12px;max-height:420px;overflow:auto"></div>
+        </div>
+        <div class="modal-foot" style="flex-wrap:wrap">
+          <button class="btn btn-sec" type="button" onclick="closePOSReceiptModal()">Close</button>
+          <button class="btn btn-reef" type="button" onclick="copyPOSReceiptWhatsApp()">Copy WhatsApp Receipt</button>
+          <button class="btn btn-primary" type="button" onclick="downloadPOSReceiptPDF()">Download PDF for Email</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',function(e){ if(e.target === modal) closePOSReceiptModal(); });
+  }
+  window.renderPOSReceiptPreview = function(){
+    const ref = document.getElementById('receipt-ref-display');
+    const d = window.__currentPOSReceiptData || receiptData();
+    if(ref) ref.value = d.orderNum || ('POS - ' + d.receiptRef);
+    const prev = document.getElementById('receipt-preview');
+    if(prev) prev.textContent = currentReceiptText();
+  };
+  window.showPOSReceipt = function(source){
+    ensureReceiptModal();
+    window.__currentPOSReceiptData = receiptData(source);
+    const lang = document.getElementById('receipt-language');
+    if(lang && !lang.value) lang.value = 'en';
+    renderPOSReceiptPreview();
+    document.getElementById('modal-pos-receipt')?.classList.add('open');
+  };
+  window.closePOSReceiptModal = function(){
+    document.getElementById('modal-pos-receipt')?.classList.remove('open');
+  };
+  window.copyPOSReceiptWhatsApp = async function(){
+    const text = currentReceiptText();
+    try{
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(text);
+      }else{
+        const ta=document.createElement('textarea');
+        ta.value=text; ta.style.position='fixed'; ta.style.left='-9999px';
+        document.body.appendChild(ta); ta.focus(); ta.select(); document.execCommand('copy'); ta.remove();
+      }
+      if(typeof toast === 'function') toast('Receipt copied for WhatsApp ✓'); else alert('Receipt copied');
+    }catch(e){
+      alert('Could not copy automatically. You can manually select the receipt text.');
+    }
+  };
+  function loadJsPDF(){
+    return new Promise((resolve,reject)=>{
+      if(window.jspdf && window.jspdf.jsPDF) return resolve(window.jspdf.jsPDF);
+      const existing = document.querySelector('script[data-straits-jspdf="1"]');
+      if(existing){
+        existing.addEventListener('load',()=>resolve(window.jspdf.jsPDF));
+        existing.addEventListener('error',()=>reject(new Error('PDF library failed to load')));
+        return;
+      }
+      const s=document.createElement('script');
+      s.src=JSPDF_CDN;
+      s.async=true;
+      s.setAttribute('data-straits-jspdf','1');
+      s.onload=()=>window.jspdf && window.jspdf.jsPDF ? resolve(window.jspdf.jsPDF) : reject(new Error('PDF library not available'));
+      s.onerror=()=>reject(new Error('PDF library failed to load'));
+      document.head.appendChild(s);
+    });
+  }
+  function receiptPdfFilename(d){
+    const ref = String(d.orderNum || d.receiptRef || 'pos-receipt').replace(/[^a-z0-9]+/gi,'-').replace(/^-|-$/g,'').toLowerCase();
+    return `${ref || 'pos-receipt'}.pdf`;
+  }
+  window.downloadPOSReceiptPDF = async function(){
+    const d = window.__currentPOSReceiptData || receiptData();
+    const text = currentReceiptText();
+    try{
+      const jsPDF = await loadJsPDF();
+      const doc = new jsPDF({unit:'pt',format:'a4'});
+      const margin = 42;
+      const width = 595.28 - (margin*2);
+      let y = 48;
+      doc.setFont('helvetica','bold');
+      doc.setFontSize(18);
+      doc.text(BUSINESS_NAME, margin, y);
+      y += 18;
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(9);
+      doc.text(`${BUSINESS_LINE_1} · ${BUSINESS_LINE_2} · WhatsApp ${BUSINESS_WHATSAPP}`, margin, y);
+      y += 22;
+      doc.setDrawColor(210,225,235);
+      doc.line(margin, y, 595.28 - margin, y);
+      y += 22;
+      doc.setFont('helvetica','normal');
+      doc.setFontSize(10);
+      const pdfSafeText = text.replace(/£/g,'GBP ').replace(/€/g,'EUR ').replace(/🐠/g,'').replace(/—/g,'-');
+      const lines = doc.splitTextToSize(pdfSafeText, width);
+      lines.forEach(line=>{
+        if(y > 790){ doc.addPage(); y = 48; }
+        doc.text(line, margin, y);
+        y += 14;
+      });
+      doc.save(receiptPdfFilename(d));
+      if(typeof toast === 'function') toast('PDF receipt downloaded ✓');
+    }catch(e){
+      console.error(e);
+      alert('PDF download failed. Check your internet connection and try again.');
+    }
+  };
+  function findSavedOrderForReceipt(d,beforeNums){
+    const orders = window.db?.orders || [];
+    const nums = [d?.orderNum, d?.invoiceRef ? 'POS - ' + d.invoiceRef : '', d?.receiptRef ? 'POS - ' + d.receiptRef : ''].filter(Boolean);
+    let found = orders.find(o=>nums.includes(String(o.num || '')));
+    if(found) return found;
+    found = orders.slice().reverse().find(o=>rIsPOSOrder(o) && beforeNums && !beforeNums.has(String(o.num || '')));
+    if(found) return found;
+    const dDate = rDateKey(d?.saleDate || d?.date);
+    return orders.slice().reverse().find(o=>rIsPOSOrder(o) && (!dDate || rDateKey(o.date || o.created) === dDate)) || null;
+  }
+  function wrapPOSConfirmForReceipt(name){
+    const original = window[name];
+    if(typeof original !== 'function' || original.__receiptWrapped) return false;
+    const wrapped = async function(){
+      const draft = rReceiptFromDraft(window.__finalPendingPOSDraft || window.__finalPOSDraft || window.__pendingPOSDraft || rDraftFromForm());
+      const beforeNums = new Set((window.db?.orders || []).map(o=>String(o.num || '')));
+      const beforeCount = (window.db?.orders || []).length;
+      const result = await original.apply(this, arguments);
+      setTimeout(()=>{
+        const afterOrders = window.db?.orders || [];
+        const saved = findSavedOrderForReceipt(draft,beforeNums);
+        if(saved && afterOrders.length >= beforeCount) window.showPOSReceipt(saved);
+      },350);
+      return result;
+    };
+    wrapped.__receiptWrapped = true;
+    window[name] = wrapped;
+    try{ if(name in window) eval(name + ' = window[name];'); }catch(e){}
+    return true;
+  }
+  function decorateReceiptButtons(){
+    const orders = window.db?.orders || [];
+    document.querySelectorAll('#orders-body tr').forEach(tr=>{
+      const first = tr.children[0];
+      const last = tr.children[tr.children.length - 1];
+      if(!first || !last || last.querySelector('.pos-receipt-row-btn')) return;
+      const o = orders.find(order=>rIsPOSOrder(order) && first.textContent.includes(String(order.num || '')));
+      if(!o) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sec btn-xs pos-receipt-row-btn';
+      btn.textContent = 'Receipt';
+      btn.onclick = function(ev){ ev.stopPropagation(); window.showPOSReceipt(o); };
+      const container = last.querySelector('.flex') || last;
+      container.appendChild(btn);
+    });
+  }
+  function addOrderDetailReceiptButton(id){
+    const order = (window.db?.orders || []).find(o=>String(o.id) === String(id));
+    const foot = document.querySelector('#modal-order-detail .modal-foot');
+    if(!foot) return;
+    let btn = document.getElementById('pos-order-detail-receipt-btn');
+    if(!order || !rIsPOSOrder(order)){
+      if(btn) btn.style.display='none';
+      return;
+    }
+    if(!btn){
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'pos-order-detail-receipt-btn';
+      btn.className = 'btn btn-reef';
+      btn.textContent = 'Receipt';
+      foot.insertBefore(btn, foot.firstChild);
+    }
+    btn.style.display = 'inline-flex';
+    btn.onclick = function(){ window.showPOSReceipt(order); };
+  }
+  function installReceiptHooks(){
+    ensureReceiptModal();
+    ['confirmFinalPOSSale','confirmFinalPOSSaleSubmit','confirmPOSSaleFinal'].forEach(wrapPOSConfirmForReceipt);
+    const baseRenderOrders = window.renderOrders || (typeof renderOrders === 'function' ? renderOrders : null);
+    if(baseRenderOrders && !baseRenderOrders.__receiptRenderWrapped){
+      const wrappedRender = function(){
+        const r = baseRenderOrders.apply(this, arguments);
+        setTimeout(decorateReceiptButtons,60);
+        return r;
+      };
+      wrappedRender.__receiptRenderWrapped = true;
+      window.renderOrders = wrappedRender;
+      try{ renderOrders = window.renderOrders; }catch(e){}
+    }
+    const baseViewOrder = window.viewOrder || (typeof viewOrder === 'function' ? viewOrder : null);
+    if(baseViewOrder && !baseViewOrder.__receiptViewWrapped){
+      const wrappedView = function(id){
+        const r = baseViewOrder.apply(this, arguments);
+        setTimeout(()=>addOrderDetailReceiptButton(id),80);
+        return r;
+      };
+      wrappedView.__receiptViewWrapped = true;
+      window.viewOrder = wrappedView;
+      try{ viewOrder = window.viewOrder; }catch(e){}
+    }
+    setTimeout(decorateReceiptButtons,250);
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded',installReceiptHooks);
+  else installReceiptHooks();
+  setTimeout(installReceiptHooks,800);
+})();
+/* ===== END POS RECEIPT / WHATSAPP / PDF PATCH ===== */
+</script>
+
 </body>
 </html>
