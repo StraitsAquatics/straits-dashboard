@@ -10851,5 +10851,376 @@ function applyStaffMode(){
 })();
 /* ===== END FINAL POS CONFIRM CLIENT-FACING CLEANUP ===== */
 </script>
+
+<style id="cash-ledger-module-style">
+/* ===== CASH & EXPENSES MODULE ===== */
+.cash-ledger-grid{display:grid;grid-template-columns:repeat(6,minmax(150px,1fr));gap:11px;margin-bottom:16px}
+.cash-ledger-grid .metric{margin:0}
+.cash-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cash-filter-row{display:flex;gap:9px;align-items:flex-end;flex-wrap:wrap}
+.cash-filter-row .fg{min-width:150px}
+.cash-money-in{color:var(--green);font-weight:800}.cash-money-out{color:var(--red);font-weight:800}
+.cash-status-await{background:#fff0c8;color:#a65405;border:1px solid #ffd27a}
+.cash-status-ok{background:#dff8e9;color:#12813c;border:1px solid #a7e9bf}
+.cash-status-void{background:#eef5f8;color:#607887;border:1px solid #d2e2ea;text-decoration:line-through}
+.cash-receipt-btn{max-width:130px;overflow:hidden;text-overflow:ellipsis}
+.cash-note{font-size:10.5px;color:var(--text3);line-height:1.45}
+.cash-advance-card{border:1px solid #ffd27a;background:#fffaf0;border-radius:12px;padding:10px 12px;margin-bottom:8px}
+.cash-count-ok{color:var(--green)}.cash-count-bad{color:var(--red)}
+#modal-cash-expense .modal,#modal-cash-advance .modal,#modal-cash-movement .modal,#modal-cash-reconcile .modal,#modal-cash-count .modal{width:650px}
+@media(max-width:1100px){.cash-ledger-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.cash-ledger-grid{grid-template-columns:1fr 1fr}}
+/* ===== END CASH & EXPENSES MODULE ===== */
+</style>
+<script>
+/* ===== CASH & EXPENSES MODULE 2026-09-18 ===== */
+(function(){
+  const CASH_FX = 1.20;
+  const CASH_BUCKET = 'cash-receipts';
+  let cashLedger = [];
+  let cashCounts = [];
+  let cashUsers = [];
+  let cashLoaded = false;
+  let cashCurrentAdvance = null;
+  let cashLedgerStartDate = '';
+
+  function cashNum(v){const n=parseFloat(v);return Number.isFinite(n)?n:0;}
+  function cashRound(v){return Math.round(cashNum(v)*100)/100;}
+  function cashGBP(v){return '£'+cashNum(v).toFixed(2);}
+  function cashEUR(v){return '€'+cashNum(v).toFixed(2);}
+  function cashEsc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function cashToday(){return (typeof today==='function'?today():new Date().toISOString().slice(0,10));}
+  function cashUid(){return (typeof uid==='function'?uid():Date.now().toString(36)+Math.random().toString(36).slice(2,8));}
+  function cashRole(){return window._session?.role||'viewer';}
+  function cashIsAdmin(){return cashRole()==='admin';}
+  function cashCanEnter(){return ['admin','staff'].includes(cashRole());}
+  function cashUser(){return window._session?.displayName||window._session?.username||'Unknown';}
+  function cashAccountingEUR(amount,currency){return currency==='GBP'?cashRound(amount*CASH_FX):cashRound(amount);}
+  function cashIsoDate(v){return String(v||'').slice(0,10);}
+  function cashDateLabel(v){const s=cashIsoDate(v);if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const[y,m,d]=s.split('-');return `${d}/${m}/${y}`;}return s||'—';}
+  function cashTypeLabel(t){return ({
+    pos_cash_sale:'POS cash sale', petty_expense:'Petty cash expense', cash_advance:'Staff cash advance',
+    advance_expense:'Advance expense', cash_return:'Cash returned', bank_deposit:'Bank deposit',
+    bank_withdrawal:'Bank withdrawal', owner_injection:'Owner cash injection', opening_balance:'Opening balance / till float',
+    customer_refund:'Customer refund', adjustment_in:'Cash adjustment in', adjustment_out:'Cash adjustment out'
+  })[t]||String(t||'').replaceAll('_',' ');}
+  function cashTypeDirection(t){return ['pos_cash_sale','cash_return','bank_withdrawal','owner_injection','opening_balance','adjustment_in'].includes(t)?'in':'out';}
+  function cashAffects(row){return row.affects_cash!==false && row.status!=='void';}
+  function cashSummary(currency){
+    return cashLedger.reduce((sum,r)=>{
+      if(r.currency!==currency || !cashAffects(r)) return sum;
+      return sum + (r.direction==='in'?cashNum(r.amount):-cashNum(r.amount));
+    },0);
+  }
+
+  function cashInjectSidebar(){
+    if(document.getElementById('cash-sidebar-btn')) return;
+    const buttons=[...document.querySelectorAll('.sidebar .sb-btn')];
+    const profitBtn=buttons.find(b=>(b.textContent||'').includes('Profit Tracker'));
+    const btn=document.createElement('button');
+    btn.className='sb-btn';btn.id='cash-sidebar-btn';btn.type='button';
+    btn.innerHTML='<span class="ic">💷</span><span>Cash & Expenses</span>';
+    btn.onclick=function(){window.navCashLedger(btn);};
+    if(profitBtn) profitBtn.insertAdjacentElement('afterend',btn); else document.querySelector('.sidebar div[style*="padding"]')?.appendChild(btn);
+  }
+
+  function cashInjectPage(){
+    if(document.getElementById('page-cash-ledger')) return;
+    const content=document.querySelector('.content'); if(!content)return;
+    const page=document.createElement('div'); page.id='page-cash-ledger'; page.className='page';
+    page.innerHTML=`
+      <div class="section-hd">
+        <div>
+          <div class="section-title">Cash & Expenses</div>
+          <div class="text-sm text-muted">Physical cash ledger, petty cash, staff advances and receipt archive <span id="cash-start-note"></span></div>
+        </div>
+        <div class="cash-toolbar">
+          <button class="btn btn-sec btn-sm" onclick="refreshCashLedger()">↻ Refresh</button>
+          <button class="btn btn-reef btn-sm cash-entry-action" onclick="openCashExpense()">+ Expense</button>
+          <button class="btn btn-primary btn-sm cash-admin-action" onclick="openCashAdvance()">+ Cash Advance</button>
+          <button class="btn btn-sec btn-sm cash-admin-action" onclick="openCashMovement()">+ Cash Movement</button>
+          <button class="btn btn-sec btn-sm cash-entry-action" onclick="openCashCount()">🧮 Cash Count</button>
+        </div>
+      </div>
+      <div class="cash-ledger-grid">
+        <div class="metric"><div class="metric-lbl">Cash Held — GBP</div><div class="metric-val mv-green" id="cash-balance-gbp">£0.00</div><div class="metric-sub">Physical GBP expected</div></div>
+        <div class="metric"><div class="metric-lbl">Cash Held — EUR</div><div class="metric-val mv-green" id="cash-balance-eur">€0.00</div><div class="metric-sub">Physical EUR expected</div></div>
+        <div class="metric"><div class="metric-lbl">Accounting Equivalent</div><div class="metric-val" id="cash-balance-accounting">€0.00</div><div class="metric-sub">GBP × 1.20 + EUR</div></div>
+        <div class="metric"><div class="metric-lbl">Cash In Today</div><div class="metric-val mv-green" id="cash-today-in">£0.00</div><div class="metric-sub" id="cash-today-in-sub">£0 / €0</div></div>
+        <div class="metric"><div class="metric-lbl">Cash Out Today</div><div class="metric-val mv-red" id="cash-today-out">£0.00</div><div class="metric-sub" id="cash-today-out-sub">£0 / €0</div></div>
+        <div class="metric"><div class="metric-lbl">Unreconciled Advances</div><div class="metric-val mv-amber" id="cash-advances-total">0</div><div class="metric-sub" id="cash-advances-sub">None outstanding</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">Report / Tax Period</div><span class="text-sm text-muted">Filter the ledger and download supporting receipts</span></div>
+        <div class="card-body">
+          <div class="cash-filter-row">
+            <div class="fg"><label>From</label><input type="date" id="cash-filter-from"></div>
+            <div class="fg"><label>To</label><input type="date" id="cash-filter-to"></div>
+            <div class="fg"><label>Type</label><select id="cash-filter-type"><option value="">All movements</option><option value="expenses">Expenses only</option><option value="pos_cash_sale">POS cash sales</option><option value="cash_advance">Cash advances</option><option value="cash_return">Cash returns</option><option value="bank_deposit">Bank deposits</option></select></div>
+            <button class="btn btn-sec" onclick="renderCashLedger()">Apply</button>
+            <button class="btn btn-sec" onclick="clearCashFilters()">Clear</button>
+            <span class="ml-auto"></span>
+            <button class="btn btn-primary cash-admin-action" onclick="exportCashLedgerCSV()">Export Ledger CSV</button>
+            <button class="btn btn-reef cash-admin-action" onclick="downloadCashReceiptPack()">Download Receipt Pack</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><div class="card-title">Outstanding Staff Cash</div><span class="text-sm text-muted">Advances waiting for receipt / change</span></div>
+          <div class="card-body" id="cash-advances-list"><div class="empty"><p>No unreconciled cash advances</p></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">Recent Cash Counts</div><span class="text-sm text-muted">Expected versus physically counted</span></div>
+          <div class="card-body" id="cash-counts-list"><div class="empty"><p>No cash counts yet</p></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><div class="card-title">Cash Ledger</div><span class="text-sm text-muted" id="cash-ledger-count">0 entries</span></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Type</th><th>Description</th><th>Staff / Supplier</th><th>Currency</th><th>Cash In</th><th>Cash Out</th><th>Receipt</th><th>Status</th><th>Created by</th><th></th></tr></thead><tbody id="cash-ledger-body"><tr><td colspan="11"><div class="empty"><p>Loading cash ledger...</p></div></td></tr></tbody></table></div>
+      </div>`;
+    content.appendChild(page);
+    const now=new Date();
+    const from=document.getElementById('cash-filter-from'),to=document.getElementById('cash-filter-to');
+    if(to)to.value=cashToday();
+    if(from)from.value=`${now.getFullYear()}-01-01`;
+  }
+
+  function cashModal(id,title,body,foot){
+    if(document.getElementById(id))return;
+    const d=document.createElement('div');d.className='modal-ov';d.id=id;
+    d.innerHTML=`<div class="modal"><div class="modal-head"><div class="modal-title">${title}</div><button class="modal-close" onclick="closeModal('${id}')">✕</button></div><div class="modal-body">${body}</div><div class="modal-foot">${foot}</div></div>`;
+    document.body.appendChild(d);
+  }
+
+  function cashInjectModals(){
+    cashModal('modal-cash-expense','Record Cash Expense',`
+      <div class="form-grid">
+        <div class="fg"><label>Date</label><input type="date" id="ce-date"></div>
+        <div class="fg"><label>Currency</label><select id="ce-currency"><option>GBP</option><option>EUR</option></select></div>
+        <div class="fg"><label>Amount</label><input type="number" step="0.01" min="0" id="ce-amount" placeholder="0.00"></div>
+        <div class="fg"><label>Category</label><select id="ce-category">${['Shop consumables','Cleaning supplies','Livestock / stock purchase','Dry goods / stock purchase','Fuel','Tolls / parking','Delivery / postage','Maintenance materials','Equipment / tools','Office / stationery','Food / refreshments','Repairs','Professional services','Miscellaneous'].map(x=>`<option>${x}</option>`).join('')}</select></div>
+        <div class="fg"><label>Supplier / Shop</label><input type="text" id="ce-supplier" placeholder="e.g. Morrisons"></div>
+        <div class="fg"><label>Purchased by</label><input type="text" id="ce-staff"></div>
+        <div class="fg fg-full"><label>Description</label><input type="text" id="ce-description" placeholder="e.g. Tissues and cleaning supplies"></div>
+        <div class="fg fg-full"><label>Receipt / Invoice</label><input type="file" id="ce-receipt" accept=".pdf,image/*"><div class="cash-note">PDF, JPG or PNG. You can still save without a receipt, but it will be flagged as missing.</div></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="ce-notes"></textarea></div>
+      </div>`, `<button class="btn btn-sec" onclick="closeModal('modal-cash-expense')">Cancel</button><button class="btn btn-primary" onclick="saveCashExpense()">Save Expense</button>`);
+
+    cashModal('modal-cash-advance','Give Cash to Staff',`
+      <div class="form-grid">
+        <div class="fg"><label>Date</label><input type="date" id="ca-date"></div>
+        <div class="fg"><label>Worker</label><select id="ca-staff"><option value="">Select worker...</option></select></div>
+        <div class="fg"><label>Currency</label><select id="ca-currency"><option>GBP</option><option>EUR</option></select></div>
+        <div class="fg"><label>Amount given</label><input type="number" step="0.01" min="0" id="ca-amount"></div>
+        <div class="fg fg-full"><label>Purpose</label><input type="text" id="ca-description" placeholder="e.g. Buy tissues and cleaning supplies"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="ca-notes"></textarea></div>
+      </div>`, `<button class="btn btn-sec" onclick="closeModal('modal-cash-advance')">Cancel</button><button class="btn btn-primary" onclick="saveCashAdvance()">Issue Cash</button>`);
+
+    cashModal('modal-cash-movement','Record Cash Movement',`
+      <div class="form-grid">
+        <div class="fg"><label>Date</label><input type="date" id="cm-date"></div>
+        <div class="fg"><label>Movement</label><select id="cm-type"><option value="opening_balance">Opening balance / till float</option><option value="owner_injection">Owner cash injection</option><option value="bank_withdrawal">Cash withdrawn from bank / added to till</option><option value="bank_deposit">Cash deposited into bank</option><option value="customer_refund">Customer cash refund</option><option value="adjustment_in">Adjustment — cash in</option><option value="adjustment_out">Adjustment — cash out</option></select></div>
+        <div class="fg"><label>Currency</label><select id="cm-currency"><option>GBP</option><option>EUR</option></select></div>
+        <div class="fg"><label>Amount</label><input type="number" step="0.01" min="0" id="cm-amount"></div>
+        <div class="fg fg-full"><label>Description / Reason</label><input type="text" id="cm-description"></div>
+        <div class="fg fg-full"><label>Supporting document (optional)</label><input type="file" id="cm-receipt" accept=".pdf,image/*"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="cm-notes"></textarea></div>
+      </div>`, `<button class="btn btn-sec" onclick="closeModal('modal-cash-movement')">Cancel</button><button class="btn btn-primary" onclick="saveCashMovement()">Save Movement</button>`);
+
+    cashModal('modal-cash-reconcile','Reconcile Staff Cash Advance',`
+      <div id="car-summary" style="padding:10px 12px;background:#fff7df;border:1px solid #ffd27a;border-radius:10px;margin-bottom:12px"></div>
+      <div class="form-grid">
+        <div class="fg"><label>Expense amount</label><input type="number" step="0.01" min="0" id="car-expense" oninput="updateCashReconcileRemaining()"></div>
+        <div class="fg"><label>Cash returned</label><input type="number" step="0.01" min="0" id="car-return" oninput="updateCashReconcileRemaining()"></div>
+        <div class="fg fg-full"><label>Receipt / Invoice for expense</label><input type="file" id="car-receipt" accept=".pdf,image/*"></div>
+        <div class="fg"><label>Expense category</label><select id="car-category">${['Shop consumables','Cleaning supplies','Livestock / stock purchase','Dry goods / stock purchase','Fuel','Tolls / parking','Delivery / postage','Maintenance materials','Equipment / tools','Office / stationery','Food / refreshments','Repairs','Professional services','Miscellaneous'].map(x=>`<option>${x}</option>`).join('')}</select></div>
+        <div class="fg"><label>Supplier / Shop</label><input type="text" id="car-supplier"></div>
+        <div class="fg fg-full"><label>Description</label><input type="text" id="car-description"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="car-notes"></textarea></div>
+      </div>
+      <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:10px"><strong>Remaining to reconcile:</strong> <span id="car-remaining">—</span></div>`, `<button class="btn btn-sec" onclick="closeModal('modal-cash-reconcile')">Cancel</button><button class="btn btn-primary" onclick="saveCashReconciliation()">Complete Reconciliation</button>`);
+
+    cashModal('modal-cash-count','Cash Count / Till Reconciliation',`
+      <div class="form-grid">
+        <div class="fg"><label>Date</label><input type="date" id="cc-date"></div>
+        <div class="fg"><label>Currency</label><select id="cc-currency" onchange="updateCashCountExpected()"><option>GBP</option><option>EUR</option></select></div>
+        <div class="fg"><label>System expected</label><input type="text" id="cc-expected" readonly></div>
+        <div class="fg"><label>Actual cash counted</label><input type="number" id="cc-actual" step="0.01" min="0" oninput="updateCashCountExpected()"></div>
+        <div class="fg fg-full"><label>Notes</label><textarea id="cc-notes"></textarea></div>
+      </div>
+      <div style="margin-top:12px"><strong>Difference:</strong> <span id="cc-difference">—</span></div>`, `<button class="btn btn-sec" onclick="closeModal('modal-cash-count')">Cancel</button><button class="btn btn-primary" onclick="saveCashCount()">Save Cash Count</button>`);
+  }
+
+  window.navCashLedger=async function(btn){
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+    document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
+    document.getElementById('page-cash-ledger')?.classList.add('active'); if(btn)btn.classList.add('active');
+    const title=document.getElementById('page-title'); if(title)title.textContent='Cash & Expenses';
+    applyCashPermissions();
+    await refreshCashLedger();
+  };
+
+  function applyCashPermissions(){
+    document.querySelectorAll('.cash-admin-action').forEach(el=>el.style.display=cashIsAdmin()?'inline-flex':'none');
+    document.querySelectorAll('.cash-entry-action').forEach(el=>el.style.display=cashCanEnter()?'inline-flex':'none');
+  }
+
+  async function loadCashUsers(){
+    try{cashUsers=await sbGet('users','select=id,username,display_name,role,is_active&is_active=eq.true');}catch(e){cashUsers=[];}
+    const sel=document.getElementById('ca-staff'); if(sel){sel.innerHTML='<option value="">Select worker...</option>'+cashUsers.filter(u=>u.role!=='admin').map(u=>`<option>${cashEsc(u.display_name||u.username)}</option>`).join('');}
+  }
+
+  function rawPOSMeta(o){
+    const line=(o.cust_lines||[])[0]||{};const meta=line.pos_meta||{};
+    return {line,meta,method:meta.payment_method||line.payMethod||(line.payments||[])[0]?.method||'',currency:meta.paid_currency||line.payment_currency||(line.payments||[])[0]?.currency||'GBP'};
+  }
+
+  async function syncCashPOSSales(){
+    let orders=[];
+    try{orders=await sbGet('orders','select=id,num,order_type,date,cust_lines,total_quoted&order_type=eq.pos');}catch(e){console.warn('Cash POS sync: could not load orders',e);return;}
+    const existing=new Set(cashLedger.filter(r=>r.source_order_id).map(r=>String(r.source_order_id)));
+    for(const o of orders){
+      if(cashLedgerStartDate && cashIsoDate(o.date)<cashLedgerStartDate) continue;
+      if(existing.has(String(o.id))) continue;
+      const {line,meta,method,currency}=rawPOSMeta(o);
+      if(String(method).toLowerCase()!=='cash') continue;
+      let amount=currency==='EUR'?cashNum(meta.total_eur||line.total_eur||o.total_quoted):cashNum(meta.total_gbp||line.total_gbp||line.quoted_gbp);
+      if(!amount){const eur=cashNum(o.total_quoted||line.quoted);amount=currency==='EUR'?eur:cashRound(eur/CASH_FX);}
+      const row={id:cashUid(),tx_date:o.date||cashToday(),movement_type:'pos_cash_sale',direction:'in',amount:cashRound(amount),currency:currency==='EUR'?'EUR':'GBP',accounting_eur:cashAccountingEUR(amount,currency),description:`POS cash sale ${o.num||''}`.trim(),category:'Sales',supplier:'',staff_name:meta.entered_by||'',status:'posted',affects_cash:true,source_order_id:o.id,source_order_num:o.num||'',advance_id:null,receipt_path:null,receipt_name:null,notes:'Automatically created from POS cash sale',created_by:meta.entered_by||'POS',created_at:new Date().toISOString()};
+      try{await sbInsert('cash_ledger',row);cashLedger.push(row);existing.add(String(o.id));}catch(err){if(!String(err.message||err).includes('duplicate'))console.warn('Could not sync cash POS sale',o.num,err);}
+    }
+  }
+
+  window.refreshCashLedger=async function(){
+    const body=document.getElementById('cash-ledger-body'); if(body)body.innerHTML='<tr><td colspan="11"><div class="empty"><p>Refreshing cash ledger...</p></div></td></tr>';
+    try{
+      const [ledger,counts,settings]=await Promise.all([sbGet('cash_ledger','order=tx_date.desc,created_at.desc'),sbGet('cash_counts','order=count_date.desc,created_at.desc'),sbGet('cash_settings','select=key,value&key=eq.ledger_start_date')]);
+      cashLedger=ledger||[];cashCounts=counts||[];
+      cashLedgerStartDate=(settings&&settings[0]&&settings[0].value)||cashToday();
+      await syncCashPOSSales();
+      cashLedger=await sbGet('cash_ledger','order=tx_date.desc,created_at.desc');
+      if(!cashLoaded){await loadCashUsers();cashLoaded=true;}
+      const sn=document.getElementById('cash-start-note');if(sn&&cashLedgerStartDate)sn.textContent=` · POS cash tracking from ${cashDateLabel(cashLedgerStartDate)}`;
+      renderCashSummary();renderCashLedger();renderCashAdvances();renderCashCounts();applyCashPermissions();
+    }catch(e){console.error(e);if(body)body.innerHTML=`<tr><td colspan="11"><div class="empty"><p>Cash ledger could not load. Run the supplied Supabase SQL first.</p><div class="text-xs text-muted">${cashEsc(e.message||e)}</div></div></td></tr>`;}
+  };
+
+  function renderCashSummary(){
+    const gbp=cashSummary('GBP'),eur=cashSummary('EUR');
+    const today=cashToday();
+    const day=cashLedger.filter(r=>cashIsoDate(r.tx_date)===today&&cashAffects(r));
+    const inGBP=day.filter(r=>r.direction==='in'&&r.currency==='GBP').reduce((a,r)=>a+cashNum(r.amount),0);
+    const inEUR=day.filter(r=>r.direction==='in'&&r.currency==='EUR').reduce((a,r)=>a+cashNum(r.amount),0);
+    const outGBP=day.filter(r=>r.direction==='out'&&r.currency==='GBP').reduce((a,r)=>a+cashNum(r.amount),0);
+    const outEUR=day.filter(r=>r.direction==='out'&&r.currency==='EUR').reduce((a,r)=>a+cashNum(r.amount),0);
+    const adv=cashLedger.filter(r=>r.movement_type==='cash_advance'&&r.status==='awaiting_reconciliation');
+    const advGBP=adv.filter(r=>r.currency==='GBP').reduce((a,r)=>a+cashNum(r.amount),0),advEUR=adv.filter(r=>r.currency==='EUR').reduce((a,r)=>a+cashNum(r.amount),0);
+    const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+    set('cash-balance-gbp',cashGBP(gbp));set('cash-balance-eur',cashEUR(eur));set('cash-balance-accounting',cashEUR(gbp*CASH_FX+eur));
+    set('cash-today-in',cashEUR(inGBP*CASH_FX+inEUR));set('cash-today-in-sub',`${cashGBP(inGBP)} / ${cashEUR(inEUR)}`);
+    set('cash-today-out',cashEUR(outGBP*CASH_FX+outEUR));set('cash-today-out-sub',`${cashGBP(outGBP)} / ${cashEUR(outEUR)}`);
+    set('cash-advances-total',String(adv.length));set('cash-advances-sub',adv.length?`${cashGBP(advGBP)} / ${cashEUR(advEUR)} outstanding`:'None outstanding');
+  }
+
+  function cashFiltered(){
+    const from=document.getElementById('cash-filter-from')?.value||'',to=document.getElementById('cash-filter-to')?.value||'',type=document.getElementById('cash-filter-type')?.value||'';
+    return cashLedger.filter(r=>{const d=cashIsoDate(r.tx_date);if(from&&d<from)return false;if(to&&d>to)return false;if(type==='expenses'&&!['petty_expense','advance_expense'].includes(r.movement_type))return false;if(type&&type!=='expenses'&&r.movement_type!==type)return false;return true;});
+  }
+
+  window.renderCashLedger=function(){
+    const rows=cashFiltered();const body=document.getElementById('cash-ledger-body');if(!body)return;
+    document.getElementById('cash-ledger-count').textContent=`${rows.length} entr${rows.length===1?'y':'ies'}`;
+    if(!rows.length){body.innerHTML='<tr><td colspan="11"><div class="empty"><p>No cash movements in this period</p></div></td></tr>';return;}
+    body.innerHTML=rows.map(r=>{
+      const rec=r.receipt_path?`<button class="btn btn-sec btn-xs cash-receipt-btn" onclick="downloadCashReceipt('${cashEsc(r.id)}')">📎 ${cashEsc(r.receipt_name||'Receipt')}</button>`:'<span class="text-xs text-muted">—</span>';
+      const status=r.status==='void'?'<span class="badge cash-status-void">Void</span>':r.status==='awaiting_reconciliation'?'<span class="badge cash-status-await">Awaiting receipt</span>':'<span class="badge cash-status-ok">Posted</span>';
+      const canVoid=cashIsAdmin()&&r.status!=='void';
+      return `<tr style="${r.status==='void'?'opacity:.55':''}"><td>${cashDateLabel(r.tx_date)}</td><td><span class="badge b-grey">${cashEsc(cashTypeLabel(r.movement_type))}</span></td><td><div class="font-bold">${cashEsc(r.description||'—')}</div>${r.category?`<div class="text-xs text-muted">${cashEsc(r.category)}</div>`:''}</td><td>${cashEsc(r.staff_name||r.supplier||'—')}</td><td>${cashEsc(r.currency)}</td><td class="cash-money-in">${r.direction==='in'&&cashAffects(r)?(r.currency==='GBP'?cashGBP(r.amount):cashEUR(r.amount)):'—'}</td><td class="cash-money-out">${r.direction==='out'&&cashAffects(r)?(r.currency==='GBP'?cashGBP(r.amount):cashEUR(r.amount)):'—'}</td><td>${rec}</td><td>${status}</td><td class="text-xs text-muted">${cashEsc(r.created_by||'—')}</td><td>${canVoid?`<button class="btn btn-danger btn-xs" onclick="voidCashEntry('${cashEsc(r.id)}')">Void</button>`:''}</td></tr>`;
+    }).join('');
+  };
+
+  function renderCashAdvances(){
+    const adv=cashLedger.filter(r=>r.movement_type==='cash_advance'&&r.status==='awaiting_reconciliation');const el=document.getElementById('cash-advances-list');if(!el)return;
+    if(!adv.length){el.innerHTML='<div class="empty"><p>No unreconciled cash advances</p></div>';return;}
+    el.innerHTML=adv.map(r=>`<div class="cash-advance-card"><div class="flex items-c gap-8"><div style="flex:1"><div class="font-bold">${cashEsc(r.staff_name||'Staff')} · ${r.currency==='GBP'?cashGBP(r.amount):cashEUR(r.amount)}</div><div class="text-xs text-muted">${cashDateLabel(r.tx_date)} · ${cashEsc(r.description||'No purpose recorded')}</div></div>${cashCanEnter()?`<button class="btn btn-primary btn-xs" onclick="openCashReconcile('${cashEsc(r.id)}')">Reconcile</button>`:''}</div></div>`).join('');
+  }
+
+  function renderCashCounts(){
+    const el=document.getElementById('cash-counts-list');if(!el)return;const rows=cashCounts.slice(0,6);
+    if(!rows.length){el.innerHTML='<div class="empty"><p>No cash counts yet</p></div>';return;}
+    el.innerHTML=rows.map(c=>{const diff=cashNum(c.difference);return `<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><div style="flex:1"><div class="font-bold">${cashDateLabel(c.count_date)} · ${cashEsc(c.currency)}</div><div class="text-xs text-muted">Expected ${c.currency==='GBP'?cashGBP(c.expected_amount):cashEUR(c.expected_amount)} · Counted ${c.currency==='GBP'?cashGBP(c.actual_amount):cashEUR(c.actual_amount)}</div></div><div class="font-bold ${Math.abs(diff)<=0.01?'cash-count-ok':'cash-count-bad'}">${diff>=0?'+':''}${c.currency==='GBP'?cashGBP(diff):cashEUR(diff)}</div></div>`;}).join('');
+  }
+
+  window.clearCashFilters=function(){const n=new Date();document.getElementById('cash-filter-from').value=`${n.getFullYear()}-01-01`;document.getElementById('cash-filter-to').value=cashToday();document.getElementById('cash-filter-type').value='';renderCashLedger();};
+
+  async function uploadCashReceipt(file,prefix){
+    if(!file)return {path:null,name:null};
+    const safeName=String(file.name||'receipt').replace(/[^a-zA-Z0-9._-]+/g,'_');
+    const path=`${cashToday().slice(0,7)}/${Date.now()}_${prefix||'receipt'}_${safeName}`;
+    const url=`${SB_URL}/storage/v1/object/${CASH_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`;
+    const r=await fetch(url,{method:'POST',headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY,'Content-Type':file.type||'application/octet-stream','x-upsert':'false'},body:file});
+    if(!r.ok)throw new Error('Receipt upload failed: '+await r.text());
+    return {path,name:file.name};
+  }
+
+  async function fetchCashReceiptBlob(path){
+    const url=`${SB_URL}/storage/v1/object/${CASH_BUCKET}/${String(path).split('/').map(encodeURIComponent).join('/')}`;
+    const r=await fetch(url,{headers:{apikey:SB_KEY,Authorization:'Bearer '+SB_KEY}});if(!r.ok)throw new Error(await r.text());return r.blob();
+  }
+
+  window.downloadCashReceipt=async function(id){
+    const row=cashLedger.find(r=>String(r.id)===String(id));if(!row?.receipt_path)return;
+    try{const blob=await fetchCashReceiptBlob(row.receipt_path);const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=row.receipt_name||'receipt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);}catch(e){alert('Could not download receipt: '+(e.message||e));}
+  };
+
+  window.openCashExpense=function(){if(!cashCanEnter())return;document.getElementById('ce-date').value=cashToday();document.getElementById('ce-staff').value=cashUser();['ce-amount','ce-supplier','ce-description','ce-notes'].forEach(id=>document.getElementById(id).value='');document.getElementById('ce-receipt').value='';openModal('modal-cash-expense');};
+  window.saveCashExpense=async function(){
+    if(!cashCanEnter())return;const amount=cashNum(document.getElementById('ce-amount').value);if(amount<=0){alert('Enter the expense amount.');return;}
+    try{const up=await uploadCashReceipt(document.getElementById('ce-receipt').files[0],'expense');const currency=document.getElementById('ce-currency').value;const row={id:cashUid(),tx_date:document.getElementById('ce-date').value||cashToday(),movement_type:'petty_expense',direction:'out',amount:cashRound(amount),currency,accounting_eur:cashAccountingEUR(amount,currency),description:document.getElementById('ce-description').value.trim()||'Cash expense',category:document.getElementById('ce-category').value,supplier:document.getElementById('ce-supplier').value.trim(),staff_name:document.getElementById('ce-staff').value.trim()||cashUser(),status:'posted',affects_cash:true,source_order_id:null,source_order_num:null,advance_id:null,receipt_path:up.path,receipt_name:up.name,notes:document.getElementById('ce-notes').value.trim(),created_by:cashUser(),created_at:new Date().toISOString()};await sbInsert('cash_ledger',row);closeModal('modal-cash-expense');await refreshCashLedger();toast('Cash expense saved ✓');}catch(e){alert('Expense save failed: '+(e.message||e));}
+  };
+
+  window.openCashAdvance=function(){if(!cashIsAdmin())return;document.getElementById('ca-date').value=cashToday();['ca-amount','ca-description','ca-notes'].forEach(id=>document.getElementById(id).value='');openModal('modal-cash-advance');};
+  window.saveCashAdvance=async function(){
+    if(!cashIsAdmin())return;const amount=cashNum(document.getElementById('ca-amount').value),staff=document.getElementById('ca-staff').value;if(amount<=0||!staff){alert('Select a worker and enter the amount given.');return;}const currency=document.getElementById('ca-currency').value;const row={id:cashUid(),tx_date:document.getElementById('ca-date').value||cashToday(),movement_type:'cash_advance',direction:'out',amount:cashRound(amount),currency,accounting_eur:cashAccountingEUR(amount,currency),description:document.getElementById('ca-description').value.trim()||'Staff cash advance',category:'Staff cash advance',supplier:'',staff_name:staff,status:'awaiting_reconciliation',affects_cash:true,source_order_id:null,source_order_num:null,advance_id:null,receipt_path:null,receipt_name:null,notes:document.getElementById('ca-notes').value.trim(),created_by:cashUser(),created_at:new Date().toISOString()};try{await sbInsert('cash_ledger',row);closeModal('modal-cash-advance');await refreshCashLedger();toast('Cash advance recorded ✓');}catch(e){alert('Cash advance failed: '+(e.message||e));}
+  };
+
+  window.openCashMovement=function(){if(!cashIsAdmin())return;document.getElementById('cm-date').value=cashToday();['cm-amount','cm-description','cm-notes'].forEach(id=>document.getElementById(id).value='');document.getElementById('cm-receipt').value='';openModal('modal-cash-movement');};
+  window.saveCashMovement=async function(){
+    if(!cashIsAdmin())return;const amount=cashNum(document.getElementById('cm-amount').value);if(amount<=0){alert('Enter an amount.');return;}const type=document.getElementById('cm-type').value,currency=document.getElementById('cm-currency').value;try{const up=await uploadCashReceipt(document.getElementById('cm-receipt').files[0],'movement');const row={id:cashUid(),tx_date:document.getElementById('cm-date').value||cashToday(),movement_type:type,direction:cashTypeDirection(type),amount:cashRound(amount),currency,accounting_eur:cashAccountingEUR(amount,currency),description:document.getElementById('cm-description').value.trim()||cashTypeLabel(type),category:'Cash movement',supplier:'',staff_name:'',status:'posted',affects_cash:true,source_order_id:null,source_order_num:null,advance_id:null,receipt_path:up.path,receipt_name:up.name,notes:document.getElementById('cm-notes').value.trim(),created_by:cashUser(),created_at:new Date().toISOString()};await sbInsert('cash_ledger',row);closeModal('modal-cash-movement');await refreshCashLedger();toast('Cash movement saved ✓');}catch(e){alert('Cash movement failed: '+(e.message||e));}
+  };
+
+  window.openCashReconcile=function(id){
+    if(!cashCanEnter())return;const a=cashLedger.find(r=>String(r.id)===String(id));if(!a)return;cashCurrentAdvance=a;document.getElementById('car-summary').innerHTML=`<div class="font-bold">${cashEsc(a.staff_name)} · ${a.currency==='GBP'?cashGBP(a.amount):cashEUR(a.amount)}</div><div class="text-xs text-muted">${cashEsc(a.description||'Staff cash advance')} · ${cashDateLabel(a.tx_date)}</div>`;['car-expense','car-return','car-supplier','car-description','car-notes'].forEach(id=>document.getElementById(id).value='');document.getElementById('car-receipt').value='';updateCashReconcileRemaining();openModal('modal-cash-reconcile');
+  };
+  window.updateCashReconcileRemaining=function(){if(!cashCurrentAdvance)return;const rem=cashRound(cashNum(cashCurrentAdvance.amount)-cashNum(document.getElementById('car-expense').value)-cashNum(document.getElementById('car-return').value));const el=document.getElementById('car-remaining');el.textContent=(cashCurrentAdvance.currency==='GBP'?cashGBP(rem):cashEUR(rem));el.className=Math.abs(rem)<=0.01?'text-green font-bold':'text-red font-bold';};
+  window.saveCashReconciliation=async function(){
+    const a=cashCurrentAdvance;if(!a||!cashCanEnter())return;const expense=cashNum(document.getElementById('car-expense').value),returned=cashNum(document.getElementById('car-return').value),remaining=cashRound(cashNum(a.amount)-expense-returned);if(Math.abs(remaining)>0.01){alert('Expense amount + cash returned must equal the original advance.');return;}if(expense>0&&!document.getElementById('car-receipt').files[0]&&!confirm('No receipt/invoice has been attached. Save the reconciliation anyway?'))return;
+    try{const up=await uploadCashReceipt(document.getElementById('car-receipt').files[0],'advance');const rows=[];if(expense>0)rows.push({id:cashUid(),tx_date:cashToday(),movement_type:'advance_expense',direction:'out',amount:cashRound(expense),currency:a.currency,accounting_eur:cashAccountingEUR(expense,a.currency),description:document.getElementById('car-description').value.trim()||a.description||'Expense from staff cash advance',category:document.getElementById('car-category').value,supplier:document.getElementById('car-supplier').value.trim(),staff_name:a.staff_name,status:'posted',affects_cash:false,source_order_id:null,source_order_num:null,advance_id:a.id,receipt_path:up.path,receipt_name:up.name,notes:document.getElementById('car-notes').value.trim(),created_by:cashUser(),created_at:new Date().toISOString()});if(returned>0)rows.push({id:cashUid(),tx_date:cashToday(),movement_type:'cash_return',direction:'in',amount:cashRound(returned),currency:a.currency,accounting_eur:cashAccountingEUR(returned,a.currency),description:`Cash returned from ${a.staff_name}`,category:'Staff cash advance',supplier:'',staff_name:a.staff_name,status:'posted',affects_cash:true,source_order_id:null,source_order_num:null,advance_id:a.id,receipt_path:null,receipt_name:null,notes:'Balance returned from staff cash advance',created_by:cashUser(),created_at:new Date().toISOString()});for(const r of rows)await sbInsert('cash_ledger',r);await sbUpdate('cash_ledger',a.id,{status:'reconciled',notes:(a.notes?`${a.notes} | `:'')+`Reconciled by ${cashUser()} on ${cashToday()}`});closeModal('modal-cash-reconcile');cashCurrentAdvance=null;await refreshCashLedger();toast('Cash advance reconciled ✓');}catch(e){alert('Reconciliation failed: '+(e.message||e));}
+  };
+
+  window.openCashCount=function(){if(!cashCanEnter())return;document.getElementById('cc-date').value=cashToday();document.getElementById('cc-actual').value='';document.getElementById('cc-notes').value='';updateCashCountExpected();openModal('modal-cash-count');};
+  window.updateCashCountExpected=function(){const cur=document.getElementById('cc-currency')?.value||'GBP',expected=cashSummary(cur),actual=cashNum(document.getElementById('cc-actual')?.value),diff=cashRound(actual-expected);document.getElementById('cc-expected').value=cur==='GBP'?cashGBP(expected):cashEUR(expected);const el=document.getElementById('cc-difference');if(el){el.textContent=(diff>=0?'+':'')+(cur==='GBP'?cashGBP(diff):cashEUR(diff));el.className=Math.abs(diff)<=0.01?'cash-count-ok font-bold':'cash-count-bad font-bold';}};
+  window.saveCashCount=async function(){if(!cashCanEnter())return;const cur=document.getElementById('cc-currency').value,expected=cashSummary(cur),actual=cashNum(document.getElementById('cc-actual').value),row={id:cashUid(),count_date:document.getElementById('cc-date').value||cashToday(),currency:cur,expected_amount:cashRound(expected),actual_amount:cashRound(actual),difference:cashRound(actual-expected),notes:document.getElementById('cc-notes').value.trim(),created_by:cashUser(),created_at:new Date().toISOString()};try{await sbInsert('cash_counts',row);closeModal('modal-cash-count');await refreshCashLedger();toast('Cash count saved ✓');}catch(e){alert('Cash count failed: '+(e.message||e));}};
+
+  window.voidCashEntry=async function(id){if(!cashIsAdmin())return;const row=cashLedger.find(r=>String(r.id)===String(id));if(!row||!confirm(`Void this ${cashTypeLabel(row.movement_type)} entry?\n\nThe original record will remain in the audit trail.`))return;try{await sbUpdate('cash_ledger',id,{status:'void',notes:(row.notes?row.notes+' | ':'')+`Voided by ${cashUser()} on ${cashToday()}`});await refreshCashLedger();toast('Cash entry voided');}catch(e){alert('Could not void entry: '+(e.message||e));}};
+
+  window.exportCashLedgerCSV=function(){if(!cashIsAdmin())return;const rows=cashFiltered();const cols=['Date','Type','Direction','Description','Category','Supplier','Staff','Currency','Amount','Accounting EUR','Status','Receipt','Source Order','Created By','Notes'];const esc=v=>'"'+String(v??'').replaceAll('"','""')+'"';const csv=[cols.map(esc).join(',')].concat(rows.map(r=>[r.tx_date,cashTypeLabel(r.movement_type),r.direction,r.description,r.category,r.supplier,r.staff_name,r.currency,r.amount,r.accounting_eur,r.status,r.receipt_name||'',r.source_order_num||'',r.created_by,r.notes].map(esc).join(','))).join('\r\n');const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`straits-cash-ledger_${document.getElementById('cash-filter-from').value||'all'}_to_${document.getElementById('cash-filter-to').value||cashToday()}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);};
+
+  async function cashLoadScript(src){return new Promise((resolve,reject)=>{if(window.JSZip)return resolve();const s=document.createElement('script');s.src=src;s.onload=resolve;s.onerror=reject;document.head.appendChild(s);});}
+  window.downloadCashReceiptPack=async function(){
+    if(!cashIsAdmin())return;const rows=cashFiltered().filter(r=>r.receipt_path);if(!rows.length){alert('There are no uploaded receipts in this date range.');return;}try{await cashLoadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');const zip=new JSZip();let i=0;for(const r of rows){const blob=await fetchCashReceiptBlob(r.receipt_path);const ext=(r.receipt_name||'receipt').split('.').pop()||'bin';const base=`${cashIsoDate(r.tx_date)}_${String(r.supplier||r.staff_name||cashTypeLabel(r.movement_type)).replace(/[^a-zA-Z0-9_-]+/g,'_')}_${r.currency}${cashNum(r.amount).toFixed(2)}_${++i}.${ext}`;zip.file(base,blob);}const out=await zip.generateAsync({type:'blob'});const a=document.createElement('a');a.href=URL.createObjectURL(out);a.download=`Straits_Aquatics_Receipts_${document.getElementById('cash-filter-from').value||'all'}_to_${document.getElementById('cash-filter-to').value||cashToday()}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000);}catch(e){alert('Could not build receipt pack: '+(e.message||e));}
+  };
+
+  function initCashModule(){cashInjectSidebar();cashInjectPage();cashInjectModals();applyCashPermissions();}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',initCashModule);else initCashModule();
+  setTimeout(initCashModule,800);
+})();
+/* ===== END CASH & EXPENSES MODULE ===== */
+</script>
+
 </body>
 </html>
