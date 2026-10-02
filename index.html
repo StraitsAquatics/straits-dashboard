@@ -10875,7 +10875,11 @@ function applyStaffMode(){
 <script>
 /* ===== CASH & EXPENSES MODULE 2026-09-18 ===== */
 (function(){
-  const CASH_FX = 1.20;
+  let CASH_FX = Number(window.SA_FX_RATE)||0;
+  window.addEventListener('sa-fx-rate',function(e){
+    const r=Number(e && e.detail && e.detail.rate);
+    if(r>0){CASH_FX=r; try{renderCashSummary();}catch(_e){}}
+  });
   const CASH_BUCKET = 'cash-receipts';
   let cashLedger = [];
   let cashCounts = [];
@@ -11222,5 +11226,1007 @@ function applyStaffMode(){
 /* ===== END CASH & EXPENSES MODULE ===== */
 </script>
 
+
+<script>
+/* ===== FINAL ORDER ACCURACY + DATE FILTER + AD HOC DOCUMENT PATCH 2026-10-02 ===== */
+(function(){
+  const FX = 1.20;
+
+  function n(v){
+    const x=parseFloat(v);
+    return Number.isFinite(x)?x:0;
+  }
+  function gbp(v){return '£'+n(v).toFixed(2);}
+  function eur(v){return '€'+n(v).toFixed(2);}
+  function safe(v){return String(v==null?'':v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function allOrders(){
+    try{if(window.db&&Array.isArray(window.db.orders))return window.db.orders;}catch(e){}
+    try{if(typeof db!=='undefined'&&Array.isArray(db.orders))return db.orders;}catch(e){}
+    return [];
+  }
+  function lineList(o){return o?.custLines||o?.cust_lines||[];}
+  function firstLine(o){return lineList(o)[0]||{};}
+  function orderType(o){return String(o?.orderType||o?.order_type||'').toLowerCase();}
+  function isPOS(o){
+    const cl=firstLine(o);
+    return orderType(o)==='pos'||String(o?.num||'').startsWith('POS - ')||!!cl.pos_meta;
+  }
+  function isAdhoc(o){return orderType(o)==='adhoc';}
+  function isStaff(){return window._session?.role==='staff'||document.body.classList.contains('role-staff');}
+  function dateKey(v){
+    const s=String(v||'').trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+    const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if(m)return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d=new Date(s);return isNaN(d)?'':d.toISOString().slice(0,10);
+  }
+  function dateLabel(v){
+    const k=dateKey(v);if(!k)return String(v||'—');
+    const [y,m,d]=k.split('-');return `${d}/${m}/${y}`;
+  }
+  function orderById(id){return allOrders().find(o=>String(o.id)===String(id));}
+  function orderFromRow(tr){
+    const txt=tr?.children?.[0]?.textContent||'';
+    return allOrders().find(o=>String(o.num||'')&&txt.includes(String(o.num)));
+  }
+  function paymentTotal(cl){return (cl?.payments||[]).reduce((a,p)=>a+n(p.amount),0);}
+  function balance(cl){return Math.max(0,n(cl?.quoted)-paymentTotal(cl));}
+  function cleanPOSNotes(notes){
+    return String(notes||'').split('|').map(s=>s.trim()).filter(s=>s &&
+      !/^POS sale entered by/i.test(s) && !/^Sale £/i.test(s) && !/^Paid currency:/i.test(s) &&
+      !/^Payment:/i.test(s) && !/^Company:/i.test(s) && !/^Due:/i.test(s) &&
+      !/^Invoice notes:/i.test(s) && !/^Free item confirmation:/i.test(s)
+    ).join(' | ').replace(/^Notes:\s*/i,'');
+  }
+
+  /* ---------- Orders date range filter ---------- */
+  function ensureOrderDateFilter(){
+    if(document.getElementById('orders-date-filter-row'))return;
+    const page=document.getElementById('page-orders');if(!page)return;
+    const anchor=document.getElementById('order-status-filter-row')||document.getElementById('order-scope-filter-row');
+    const row=document.createElement('div');
+    row.id='orders-date-filter-row';
+    row.className='flex gap-8 items-c mb-12';
+    row.style.flexWrap='wrap';
+    row.innerHTML=`
+      <span style="font-size:11px;color:var(--text3);font-weight:700">Date:</span>
+      <label class="text-xs text-muted" style="display:flex;align-items:center;gap:5px">From <input type="date" id="orders-date-from" style="width:145px;padding:5px 8px"></label>
+      <label class="text-xs text-muted" style="display:flex;align-items:center;gap:5px">To <input type="date" id="orders-date-to" style="width:145px;padding:5px 8px"></label>
+      <button type="button" class="btn btn-sec btn-sm" id="orders-date-today">Today</button>
+      <button type="button" class="btn btn-sec btn-sm" id="orders-date-clear">Clear dates</button>
+      <span id="orders-date-count" class="text-xs text-muted"></span>`;
+    if(anchor)anchor.insertAdjacentElement('afterend',row);else page.querySelector('.card')?.insertAdjacentElement('beforebegin',row);
+    const rerender=()=>{try{window.renderOrders?.(document.getElementById('orders-search')?.value||'');}catch(e){console.warn(e);}};
+    document.getElementById('orders-date-from')?.addEventListener('change',rerender);
+    document.getElementById('orders-date-to')?.addEventListener('change',rerender);
+    document.getElementById('orders-date-today')?.addEventListener('click',()=>{
+      const k=new Date().toISOString().slice(0,10);
+      document.getElementById('orders-date-from').value=k;document.getElementById('orders-date-to').value=k;rerender();
+    });
+    document.getElementById('orders-date-clear')?.addEventListener('click',()=>{
+      document.getElementById('orders-date-from').value='';document.getElementById('orders-date-to').value='';rerender();
+    });
+  }
+  function applyOrderDateFilter(){
+    ensureOrderDateFilter();
+    const from=document.getElementById('orders-date-from')?.value||'';
+    const to=document.getElementById('orders-date-to')?.value||'';
+    const tbody=document.getElementById('orders-body');if(!tbody)return;
+    tbody.querySelector('#orders-date-empty-row')?.remove();
+    let visible=0,total=0;
+    [...tbody.querySelectorAll('tr')].forEach(tr=>{
+      if(tr.id==='orders-date-empty-row')return;
+      const o=orderFromRow(tr);
+      if(!o)return;
+      total++;
+      const k=dateKey(o.date||o.created);
+      const show=(!from||k>=from)&&(!to||k<=to);
+      tr.style.display=show?'':'none';if(show)visible++;
+    });
+    const count=document.getElementById('orders-date-count');if(count)count.textContent=(from||to)?`${visible} order${visible===1?'':'s'} in date range`:'';
+    if((from||to)&&total>0&&visible===0){
+      const tr=document.createElement('tr');tr.id='orders-date-empty-row';tr.innerHTML='<td colspan="10"><div class="empty"><div class="ei">📅</div><p>No orders found in this date range</p></div></td>';tbody.appendChild(tr);
+    }
+  }
+
+  /* ---------- POS detail corrections ---------- */
+  function posInfo(o){
+    const cl=firstLine(o),m=cl.pos_meta||o.pos_meta||{},items=cl.items||[];
+    let totalGbp=n(m.total_gbp??cl.total_gbp??cl.quoted_gbp);
+    let totalEur=n(m.total_eur??cl.total_eur??o.totalQuoted??o.total_quoted??cl.quoted);
+    if(!totalGbp&&totalEur)totalGbp=totalEur/FX;if(!totalEur&&totalGbp)totalEur=totalGbp*FX;
+    let costGbp=n(m.cost_gbp??cl.cost_gbp??cl.actual_gbp);
+    let costEur=n(m.cost_eur??cl.cost_eur??o.totalActual??o.total_actual??cl.actual);
+    if(!costGbp&&costEur)costGbp=costEur/FX;if(!costEur&&costGbp)costEur=costGbp*FX;
+    const method=m.payment_method||cl.payMethod||cl.payments?.[0]?.method||'';
+    const paidCurrency=String(m.paid_currency||cl.payment_currency||cl.payments?.[0]?.currency||'GBP').toUpperCase();
+    const hasCost=costGbp>0.0001||items.some(it=>n(it.actual_gbp)>0.0001||n(it.actual_eur)>0.0001||n(it.actual)>0.0001);
+    return {cl,m,items,totalGbp,totalEur,costGbp,costEur,method,paidCurrency,hasCost,invoice:method==='Invoice / Pay Later'};
+  }
+  function addDetailDocumentButton(o){
+    const foot=document.querySelector('#modal-order-detail .modal-foot');if(!foot)return;
+    let btn=document.getElementById('order-document-detail-btn');
+    if(!btn){btn=document.createElement('button');btn.type='button';btn.id='order-document-detail-btn';btn.className='btn btn-reef';foot.insertBefore(btn,foot.firstChild);}
+    if(isPOS(o)){btn.style.display='inline-flex';btn.textContent='Receipt';btn.onclick=()=>window.openOrderDocumentById(o.id);}
+    else if(isAdhoc(o)){btn.style.display='inline-flex';btn.textContent='Receipt / Invoice';btn.onclick=()=>window.openOrderDocumentById(o.id);}
+    else btn.style.display='none';
+  }
+  function renderPOSDetail(o){
+    const p=posInfo(o),staff=isStaff();
+    const title=document.getElementById('od-title'),stat=document.getElementById('od-statbar'),body=document.getElementById('od-body');
+    if(!title||!stat||!body)return;
+    title.textContent=`POS Sale #${o.num}`;
+    stat.innerHTML=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${safe(dateLabel(o.date||o.created))}</div></div>
+      <div><div class="ostat-lbl">Sale Total</div><div class="ostat-val text-green">${gbp(p.totalGbp)}</div></div>
+      ${staff?'':`<div><div class="ostat-lbl">Accounting EUR</div><div class="ostat-val text-blue">${eur(p.totalEur)}</div></div>`}
+      <div><div class="ostat-lbl">Payment</div><div class="ostat-val">${safe(p.method||'—')} · ${safe(p.paidCurrency||'—')}</div></div>`;
+    let html=`<div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#fff;margin-bottom:12px"><div class="font-bold mb-8">Customer</div><div>${safe(p.cl.name||'Walk-in Customer - unknown')}</div>${p.m.company?`<div class="text-sm text-muted">Company: ${safe(p.m.company)}</div>`:''}${p.invoice&&p.m.due_date?`<div class="text-sm text-muted">Due: ${safe(dateLabel(p.m.due_date))}</div>`:''}${p.invoice&&p.m.invoice_ref?`<div class="text-sm text-muted">Invoice ref: ${safe(p.m.invoice_ref)}</div>`:''}</div>`;
+    if(staff){
+      html+=`<table class="itbl"><thead><tr><th>Item</th><th>Sold Price</th></tr></thead><tbody>${p.items.map(it=>`<tr><td>${safe(it.name||'')}</td><td>${gbp(it.quoted_gbp??(n(it.quoted)/FX))}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${gbp(p.totalGbp)}</td></tr></tfoot></table>`;
+    }else if(p.hasCost){
+      html+=`<table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th><th>Cost GBP</th><th>Cost EUR</th></tr></thead><tbody>${p.items.map(it=>`<tr><td>${safe(it.name||'')}</td><td>${gbp(it.quoted_gbp??(n(it.quoted)/FX))}</td><td>${eur(it.quoted_eur??it.quoted)}</td><td>${gbp(it.actual_gbp??(n(it.actual)/FX))}</td><td>${eur(it.actual_eur??it.actual)}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${gbp(p.totalGbp)}</td><td class="font-bold text-blue">${eur(p.totalEur)}</td><td class="font-bold text-amber">${gbp(p.costGbp)}</td><td class="font-bold text-amber">${eur(p.costEur)}</td></tr></tfoot></table>`;
+      html+=`<div class="mt-12 text-sm"><strong>Profit:</strong> <span class="${p.totalGbp-p.costGbp>=0?'text-green':'text-red'} font-bold">${gbp(p.totalGbp-p.costGbp)} / ${eur(p.totalEur-p.costEur)}</span></div>`;
+    }else{
+      html+=`<table class="itbl"><thead><tr><th>Item</th><th>Sold GBP</th><th>Accounting EUR</th></tr></thead><tbody>${p.items.map(it=>`<tr><td>${safe(it.name||'')}</td><td>${gbp(it.quoted_gbp??(n(it.quoted)/FX))}</td><td>${eur(it.quoted_eur??it.quoted)}</td></tr>`).join('')}</tbody><tfoot><tr><td class="font-bold">Total</td><td class="font-bold text-green">${gbp(p.totalGbp)}</td><td class="font-bold text-blue">${eur(p.totalEur)}</td></tr></tfoot></table>`;
+      html+=`<div style="margin-top:10px;padding:9px 11px;border:1px solid #fde68a;background:#fffbeb;border-radius:8px" class="text-sm"><strong>Cost not entered.</strong> Profit is not calculated for this POS sale because no product cost was recorded.</div>`;
+    }
+    const notes=cleanPOSNotes(o.notes);if(notes)html+=`<p class="text-sm text-muted mt-8">📝 ${safe(notes)}</p>`;
+    body.innerHTML=html;
+    const del=document.getElementById('od-del-btn');if(del){del.style.display=staff?'none':'inline-flex';del.onclick=()=>{if(typeof deleteOrder==='function')deleteOrder(o.id);if(typeof closeModal==='function')closeModal('modal-order-detail');};}
+    addDetailDocumentButton(o);
+    if(typeof openModal==='function')openModal('modal-order-detail');
+  }
+  function decoratePOSAccuracy(){
+    if(isStaff())return;
+    document.querySelectorAll('#orders-body tr').forEach(tr=>{
+      const o=orderFromRow(tr);if(!o||!isPOS(o))return;
+      const p=posInfo(o);if(p.hasCost)return;
+      const tds=tr.children;
+      if(tds[5])tds[5].innerHTML='<span class="text-muted">Not entered</span>';
+      if(tds[6])tds[6].innerHTML='<span class="text-muted">Not calculated</span>';
+    });
+  }
+
+  /* ---------- POS + Ad Hoc receipt/invoice documents ---------- */
+  function adhocDocumentData(o,cl){
+    const total=n(cl.quoted),paid=paymentTotal(cl),remaining=Math.max(0,total-paid),unpaid=remaining>0.01;
+    let method=unpaid?'Invoice / Pay Later':(cl.payMethod||cl.payments?.slice(-1)?.[0]?.method||'Paid');
+    let items=(cl.items||[]).map(it=>({name:it.name||'Item',qty:n(it.qty||it.quantity||1)||1,soldEur:n(it.quoted),soldGbp:n(it.quoted)/FX})).filter(it=>it.name);
+    const itemSum=items.reduce((a,i)=>a+i.soldEur,0);
+    if(!unpaid&&Math.abs(total-itemSum)>0.01)items.push({name:'Order adjustment / delivery',qty:1,soldEur:total-itemSum,soldGbp:(total-itemSum)/FX});
+    let docTotal=total,invoiceNotes='';
+    if(unpaid&&paid>0){
+      docTotal=remaining;
+      items=[{name:`Outstanding balance — Order #${o.num}`,qty:1,soldEur:remaining,soldGbp:remaining/FX}];
+      invoiceNotes=`Original order total: ${eur(total)}. Paid to date: ${eur(paid)}. Remaining balance: ${eur(remaining)}.`;
+    }else if(unpaid&&Math.abs(total-itemSum)>0.01){
+      items.push({name:'Order adjustment / delivery',qty:1,soldEur:total-itemSum,soldGbp:(total-itemSum)/FX});
+    }
+    return {
+      orderId:o.id||'',orderNum:String(o.num||''),receiptRef:String(o.num||''),saleDate:o.date||o.created||'',
+      client:cl.name||'Customer',company:'',dueDate:unpaid?(cl.payBy||''):'',invoiceNotes,
+      method,paidCurrency:'EUR',totalGbp:docTotal/FX,totalEur:docTotal,items,
+      notes:o.notes||'',enteredBy:'',giftLimit:0
+    };
+  }
+  function ensureAdhocChooser(){
+    if(document.getElementById('modal-adhoc-document-chooser'))return;
+    const modal=document.createElement('div');modal.id='modal-adhoc-document-chooser';modal.className='modal-ov';
+    modal.innerHTML=`<div class="modal" style="width:680px"><div class="modal-head"><div class="modal-title">Choose customer document</div><button class="modal-close" type="button" onclick="closeModal('modal-adhoc-document-chooser')">✕</button></div><div class="modal-body" id="adhoc-document-chooser-body"></div><div class="modal-foot"><button class="btn btn-sec" type="button" onclick="closeModal('modal-adhoc-document-chooser')">Close</button></div></div>`;
+    document.body.appendChild(modal);modal.addEventListener('click',e=>{if(e.target===modal)modal.classList.remove('open');});
+  }
+  window.openAdhocDocumentLine=function(orderId,index){
+    const o=orderById(orderId),cl=lineList(o)[index];if(!o||!cl)return;
+    if(typeof window.showPOSReceiptClean!=='function'){alert('Receipt generator is not available. Refresh the dashboard and try again.');return;}
+    window.showPOSReceiptClean(adhocDocumentData(o,cl));
+  };
+  window.openOrderDocumentById=function(orderId){
+    const o=orderById(orderId);if(!o)return;
+    if(isPOS(o)){
+      if(typeof window.showPOSReceiptClean==='function')window.showPOSReceiptClean(o);else alert('Receipt generator is not available.');
+      return;
+    }
+    if(!isAdhoc(o))return;
+    const lines=lineList(o);
+    if(lines.length===1){window.openAdhocDocumentLine(o.id,0);return;}
+    ensureAdhocChooser();
+    const body=document.getElementById('adhoc-document-chooser-body');
+    body.innerHTML=lines.length?lines.map((cl,i)=>{
+      const rem=balance(cl),status=rem>0.01?`<span class="badge b-red">Invoice · ${eur(rem)} due</span>`:'<span class="badge b-green">Paid receipt</span>';
+      return `<div class="flex items-c gap-10" style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="flex:1"><div class="font-bold">${safe(cl.name||'Customer')}</div><div class="text-xs text-muted">Order total ${eur(cl.quoted)} · ${status}</div></div><button class="btn btn-reef btn-sm" type="button" onclick="openAdhocDocumentLine('${safe(o.id)}',${i})">Generate ${rem>0.01?'Invoice':'Receipt'}</button></div>`;
+    }).join(''):'<div class="empty"><p>No customer lines found.</p></div>';
+    if(typeof openModal==='function')openModal('modal-adhoc-document-chooser');else document.getElementById('modal-adhoc-document-chooser').classList.add('open');
+  };
+  function decorateDocumentButtons(){
+    document.querySelectorAll('#orders-body tr').forEach(tr=>{
+      const o=orderFromRow(tr);if(!o||(!isPOS(o)&&!isAdhoc(o)))return;
+      const last=tr.children[tr.children.length-1];if(!last)return;
+      const container=last.querySelector('.flex')||last;
+      let btn=container.querySelector('.order-doc-final-btn');
+      if(!btn){btn=document.createElement('button');btn.type='button';btn.className='btn btn-reef btn-xs order-doc-final-btn';container.appendChild(btn);}
+      btn.style.display='inline-flex';
+      btn.textContent=isPOS(o)?'Receipt':'Receipt / Invoice';
+      btn.onclick=e=>{e.stopPropagation();window.openOrderDocumentById(o.id);};
+    });
+  }
+
+  /* ---------- Final wrappers ---------- */
+  const baseRender=window.renderOrders||((typeof renderOrders==='function')?renderOrders:null);
+  if(baseRender&&!baseRender.__orderAccuracyDateDocWrapped){
+    window.renderOrders=function(){
+      const r=baseRender.apply(this,arguments);
+      try{ensureOrderDateFilter();decoratePOSAccuracy();decorateDocumentButtons();applyOrderDateFilter();}catch(e){console.warn('Final order enhancements skipped',e);}
+      setTimeout(()=>{try{decoratePOSAccuracy();decorateDocumentButtons();applyOrderDateFilter();}catch(e){}},100);
+      return r;
+    };
+    window.renderOrders.__orderAccuracyDateDocWrapped=true;
+    try{renderOrders=window.renderOrders;}catch(e){}
+  }
+
+  const baseView=window.viewOrder||((typeof viewOrder==='function')?viewOrder:null);
+  if(baseView&&!baseView.__orderAccuracyDateDocWrapped){
+    window.viewOrder=function(id){
+      const o=orderById(id);
+      if(o&&isPOS(o)){renderPOSDetail(o);return;}
+      const r=baseView?baseView.apply(this,arguments):undefined;
+      if(o)setTimeout(()=>addDetailDocumentButton(o),80);
+      return r;
+    };
+    window.viewOrder.__orderAccuracyDateDocWrapped=true;
+    try{viewOrder=window.viewOrder;}catch(e){}
+  }
+
+  function boot(){
+    ensureOrderDateFilter();
+    ensureAdhocChooser();
+    try{decoratePOSAccuracy();decorateDocumentButtons();applyOrderDateFilter();}catch(e){}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+  setTimeout(boot,500);setTimeout(boot,1500);
+})();
+/* ===== END FINAL ORDER ACCURACY + DATE FILTER + AD HOC DOCUMENT PATCH ===== */
+
+</script>
+
+<script>
+/* ===== UNIFIED GBP/EUR TRANSACTION CURRENCY ENGINE 2026-10-02 =====
+   New transactions keep native sale/cost currencies and freeze the GBP→EUR
+   rate used on the transaction date. Legacy fixed x1.20 displays are superseded. */
+(function(){
+  const FX_CACHE = new Map();
+  const FX_API = 'https://api.frankfurter.dev';
+  const N=v=>{const x=parseFloat(v);return Number.isFinite(x)?x:0;};
+  const R2=v=>Math.round(N(v)*100)/100;
+  const SAFE=v=>String(v==null?'':v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const SYM=c=>String(c||'GBP').toUpperCase()==='EUR'?'€':'£';
+  const MONEY=(v,c='GBP')=>SYM(c)+N(v).toFixed(2);
+  const DATEKEY=v=>{
+    const s=String(v||'').trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+    const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if(m)return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d=new Date(s);return isNaN(d)?'':d.toISOString().slice(0,10);
+  };
+  const DATELABEL=v=>{const k=DATEKEY(v);if(!k)return String(v||'—');const[y,m,d]=k.split('-');return `${d}/${m}/${y}`;};
+  const orders=()=>{try{return db.orders||[];}catch(e){return [];}};
+  const isStaff=()=>window._session?.role==='staff'||document.body.classList.contains('role-staff');
+  const isAdmin=()=>window._session?.role==='admin';
+  const isPOS=o=>String(o?.orderType||o?.order_type||'').toLowerCase()==='pos'||String(o?.num||'').startsWith('POS - ')||!!((o?.custLines||o?.cust_lines||[])[0]?.pos_meta);
+  const isStock=o=>String(o?.orderType||o?.order_type||'').toLowerCase()==='stock';
+  const lines=o=>o?.custLines||o?.cust_lines||[];
+
+  function cacheRate(requestDate,obj){
+    if(!obj||!(N(obj.rate)>0))return null;
+    const out={rate:N(obj.rate),date:DATEKEY(obj.date||requestDate),source:obj.source||'ECB / Frankfurter'};
+    if(requestDate)FX_CACHE.set(DATEKEY(requestDate),out);
+    if(out.date)FX_CACHE.set(out.date,out);
+    try{
+      if(requestDate)localStorage.setItem('sa_fx_'+DATEKEY(requestDate),JSON.stringify(out));
+      localStorage.setItem('sa_fx_latest',JSON.stringify(out));
+    }catch(e){}
+    return out;
+  }
+  function cachedRate(date){
+    const k=DATEKEY(date);
+    if(k&&FX_CACHE.has(k))return FX_CACHE.get(k);
+    try{
+      const raw=k&&localStorage.getItem('sa_fx_'+k);
+      if(raw){const x=JSON.parse(raw);if(N(x.rate)>0){FX_CACHE.set(k,x);return x;}}
+    }catch(e){}
+    return null;
+  }
+  async function fetchRate(date='',force=false){
+    const k=DATEKEY(date);
+    if(k&&!force){const c=cachedRate(k);if(c)return c;}
+    const urls=[];
+    if(k)urls.push(`${FX_API}/v2/rate/gbp/eur?date=${encodeURIComponent(k)}&providers=ecb`);
+    else urls.push(`${FX_API}/v2/rate/gbp/eur?providers=ecb`);
+    if(k)urls.push(`${FX_API}/v2/rate/gbp/eur?date=${encodeURIComponent(k)}`);
+    else urls.push(`${FX_API}/v2/rate/gbp/eur`);
+    for(const url of urls){
+      try{
+        const r=await fetch(url,{cache:'no-store'});
+        if(!r.ok)continue;
+        const j=await r.json();
+        if(N(j.rate)>0){
+          const out=cacheRate(k||j.date,{rate:j.rate,date:j.date,source:'ECB via Frankfurter'});
+          if(out){
+            window.SA_FX_RATE=out.rate;
+            window.dispatchEvent(new CustomEvent('sa-fx-rate',{detail:out}));
+            return out;
+          }
+        }
+      }catch(e){}
+    }
+    // v1 fallback also handles non-working days by returning the nearest published fixing.
+    if(k){
+      try{
+        const r=await fetch(`${FX_API}/v1/${k}?base=GBP&symbols=EUR`,{cache:'no-store'});
+        if(r.ok){
+          const j=await r.json();
+          if(N(j?.rates?.EUR)>0){
+            const out=cacheRate(k,{rate:j.rates.EUR,date:j.date,source:'Frankfurter reference rate'});
+            window.SA_FX_RATE=out.rate;
+            window.dispatchEvent(new CustomEvent('sa-fx-rate',{detail:out}));
+            return out;
+          }
+        }
+      }catch(e){}
+    }
+    throw new Error('GBP/EUR exchange rate unavailable. Enter the rate manually before saving.');
+  }
+  function syncRate(date){
+    const k=DATEKEY(date), exact=cachedRate(k);
+    if(exact)return exact;
+    // Use closest prior cached fixing for weekends/holidays.
+    const candidates=[...FX_CACHE.entries()].filter(([d,v])=>d<=k&&N(v.rate)>0).sort((a,b)=>b[0].localeCompare(a[0]));
+    if(candidates.length)return candidates[0][1];
+    try{
+      const latest=JSON.parse(localStorage.getItem('sa_fx_latest')||'null');
+      if(latest&&N(latest.rate)>0)return latest;
+    }catch(e){}
+    return null;
+  }
+  function convert(v,from,to,rate){
+    from=String(from||'GBP').toUpperCase();to=String(to||'GBP').toUpperCase();rate=N(rate);
+    if(from===to)return N(v);
+    if(!(rate>0))return NaN;
+    return from==='GBP'?N(v)*rate:N(v)/rate;
+  }
+  window.SAFX={fetch:fetchRate,cached:syncRate,convert,MONEY};
+
+  async function prefetchHistory(){
+    const ds=orders().map(o=>DATEKEY(o.date||o.created)).filter(Boolean).sort();
+    if(!ds.length)return;
+    const min=ds[0],max=ds[ds.length-1];
+    try{
+      const r=await fetch(`${FX_API}/v1/${min}..${max}?base=GBP&symbols=EUR`);
+      if(!r.ok)return;
+      const j=await r.json();
+      Object.entries(j.rates||{}).forEach(([d,x])=>cacheRate(d,{rate:x.EUR,date:d,source:'Frankfurter reference rate'}));
+      setTimeout(()=>{try{renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');renderProfits();}catch(e){}},50);
+    }catch(e){}
+  }
+
+  function lineMeta(cl,o){
+    const pm=cl?.pos_meta||{};
+    if(isPOS(o)){
+      // Old POS values were genuinely entered in GBP even where a legacy EUR "accounting" value existed.
+      const sale=String(cl?.sale_currency||pm.sale_currency||'GBP').toUpperCase();
+      const cost=String(cl?.cost_currency||pm.cost_currency||'GBP').toUpperCase();
+      const historical=syncRate(o?.date||cl?.fx_date);
+      const rate=N(cl?.fx_rate)&&N(cl?.fx_rate)!==1.2?N(cl.fx_rate):(N(pm.fx_rate)&&N(pm.fx_rate)!==1.2?N(pm.fx_rate):N(historical?.rate));
+      const known=typeof cl?.cost_known==='boolean'?cl.cost_known:
+        typeof pm.cost_known==='boolean'?pm.cost_known:
+        ((cl?.actual_gbp!==undefined&&N(cl.actual_gbp)>0)||(pm.cost_gbp!==undefined&&N(pm.cost_gbp)>0)||(cl?.actual!==undefined&&N(cl.actual)>0));
+      return {saleCurrency:sale,costCurrency:cost,rate,rateDate:cl?.fx_date||pm.fx_date||historical?.date||o?.date,source:cl?.fx_source||pm.fx_source||historical?.source||'',costKnown:known};
+    }
+    const historical=syncRate(o?.date||cl?.fx_date);
+    const rate=N(cl?.fx_rate)||N(historical?.rate);
+    return {
+      saleCurrency:String(cl?.sale_currency||'EUR').toUpperCase(),
+      costCurrency:String(cl?.cost_currency||'EUR').toUpperCase(),
+      rate,rateDate:cl?.fx_date||historical?.date||o?.date,
+      source:cl?.fx_source||historical?.source||'',
+      costKnown:typeof cl?.cost_known==='boolean'?cl.cost_known:(N(cl?.actual)>0||(cl?.items||[]).some(i=>N(i.actual)>0))
+    };
+  }
+  function lineSaleGBP(cl,o){
+    const m=lineMeta(cl,o),v=N(cl?.quoted);
+    return convert(v,m.saleCurrency,'GBP',m.rate);
+  }
+  function lineCostGBP(cl,o){
+    const m=lineMeta(cl,o);
+    if(!m.costKnown)return null;
+    return convert(N(cl?.actual),m.costCurrency,'GBP',m.rate);
+  }
+  function paymentNativeTotal(cl){
+    return (cl?.payments||[]).reduce((a,p)=>a+N(p.amount),0);
+  }
+  function lineBalanceNative(cl){
+    if(['FREE','SORTEO'].includes(String(cl?.status||'').toUpperCase()))return 0;
+    return Math.max(0,N(cl?.quoted)-paymentNativeTotal(cl));
+  }
+  function orderFinance(o){
+    const rateObj=syncRate(o?.date||o?.created),rate=N(rateObj?.rate);
+    if(isStock(o)){
+      const ss=o?.saLines||o?.sa_lines||[];
+      const marker=ss.find(s=>s?.currency_engine==='actual_fx_v1');
+      if(marker){
+        const rev=N(o.totalQuoted??o.total_quoted),cost=(o.totalActual??o.total_actual);
+        return {revenueGBP:rev,costGBP:cost==null?null:N(cost),profitGBP:(o.profit==null?null:N(o.profit)),pendingGBP:0,
+          rate:N(marker.fx_rate)||rate,rateDate:marker.fx_date||rateObj?.date||o.date,known:cost!=null,nativeSaleCurrency:'EUR',nativeCostCurrency:'EUR',
+          revenueNative:rate?convert(rev,'GBP','EUR',rate):null,costNative:cost==null?null:(rate?convert(cost,'GBP','EUR',rate):null)};
+      }
+      const revE=N(o.totalQuoted??o.total_quoted),costE=N(o.totalActual??o.total_actual);
+      return {revenueGBP:rate?revE/rate:NaN,costGBP:rate?costE/rate:NaN,profitGBP:rate?(N(o.profit)/rate):NaN,pendingGBP:0,
+        rate,rateDate:rateObj?.date||o.date,known:true,nativeSaleCurrency:'EUR',nativeCostCurrency:'EUR',revenueNative:revE,costNative:costE};
+    }
+    let revenueGBP=0,costGBP=0,pendingGBP=0,known=true,hasRevenue=false;
+    const saleBreak={GBP:0,EUR:0},costBreak={GBP:0,EUR:0};
+    for(const cl of lines(o)){
+      const m=lineMeta(cl,o),sg=lineSaleGBP(cl,o),cg=lineCostGBP(cl,o);
+      if(Number.isFinite(sg)){revenueGBP+=sg;hasRevenue=true;}
+      saleBreak[m.saleCurrency]=(saleBreak[m.saleCurrency]||0)+N(cl.quoted);
+      const bal=lineBalanceNative(cl),bg=convert(bal,m.saleCurrency,'GBP',m.rate);if(Number.isFinite(bg))pendingGBP+=bg;
+      if(cg==null||!Number.isFinite(cg)){known=false;}else{costGBP+=cg;costBreak[m.costCurrency]=(costBreak[m.costCurrency]||0)+N(cl.actual);}
+    }
+    return {revenueGBP:hasRevenue?revenueGBP:N(o.totalQuoted??o.total_quoted),costGBP:known?costGBP:null,profitGBP:known?revenueGBP-costGBP:null,
+      pendingGBP,rate,rateDate:rateObj?.date||o.date,known,saleBreak,costBreak};
+  }
+  window.SAOrderFinance=orderFinance;
+
+  /* ---------- Main dashboard FX card and realistic reporting ---------- */
+  function ensureFxCard(){
+    const metrics=document.querySelector('#page-overview .metrics');if(!metrics)return;
+    if(!document.getElementById('ov-fx-rate')){
+      const d=document.createElement('div');d.className='metric';d.id='ov-fx-card';
+      d.innerHTML='<div class="metric-lbl">GBP → EUR Exchange Rate</div><div class="metric-val mv-blue" id="ov-fx-rate">Loading…</div><div class="metric-sub" id="ov-fx-sub">ECB reference rate</div>';
+      metrics.insertBefore(d,metrics.firstChild);
+    }
+    const rev=document.getElementById('ov-rev')?.closest('.metric');
+    if(rev){rev.querySelector('.metric-lbl').textContent='Sales Revenue';rev.querySelector('.metric-sub').textContent='GBP equivalent using transaction-date FX';}
+    const pr=document.getElementById('ov-profit')?.closest('.metric');
+    if(pr){pr.querySelector('.metric-lbl').textContent='Known Profit';pr.querySelector('.metric-sub').textContent='GBP · excludes sales without entered cost';}
+    const pend=document.getElementById('ov-pending')?.closest('.metric');
+    if(pend)pend.querySelector('.metric-sub').textContent='GBP equivalent owed by customers';
+    ['ov-today-sales-profit','ov-today-stock-spend','ov-today-profit'].forEach(id=>{const e=document.getElementById(id);if(e)e.closest('.metric')?.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('GBP using transaction-date FX'));});
+  }
+  async function refreshFxCard(force=false){
+    ensureFxCard();
+    const el=document.getElementById('ov-fx-rate'),sub=document.getElementById('ov-fx-sub');
+    try{
+      const x=await fetchRate('',force);
+      if(el)el.textContent=`£1 = €${x.rate.toFixed(4)}`;
+      if(sub)sub.textContent=`${x.source} · published ${DATELABEL(x.date)}`;
+      window.SA_FX_RATE=x.rate;
+    }catch(e){if(el)el.textContent='Rate unavailable';if(sub)sub.textContent='Refresh page or enter transaction rate manually';}
+  }
+  window.refreshBusinessFxRate=()=>refreshFxCard(true);
+
+  const baseOverview=window.renderOverview||((typeof renderOverview==='function')?renderOverview:null);
+  window.renderOverview=function(){
+    try{if(baseOverview)baseOverview.apply(this,arguments);}catch(e){}
+    ensureFxCard();
+    const customerOrders=orders().filter(o=>!isStock(o));
+    let revenue=0,profit=0,knownProfitOrders=0,unknownCost=0,pending=0;
+    customerOrders.forEach(o=>{const f=orderFinance(o);if(Number.isFinite(f.revenueGBP))revenue+=f.revenueGBP;if(f.profitGBP==null||!Number.isFinite(f.profitGBP))unknownCost++;else{profit+=f.profitGBP;knownProfitOrders++;}if(Number.isFinite(f.pendingGBP))pending+=f.pendingGBP;});
+    // Credits/debts are historically EUR; convert using each entry date when a rate is available.
+    (db.credits||[]).filter(c=>c.type==='owed').forEach(c=>{const r=N(syncRate(c.date)?.rate);if(r>0)pending+=N(c.amount)/r;});
+    const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+    set('ov-rev',MONEY(revenue,'GBP'));set('ov-profit',MONEY(profit,'GBP'));set('ov-pending',MONEY(pending,'GBP'));
+    const ps=document.getElementById('ov-profit')?.closest('.metric')?.querySelector('.metric-sub');if(ps)ps.textContent=unknownCost?`GBP · ${unknownCost} order${unknownCost===1?'':'s'} awaiting cost`:'GBP · all customer-order costs entered';
+    const todayKey=DATEKEY(typeof today==='function'?today():new Date().toISOString().slice(0,10));
+    let tProfit=0,tSpend=0,tUnknown=0;
+    orders().filter(o=>DATEKEY(o.date||o.created)===todayKey).forEach(o=>{const f=orderFinance(o);if(isStock(o)){if(f.costGBP!=null&&Number.isFinite(f.costGBP))tSpend+=f.costGBP;}else if(f.profitGBP==null||!Number.isFinite(f.profitGBP))tUnknown++;else tProfit+=f.profitGBP;});
+    set('ov-today-sales-profit',MONEY(tProfit,'GBP'));set('ov-today-stock-spend',MONEY(tSpend,'GBP'));set('ov-today-profit',MONEY(tProfit-tSpend,'GBP'));
+    const tsp=document.getElementById('ov-today-sales-profit')?.closest('.metric')?.querySelector('.metric-sub');if(tsp)tsp.textContent=tUnknown?`${tUnknown} sale${tUnknown===1?'':'s'} not calculated (cost missing)`:'Known customer-sale profit';
+    const recent=document.getElementById('ov-recent');
+    if(recent){
+      const arr=[...orders()].reverse().slice(0,5);
+      recent.innerHTML=arr.length?arr.map(o=>{const f=orderFinance(o);const p=f.profitGBP==null?'Not calculated':MONEY(f.profitGBP,'GBP');return `<div class="flex items-c gap-8" style="padding:6px 0;border-bottom:1px solid var(--border)"><span class="badge b-blue">#${SAFE(o.num)}</span><span class="text-sm" style="flex:1">${SAFE((o.suppliers||[]).join(', '))}</span><span class="font-bold ${f.profitGBP==null?'text-muted':f.profitGBP>=0?'text-green':'text-red'}">${p}</span></div>`;}).join(''):'<div class="empty"><p>No orders</p></div>';
+    }
+    setTimeout(()=>refreshFxCard(false),0);
+  };
+  try{renderOverview=window.renderOverview;}catch(e){}
+
+  /* ---------- Ad Hoc / customer-order currency controls ---------- */
+  function ensureCustomerCurrencyFields(){
+    if(document.getElementById('cl-sale-currency'))return;
+    const q=document.getElementById('cl-quoted'),a=document.getElementById('cl-actual');
+    if(!q||!a)return;
+    q.closest('.fg')?.querySelector('label')?.replaceChildren(document.createTextNode('Total Quoted / Sale Price'));
+    a.closest('.fg')?.querySelector('label')?.replaceChildren(document.createTextNode('Total Actual Cost'));
+    const row=document.createElement('div');row.id='cl-currency-controls';row.className='fg fg-full';
+    row.innerHTML=`<div class="form-grid" style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc">
+      <div class="fg"><label>Client sale / invoice currency</label><select id="cl-sale-currency" onchange="updateCustomerCurrencyLabels();calcCustLine()"><option value="GBP">GBP £</option><option value="EUR">EUR €</option></select></div>
+      <div class="fg"><label>Actual cost currency</label><select id="cl-cost-currency" onchange="updateCustomerCurrencyLabels();calcCustLine()"><option value="EUR">EUR €</option><option value="GBP">GBP £</option></select></div>
+      <div class="fg"><label>Transaction FX · £1 = €</label><input type="number" id="cl-fx-rate" step="0.0001" min="0" placeholder="Loading…" oninput="calcCustLine()"></div>
+      <div class="fg"><label>FX fixing</label><div class="flex gap-6 items-c"><input type="text" id="cl-fx-date" readonly style="flex:1"><button type="button" class="btn btn-sec btn-xs" onclick="refreshCustomerFx()">↻</button></div></div>
+      <div class="fg fg-full"><div class="text-xs text-muted" id="cl-fx-source">ECB/Frankfurter transaction-date reference rate. You can override the rate if required.</div></div>
+    </div>`;
+    const grid=q.closest('.form-grid');grid?.insertAdjacentElement('afterend',row);
+    updateCustomerCurrencyLabels();
+  }
+  window.updateCustomerCurrencyLabels=function(){
+    ensureCustomerCurrencyFields();
+    const sc=document.getElementById('cl-sale-currency')?.value||'GBP',cc=document.getElementById('cl-cost-currency')?.value||'EUR';
+    const q=document.getElementById('cl-quoted'),a=document.getElementById('cl-actual');
+    if(q){q.placeholder='0.00 '+sc;q.closest('.fg')?.querySelector('label')?.replaceChildren(document.createTextNode(`Total Quoted / Sale Price (${sc})`));}
+    if(a){a.placeholder=`Blank = cost not entered (${cc})`;a.closest('.fg')?.querySelector('label')?.replaceChildren(document.createTextNode(`Total Actual Cost (${cc})`));}
+    document.querySelectorAll('#cl-items-list .ir-q').forEach(e=>e.placeholder=`Quoted ${sc}`);
+    document.querySelectorAll('#cl-items-list .ir-a').forEach(e=>e.placeholder=`Cost ${cc} optional`);
+    const paid=document.getElementById('cl-paid-total'),rem=document.getElementById('cl-remaining');
+    if(paid&&paid.textContent){/* refreshed by updatePaymentTotals */}
+    if(rem&&rem.textContent){/* refreshed by updatePaymentTotals */}
+  };
+  window.refreshCustomerFx=async function(force=true){
+    ensureCustomerCurrencyFields();
+    const date=document.getElementById('o-date')?.value||today();
+    const input=document.getElementById('cl-fx-rate'),dateEl=document.getElementById('cl-fx-date'),src=document.getElementById('cl-fx-source');
+    try{
+      if(input&&!input.value)input.placeholder='Loading…';
+      const x=await fetchRate(date,force);
+      if(input)input.value=x.rate.toFixed(4);if(dateEl)dateEl.value=DATELABEL(x.date);if(src)src.textContent=`${x.source} · requested ${DATELABEL(date)}${x.date!==date?' · fixing '+DATELABEL(x.date):''}. Editable by admin if required.`;
+      calcCustLine();
+    }catch(e){if(src)src.textContent=e.message;if(input&&!input.value)input.placeholder='Enter rate manually';}
+  };
+
+  const baseOpenModal=window.openModal||((typeof openModal==='function')?openModal:null);
+  if(baseOpenModal){
+    window.openModal=function(id){
+      if(id==='modal-cust-line'){ensureCustomerCurrencyFields();setTimeout(()=>{const r=document.getElementById('cl-fx-rate');if(r&&!r.value)refreshCustomerFx(false);},0);}
+      return baseOpenModal.apply(this,arguments);
+    };
+    try{openModal=window.openModal;}catch(e){}
+  }
+
+  const baseResetCL=window.resetCustLineModal||((typeof resetCustLineModal==='function')?resetCustLineModal:null);
+  if(baseResetCL){
+    window.resetCustLineModal=function(){
+      const r=baseResetCL.apply(this,arguments);ensureCustomerCurrencyFields();
+      const sc=document.getElementById('cl-sale-currency'),cc=document.getElementById('cl-cost-currency'),fx=document.getElementById('cl-fx-rate'),fd=document.getElementById('cl-fx-date');
+      if(sc)sc.value='GBP';if(cc)cc.value='EUR';if(fx)fx.value='';if(fd)fd.value='';updateCustomerCurrencyLabels();setTimeout(()=>refreshCustomerFx(false),0);return r;
+    };
+    try{resetCustLineModal=window.resetCustLineModal;}catch(e){}
+  }
+
+  const baseCalc=window.calcCustLine||((typeof calcCustLine==='function')?calcCustLine:null);
+  window.calcCustLine=function(){
+    ensureCustomerCurrencyFields();
+    const q=N(document.getElementById('cl-quoted')?.value);
+    const costRaw=document.getElementById('cl-actual')?.value;
+    const free=!!document.getElementById('cl-free-ship')?.checked;
+    const shipRaw=document.getElementById('cl-ship-actual')?.value;
+    const known=String(costRaw??'').trim()!=='' && (!free||String(shipRaw??'').trim()!=='');
+    const cost=N(costRaw)+(free?N(shipRaw):0);
+    const sc=document.getElementById('cl-sale-currency')?.value||'GBP',cc=document.getElementById('cl-cost-currency')?.value||'EUR',rate=N(document.getElementById('cl-fx-rate')?.value);
+    const el=document.getElementById('cl-margin');
+    if(el){
+      if(!known)el.innerHTML=`Profit: <strong>Not calculated</strong> <span class="text-muted">— actual cost not entered</span>`;
+      else if(!(rate>0)&&sc!==cc)el.innerHTML='Profit: <strong>FX rate required</strong>';
+      else{
+        const revGBP=convert(q,sc,'GBP',rate),costGBP=convert(cost,cc,'GBP',rate),p=revGBP-costGBP,margin=revGBP?100*p/revGBP:0;
+        el.innerHTML=`Profit: <strong class="${p>=0?'text-green':'text-red'}">${MONEY(p,'GBP')}</strong> <span class="text-muted">(${margin.toFixed(1)}% margin · £1 = €${rate.toFixed(4)})</span>`;
+      }
+    }
+    try{updatePaymentTotals();}catch(e){}
+  };
+  try{calcCustLine=window.calcCustLine;}catch(e){}
+
+  const baseUpdatePayments=window.updatePaymentTotals||((typeof updatePaymentTotals==='function')?updatePaymentTotals:null);
+  window.updatePaymentTotals=function(){
+    const sc=document.getElementById('cl-sale-currency')?.value||'GBP';
+    const quoted=N(document.getElementById('cl-quoted')?.value);
+    let paid=0;document.querySelectorAll('#cl-payments-list .pay-amt').forEach(e=>paid+=N(e.value));
+    const rem=Math.max(0,quoted-paid),p=document.getElementById('cl-paid-total'),r=document.getElementById('cl-remaining');
+    if(p)p.textContent=MONEY(paid,sc);if(r){r.textContent=MONEY(rem,sc);r.className='font-bold '+(rem>0.01?'text-red':'text-green');}
+    try{if(typeof updateCustomerCreditInfo==='function')updateCustomerCreditInfo();}catch(e){}
+  };
+  try{updatePaymentTotals=window.updatePaymentTotals;}catch(e){}
+
+  const baseEditCL=window.editCustLine||((typeof editCustLine==='function')?editCustLine:null);
+  if(baseEditCL){
+    window.editCustLine=function(i){
+      const cl=curCustLines[i],r=baseEditCL.apply(this,arguments);ensureCustomerCurrencyFields();
+      if(cl){
+        const meta=lineMeta(cl,{date:document.getElementById('o-date')?.value||today(),custLines:[cl]});
+        const sc=document.getElementById('cl-sale-currency'),cc=document.getElementById('cl-cost-currency'),fx=document.getElementById('cl-fx-rate'),fd=document.getElementById('cl-fx-date'),src=document.getElementById('cl-fx-source');
+        if(sc)sc.value=meta.saleCurrency;if(cc)cc.value=meta.costCurrency;if(fx)fx.value=meta.rate?meta.rate.toFixed(4):'';if(fd)fd.value=meta.rateDate?DATELABEL(meta.rateDate):'';
+        if(src)src.textContent=meta.source||'Transaction-date rate';
+        // Preserve blank cost for unknown historical/new lines.
+        if(!meta.costKnown){const a=document.getElementById('cl-actual');if(a)a.value='';}
+        updateCustomerCurrencyLabels();calcCustLine();
+      }
+      return r;
+    };
+    try{editCustLine=window.editCustLine;}catch(e){}
+  }
+
+  async function buildCurrencyAwarePayload(){
+    const numRef=document.getElementById('o-num')?.value.trim();if(!numRef)throw new Error('Enter order number');
+    const orderType=(typeof patchedOrderType==='function'?patchedOrderType():document.getElementById('o-type')?.value||'weekly');
+    const date=document.getElementById('o-date')?.value||today();
+    let fx=syncRate(date);if(!fx){fx=await fetchRate(date,false);}
+    const rate=N(fx?.rate);if(!(rate>0))throw new Error('A GBP/EUR transaction rate is required before saving this order.');
+    const ship=N(document.getElementById('o-shipping')?.value),other=N(document.getElementById('o-othercosts')?.value);
+    const sa=(typeof getSALines==='function'?getSALines():[]);
+    const cust=orderType==='stock'?[]:curCustLines;
+    if(orderType==='stock'){
+      sa.forEach(s=>{s.currency_engine='actual_fx_v1';s.sale_currency='EUR';s.cost_currency='EUR';s.fx_rate=rate;s.fx_date=fx?.date||date;s.fx_source=fx?.source||'';});
+    }
+    let revenueGBP=0,costGBP=0,pendingGBP=0,costKnown=true,doaGBP=0;
+    if(orderType==='stock'){
+      const sellE=sa.reduce((a,s)=>a+N(s.sell),0),costE=sa.reduce((a,s)=>a+N(s.cost),0);
+      revenueGBP=rate?sellE/rate:sellE;costGBP=rate?(costE+ship+other)/rate:(costE+ship+other);
+    }else{
+      for(const cl of cust){
+        const m=lineMeta(cl,{date,custLines:cust,orderType});
+        const sg=convert(N(cl.quoted),m.saleCurrency,'GBP',m.rate||rate);if(Number.isFinite(sg))revenueGBP+=sg;
+        const cg=lineCostGBP(cl,{date,custLines:cust,orderType});if(cg==null||!Number.isFinite(cg))costKnown=false;else costGBP+=cg;
+        const bg=convert(lineBalanceNative(cl),m.saleCurrency,'GBP',m.rate||rate);if(Number.isFinite(bg))pendingGBP+=bg;
+        (cl.items||[]).filter(it=>it.doa&&!it.doaResolved).forEach(it=>{const ik=typeof it.cost_known==='boolean'?it.cost_known:N(it.actual)>0;if(ik){const cur=it.cost_currency||m.costCurrency,ig=convert(N(it.actual),cur,'GBP',it.fx_rate||m.rate||rate);if(Number.isFinite(ig))doaGBP+=ig;}});
+      }
+      const overheadGBP=rate?(ship+other)/rate:(ship+other);
+      costGBP+=overheadGBP;
+    }
+    const totalActual=costKnown||orderType==='stock'?R2(costGBP):null;
+    const profit=totalActual==null?null:R2(revenueGBP-totalActual);
+    const old=editingOrderId?db.orders.find(o=>o.id===editingOrderId):null;
+    const temp={custLines:cust,manualComplete:false};const manual=old&&old.manualComplete&&(orderType==='stock'?true:isOrderComplete(temp));
+    return {
+      row:{id:editingOrderId||uid(),num:numRef,order_type:orderType,date,suppliers:curSuppliers,shipping:ship,other_costs:other,notes:document.getElementById('o-notes')?.value||'',cust_lines:cust,sa_lines:sa,total_quoted:R2(revenueGBP),total_actual:totalActual,profit,doa_total:R2(doaGBP),total_pending:R2(pendingGBP),manual_complete:manual,created:old?.created||today()},
+      local:{id:editingOrderId||null,num:numRef,orderType,date,suppliers:[...curSuppliers],shipping:ship,otherCosts:other,notes:document.getElementById('o-notes')?.value||'',custLines:cust,saLines:sa,totalQuoted:R2(revenueGBP),totalActual:totalActual,profit,doaTotal:R2(doaGBP),totalPending:R2(pendingGBP),manualComplete:manual,created:old?.created||today()}
+    };
+  }
+  async function persistCurrencyAwareQuiet(){
+    if(!editingOrderId)return;
+    const built=await buildCurrencyAwarePayload();built.row.id=editingOrderId;built.local.id=editingOrderId;
+    await sbUpdate('orders',editingOrderId,built.row);
+    const idx=db.orders.findIndex(o=>String(o.id)===String(editingOrderId));if(idx>-1)db.orders[idx]=built.local;
+  }
+  window.persistCurrencyAwareOrderQuietly=persistCurrencyAwareQuiet;
+
+  const baseSaveCL=window.saveCustLine||((typeof saveCustLine==='function')?saveCustLine:null);
+  if(baseSaveCL){
+    window.saveCustLine=async function(){
+      ensureCustomerCurrencyFields();
+      const beforeIdx=(typeof editingCustLineIndex!=='undefined'?editingCustLineIndex:null);
+      const oldId=(beforeIdx!==null&&curCustLines[beforeIdx])?curCustLines[beforeIdx].id:null;
+      const sc=document.getElementById('cl-sale-currency')?.value||'GBP',cc=document.getElementById('cl-cost-currency')?.value||'EUR';
+      let rate=N(document.getElementById('cl-fx-rate')?.value),fxDate=DATEKEY(document.getElementById('o-date')?.value||today()),fxSource=document.getElementById('cl-fx-source')?.textContent||'';
+      if(!(rate>0)){try{const x=await fetchRate(fxDate,false);rate=x.rate;fxDate=x.date;fxSource=x.source;}catch(e){toast(e.message,false);return;}}
+      const actualRaw=document.getElementById('cl-actual')?.value;
+      const free=!!document.getElementById('cl-free-ship')?.checked,shipRaw=document.getElementById('cl-ship-actual')?.value;
+      const costKnown=String(actualRaw??'').trim()!==''&&(!free||String(shipRaw??'').trim()!=='');
+      const itemMeta=[...document.querySelectorAll('#cl-items-list > div')].map(r=>({costKnown:String(r.querySelector('.ir-a')?.value??'').trim()!==''}));
+      const name=(document.getElementById('cl-name')?.value||'').trim();
+      await baseSaveCL.apply(this,arguments);
+      let cl=null;
+      if(oldId)cl=curCustLines.find(x=>String(x.id)===String(oldId));
+      if(!cl&&beforeIdx!==null)cl=curCustLines[beforeIdx];
+      if(!cl)cl=[...curCustLines].reverse().find(x=>String(x.name||'')===name);
+      if(cl){
+        Object.assign(cl,{currency_engine:'actual_fx_v1',sale_currency:sc,cost_currency:cc,fx_rate:rate,fx_date:fxDate,fx_source:fxSource,cost_known:costKnown});
+        (cl.items||[]).forEach((it,i)=>Object.assign(it,{sale_currency:sc,cost_currency:cc,fx_rate:rate,fx_date:fxDate,cost_known:itemMeta[i]?.costKnown??(N(it.actual)>0)}));
+        if(!costKnown){cl.actual=0;cl.actualBase=0;}
+        if(editingOrderId){try{await persistCurrencyAwareQuiet();}catch(e){console.warn(e);}}
+      }
+      try{renderCustLines();updateSummary();renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');}catch(e){}
+    };
+    try{saveCustLine=window.saveCustLine;}catch(e){}
+  }
+
+  const baseRenderCL=window.renderCustLines||((typeof renderCustLines==='function')?renderCustLines:null);
+  if(baseRenderCL){
+    window.renderCustLines=function(){
+      const r=baseRenderCL.apply(this,arguments);
+      document.querySelectorAll('#cust-lines-wrap .cl-card').forEach((card,i)=>{
+        const cl=curCustLines[i];if(!cl)return;const m=lineMeta(cl,{date:document.getElementById('o-date')?.value||today(),custLines:curCustLines});
+        const right=card.querySelector('.text-right');
+        if(right){
+          const p=lineCostGBP(cl,{date:document.getElementById('o-date')?.value||today(),custLines:curCustLines});
+          right.innerHTML=`<div class="font-bold">${MONEY(cl.quoted,m.saleCurrency)}</div><div class="text-xs ${p==null?'text-muted':lineSaleGBP(cl,{date:document.getElementById('o-date')?.value||today(),custLines:curCustLines})-p>=0?'text-green':'text-red'}">${p==null?'Profit not calculated':MONEY(lineSaleGBP(cl,{date:document.getElementById('o-date')?.value||today(),custLines:curCustLines})-p,'GBP')}</div>`;
+        }
+        const table=card.querySelector('table.itbl');
+        if(table){
+          const th=table.querySelectorAll('th');if(th[1])th[1].textContent=`Quoted (${m.saleCurrency})`;if(th[2])th[2].textContent=`Actual (${m.costCurrency})`;
+          table.querySelectorAll('tbody tr').forEach((tr,j)=>{const it=(cl.items||[])[j],td=tr.children;if(!it)return;if(td[1])td[1].textContent=MONEY(it.quoted,m.saleCurrency);if(td[2])td[2].textContent=(typeof it.cost_known==='boolean'&&!it.cost_known)?'Not entered':MONEY(it.actual,m.costCurrency);});
+        }
+      });
+      return r;
+    };
+    try{renderCustLines=window.renderCustLines;}catch(e){}
+  }
+
+  window.saveOrder=async function(){
+    const numRef=document.getElementById('o-num')?.value.trim();if(!numRef){toast('Enter order number',false);return;}
+    const orderType=(typeof patchedOrderType==='function'?patchedOrderType():document.getElementById('o-type')?.value||'weekly');
+    const old=editingOrderId?db.orders.find(o=>o.id===editingOrderId):null;
+    if(orderType!=='stock'){
+      try{await syncCreditPaymentsForOrderLines(curCustLines,old?.custLines||[],numRef);}catch(e){toast(e.message||'Credit could not be applied',false);return;}
+    }else if(!(typeof getSALines==='function'&&getSALines().length)){toast('Add at least one SA stock item',false);return;}
+    let built;try{built=await buildCurrencyAwarePayload();}catch(e){toast(e.message||e,false);return;}
+    setSyncStatus('sync-busy','Saving...');
+    try{
+      if(editingOrderId){
+        built.row.id=editingOrderId;built.local.id=editingOrderId;await sbUpdate('orders',editingOrderId,built.row);
+        const idx=db.orders.findIndex(o=>String(o.id)===String(editingOrderId));if(idx>-1)db.orders[idx]=built.local;
+      }else{
+        await sbInsert('orders',built.row);built.local.id=built.row.id;db.orders.push(built.local);
+      }
+      if(orderType!=='stock'){
+        for(const cl of curCustLines){if(!db.customers.find(c=>String(c.name).toLowerCase()===String(cl.name).toLowerCase())){const nc={id:uid(),name:cl.name,location:cl.location||'',phone:'',email:'',notes:'',created:today()};await sbInsert('customers',nc);db.customers.push(nc);}}
+      }
+      setSyncStatus('sync-ok','✓ Synced');editingOrderId=null;curCustLines=[];curSuppliers=[];renderCredits();renderOverview();nav('orders');toast('Order saved ✓');
+    }catch(e){setSyncStatus('sync-err','✗ Error');toast('Save failed: '+(e.message||e),false);console.error(e);}
+  };
+  try{saveOrder=window.saveOrder;}catch(e){}
+
+  /* ---------- POS native sale currency + actual supplier-cost currency ---------- */
+  function ensurePOSCurrencyUI(){
+    try{if(typeof ensurePOSPage==='function')ensurePOSPage();}catch(e){}
+    const form=document.getElementById('pos-form');if(!form)return;
+    const grid=form.querySelector('.form-grid');if(grid&&!document.getElementById('pos-sale-currency')){
+      const sc=document.createElement('div');sc.className='fg';sc.innerHTML='<label>Sale / invoice currency</label><select id="pos-sale-currency" onchange="updatePOSCurrencyUI();updatePOSTotals()"><option value="GBP">GBP £</option><option value="EUR">EUR €</option></select>';
+      const cc=document.createElement('div');cc.className='fg';cc.innerHTML='<label>Actual cost currency</label><select id="pos-cost-currency" onchange="updatePOSCurrencyUI();updatePOSTotals()"><option value="EUR">EUR €</option><option value="GBP">GBP £</option></select>';
+      const fx=document.createElement('div');fx.className='fg fg-full';fx.innerHTML='<div style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#f8fafc"><strong>Transaction FX:</strong> <span id="pos-fx-display">Loading…</span> <button type="button" class="btn btn-sec btn-xs" style="margin-left:8px" onclick="refreshPOSFx(true)">↻ Refresh</button><input type="hidden" id="pos-fx-rate"><input type="hidden" id="pos-fx-date"></div>';
+      const notes=document.getElementById('pos-notes')?.closest('.fg');if(notes){notes.insertAdjacentElement('beforebegin',sc);sc.insertAdjacentElement('afterend',cc);cc.insertAdjacentElement('afterend',fx);}else{grid.append(sc,cc,fx);}
+    }
+    const sub=document.querySelector('#page-pos-sale .section-hd .text-sm.text-muted');if(sub)sub.textContent='Sell in GBP or EUR. Actual costs can be entered separately; profit is reported in GBP using the stored transaction-date rate.';
+    document.querySelectorAll('#pos-items .pos-item-eur').forEach(e=>e.style.display='none');
+    updatePOSCurrencyUI();
+  }
+  window.updatePOSCurrencyUI=function(){
+    const sc=document.getElementById('pos-sale-currency')?.value||'GBP',cc=document.getElementById('pos-cost-currency')?.value||'EUR';
+    document.querySelectorAll('#pos-items .pos-item-sold').forEach(e=>e.placeholder=`Price sold ${SYM(sc)}`);
+    document.querySelectorAll('#pos-items .pos-item-cost').forEach(e=>e.placeholder=`Actual cost ${SYM(cc)} optional`);
+    const labels=document.querySelectorAll('#page-pos-sale .metrics .metric');
+    labels.forEach(card=>{
+      const id=card.querySelector('.metric-val')?.id,lbl=card.querySelector('.metric-lbl'),sub=card.querySelector('.metric-sub');
+      if(id==='pos-total-gbp'){if(lbl)lbl.textContent='Sale Total';if(sub)sub.textContent=`Client charged in ${sc}`;}
+      if(id==='pos-total-eur'){card.style.display='none';}
+      if(id==='pos-cost-total'){if(lbl)lbl.textContent='Actual Cost';if(sub)sub.textContent=`${cc} · blank means not entered`;}
+      if(id==='pos-profit'){if(lbl)lbl.textContent='Profit';if(sub)sub.textContent='GBP at transaction FX';}
+    });
+    const paid=document.getElementById('pos-paid-currency');if(paid&&!paid.dataset.fxTouched){paid.value=sc;}
+  };
+  window.refreshPOSFx=async function(force=false){
+    const date=document.getElementById('pos-date')?.value||today(),disp=document.getElementById('pos-fx-display'),ri=document.getElementById('pos-fx-rate'),di=document.getElementById('pos-fx-date');
+    try{const x=await fetchRate(date,force);if(ri)ri.value=x.rate;if(di)di.value=x.date;if(disp)disp.textContent=`£1 = €${x.rate.toFixed(4)} · ${DATELABEL(x.date)} · ${x.source}`;updatePOSTotals();}catch(e){if(disp)disp.textContent='Rate unavailable — refresh or try again';}
+  };
+
+  const baseAddPOS=window.addPOSItemRow||((typeof addPOSItemRow==='function')?addPOSItemRow:null);
+  if(baseAddPOS){
+    window.addPOSItemRow=function(){
+      const r=baseAddPOS.apply(this,arguments);ensurePOSCurrencyUI();document.querySelectorAll('#pos-items .pos-item-eur').forEach(e=>e.style.display='none');updatePOSCurrencyUI();return r;
+    };
+    try{addPOSItemRow=window.addPOSItemRow;}catch(e){}
+  }
+  const basePosProduct=window.posProductSelected||((typeof posProductSelected==='function')?posProductSelected:null);
+  window.posProductSelected=function(input,exactOnly=true){
+    const value=String(input?.value||'').trim().toLowerCase();if(!value)return;
+    const product=(typeof POS_PRODUCT_SUGGESTIONS!=='undefined'?POS_PRODUCT_SUGGESTIONS:[]).find(p=>String(p.title||'').trim().toLowerCase()===value);
+    if(product){
+      const row=input.closest('.pos-item-row'),price=row?.querySelector('.pos-item-sold'),sc=document.getElementById('pos-sale-currency')?.value||'GBP',rate=N(document.getElementById('pos-fx-rate')?.value);
+      if(price&&!price.value&&product.price){const baseGBP=N(product.price);price.value=(sc==='EUR'&&rate>0?baseGBP*rate:baseGBP).toFixed(2);}
+      updatePOSTotals();
+    }else if(basePosProduct){try{return basePosProduct.apply(this,arguments);}catch(e){}}
+  };
+  try{posProductSelected=window.posProductSelected;}catch(e){}
+
+  window.updatePOSTotals=function(){
+    ensurePOSCurrencyUI();
+    const sc=document.getElementById('pos-sale-currency')?.value||'GBP',cc=document.getElementById('pos-cost-currency')?.value||'EUR',rate=N(document.getElementById('pos-fx-rate')?.value);
+    let sale=0,cost=0,known=true;
+    document.querySelectorAll('#pos-items .pos-item-row').forEach(r=>{sale+=N(r.querySelector('.pos-item-sold')?.value);const c=r.querySelector('.pos-item-cost')?.value;if(String(c??'').trim()==='')known=false;else cost+=N(c);});
+    const saleEl=document.getElementById('pos-total-gbp'),costEl=document.getElementById('pos-cost-total'),profitEl=document.getElementById('pos-profit'),sub=document.getElementById('pos-profit-eur');
+    if(saleEl)saleEl.textContent=MONEY(sale,sc);
+    if(costEl)costEl.textContent=known?MONEY(cost,cc):'Not entered';
+    let profit=null;if(known&&(sc===cc||rate>0)){profit=convert(sale,sc,'GBP',rate)-convert(cost,cc,'GBP',rate);}
+    if(profitEl){profitEl.textContent=profit==null?'Not calculated':MONEY(profit,'GBP');profitEl.className='metric-val '+(profit==null?'':profit>=0?'mv-green':'mv-red');}
+    if(sub)sub.textContent=profit==null?'Enter actual cost to calculate':`£1 = €${rate.toFixed(4)}`;
+  };
+  try{updatePOSTotals=window.updatePOSTotals;}catch(e){}
+
+  const baseResetPOS=window.resetPOSForm||((typeof resetPOSForm==='function')?resetPOSForm:null);
+  window.resetPOSForm=function(){
+    if(baseResetPOS)baseResetPOS.apply(this,arguments);ensurePOSCurrencyUI();
+    const sc=document.getElementById('pos-sale-currency'),cc=document.getElementById('pos-cost-currency');if(sc)sc.value='GBP';if(cc)cc.value='EUR';
+    document.getElementById('pos-paid-currency')?.removeAttribute('data-fx-touched');updatePOSCurrencyUI();setTimeout(()=>refreshPOSFx(false),0);updatePOSTotals();
+  };
+  try{resetPOSForm=window.resetPOSForm;}catch(e){}
+
+  function collectPOSNative(){
+    const sc=document.getElementById('pos-sale-currency')?.value||'GBP',cc=document.getElementById('pos-cost-currency')?.value||'EUR',rate=N(document.getElementById('pos-fx-rate')?.value);
+    return [...document.querySelectorAll('#pos-items .pos-item-row')].map(r=>{
+      const name=(r.querySelector('.pos-item-name')?.value||'').trim(),sale=N(r.querySelector('.pos-item-sold')?.value),raw=r.querySelector('.pos-item-cost')?.value,known=String(raw??'').trim()!=='',cost=N(raw);
+      return {name,sale,cost,costKnown:known,saleCurrency:sc,costCurrency:cc,rate};
+    }).filter(i=>i.name&&i.sale>0);
+  }
+  function posGift(totalEUR){if(totalEUR>=250)return {limit:10};if(totalEUR>150)return {limit:5};return null;}
+  function ensurePosConfirm(){
+    let m=document.getElementById('modal-pos-real-fx-confirm');if(m)return m;
+    m=document.createElement('div');m.id='modal-pos-real-fx-confirm';m.className='modal-ov';
+    m.innerHTML='<div class="modal" style="width:650px"><div class="modal-head"><div class="modal-title" id="pos-real-fx-title">Confirm POS Sale</div><button class="modal-close" type="button" onclick="document.getElementById(\'modal-pos-real-fx-confirm\').classList.remove(\'open\')">✕</button></div><div class="modal-body" id="pos-real-fx-body"></div><div class="modal-foot"><button class="btn btn-sec" type="button" onclick="document.getElementById(\'modal-pos-real-fx-confirm\').classList.remove(\'open\')">Go Back</button><button class="btn btn-primary" type="button" id="pos-real-fx-save" onclick="confirmRealFxPOS()">Confirm & Submit Sale</button></div></div>';
+    document.body.appendChild(m);return m;
+  }
+  window.submitPOSSale=async function(e){
+    if(e)e.preventDefault();ensurePOSCurrencyUI();
+    if(typeof canUsePOS==='function'&&!canUsePOS()){alert('You do not have access to POS sales.');return;}
+    const date=document.getElementById('pos-date')?.value||today();let rate=N(document.getElementById('pos-fx-rate')?.value),fxDate=document.getElementById('pos-fx-date')?.value||date;
+    if(!(rate>0)){try{const x=await fetchRate(date,false);rate=x.rate;fxDate=x.date;document.getElementById('pos-fx-rate').value=rate;document.getElementById('pos-fx-date').value=fxDate;}catch(err){alert(err.message);return;}}
+    const items=collectPOSNative();if(!items.length){toast('Add at least one item and price sold',false);return;}
+    const sc=document.getElementById('pos-sale-currency')?.value||'GBP',cc=document.getElementById('pos-cost-currency')?.value||'EUR',method=document.getElementById('pos-payment')?.value||'Cash',paidCurrency=document.getElementById('pos-paid-currency')?.value||sc;
+    const total=items.reduce((a,i)=>a+i.sale,0),totalGBP=convert(total,sc,'GBP',rate),totalEUR=convert(total,sc,'EUR',rate),allKnown=items.every(i=>i.costKnown),costNative=items.reduce((a,i)=>a+i.cost,0),costGBP=allKnown?convert(costNative,cc,'GBP',rate):null;
+    let client=(document.getElementById('pos-client')?.value||'').trim(),company='',dueDate='',invoiceNotes='';
+    if(method==='Invoice / Pay Later'){company=(document.getElementById('pos-company')?.value||'').trim();dueDate=document.getElementById('pos-due-date')?.value||'';invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();if(!company){toast('Company name is required for invoice/pay later',false);return;}if(!dueDate){toast('Due date is required for invoice/pay later',false);return;}if(!client)client=company;}
+    if(!client)client='Walk-in Customer - unknown';
+    if(method==='Customer Credit'){if(client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}const bal=typeof customerCreditBalance==='function'?N(customerCreditBalance(client)):0;if(bal+0.001<totalEUR){alert(`Customer credit is not enough.\nAvailable: ${MONEY(bal,'EUR')}\nRequired: ${MONEY(totalEUR,'EUR')}`);return;}}
+    const saleNo=typeof posNextSaleNumber==='function'?posNextSaleNumber(date):String(orders().filter(o=>DATEKEY(o.date)===date&&isPOS(o)).length+1).padStart(3,'0'),ref=`${DATELABEL(date)} - ${saleNo}`;
+    const draft={items,total,totalGBP,totalEUR,allKnown,costNative,costGBP,sc,cc,rate,fxDate,date,method,paidCurrency,client,company,dueDate,invoiceNotes,ref,orderNum:`POS - ${ref}`,gift:posGift(totalEUR),notes:(document.getElementById('pos-notes')?.value||'').trim()};
+    window.__realFxPosDraft=draft;
+    const m=ensurePosConfirm(),body=document.getElementById('pos-real-fx-body'),invoice=method==='Invoice / Pay Later',payAmount=paidCurrency===sc?total:convert(total,sc,paidCurrency,rate);
+    document.getElementById('pos-real-fx-title').textContent=invoice?'Confirm Invoice Sale':'Confirm POS Sale';
+    body.innerHTML=`<div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc">
+      <div><strong>Client:</strong> ${SAFE(client)}</div><div><strong>Sale / invoice total:</strong> ${MONEY(total,sc)}</div><div><strong>Payment:</strong> ${SAFE(method)}${invoice?'':` · ${MONEY(payAmount,paidCurrency)} in ${paidCurrency}`}</div><div><strong>FX stored:</strong> £1 = €${rate.toFixed(4)} · ${DATELABEL(fxDate)}</div>
+      ${invoice?`<div class="text-red font-bold mt-8">This will be recorded as unpaid / Invoice Pay Later.</div>`:'<div class="font-bold mt-8">Confirm the client has paid the correct amount before saving.</div>'}
+    </div>
+    ${draft.gift?`<div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:10px;background:#fff5f5"><div class="font-bold text-red">🎁 Free item required — up to £${draft.gift.limit}</div><label class="flex items-c gap-8 mt-8"><input type="checkbox" id="pos-real-fx-gift"> I have offered / provided the free item to the client</label></div>`:''}`;
+    m.classList.add('open');
+  };
+  try{submitPOSSale=window.submitPOSSale;}catch(e){}
+
+  window.confirmRealFxPOS=async function(){
+    const d=window.__realFxPosDraft;if(!d)return;if(d.gift&&!document.getElementById('pos-real-fx-gift')?.checked){alert('Please tick the free-item confirmation before submitting.');return;}
+    const btn=document.getElementById('pos-real-fx-save');if(btn){btn.disabled=true;btn.textContent='Saving…';}
+    try{
+      const paidNow=d.method!=='Invoice / Pay Later',entered=window._session?.displayName||window._session?.username||'Unknown';
+      const itemRows=d.items.map(i=>({name:i.name,quoted:R2(i.sale),actual:i.costKnown?R2(i.cost):0,status:'DELIVERED',delivered:true,doa:false,doaResolved:false,sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,cost_known:i.costKnown,
+        quoted_gbp:R2(convert(i.sale,d.sc,'GBP',d.rate)),quoted_eur:R2(convert(i.sale,d.sc,'EUR',d.rate)),actual_gbp:i.costKnown?R2(convert(i.cost,d.cc,'GBP',d.rate)):null,actual_eur:i.costKnown?R2(convert(i.cost,d.cc,'EUR',d.rate)):null}));
+      const payment=paidNow?[{amount:R2(d.total),currency:d.sc,paid_currency:d.paidCurrency,paid_amount:R2(d.paidCurrency===d.sc?d.total:convert(d.total,d.sc,d.paidCurrency,d.rate)),date:d.date,method:d.method,note:d.method==='Customer Credit'?'Paid using customer credit':'Paid at POS',fx_rate:d.rate}]:[];
+      const meta={currency_engine:'actual_fx_v1',sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,fx_source:'ECB / Frankfurter',total_native:R2(d.total),total_gbp:R2(d.totalGBP),total_eur:R2(d.totalEUR),cost_known:d.allKnown,cost_native:d.allKnown?R2(d.costNative):null,cost_gbp:d.costGBP==null?null:R2(d.costGBP),profit_gbp:d.costGBP==null?null:R2(d.totalGBP-d.costGBP),paid_currency:d.paidCurrency,payment_method:d.method,invoice_ref:d.ref,company:d.company,due_date:d.dueDate,invoice_notes:d.invoiceNotes,entered_by:entered};
+      const line={id:uid(),name:d.client,location:'',delivery:'local',status:paidNow?'PAID':'TO BE PAID',quoted:R2(d.total),actual:d.allKnown?R2(d.costNative):0,actualBase:d.allKnown?R2(d.costNative):0,sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,fx_source:'ECB / Frankfurter',cost_known:d.allKnown,
+        items:itemRows,payments:payment,payBy:d.dueDate,payMethod:d.method,doaTotal:0,freeShipping:false,actualShippingCost:0,trackingNumber:'',tracking_number:'',pos_meta:meta,payment_currency:d.paidCurrency};
+      let notes=`POS sale entered by ${entered} | Payment: ${d.method} | Sale currency: ${d.sc} | FX £1=€${d.rate.toFixed(4)} (${d.fxDate})`;
+      if(d.gift)notes+=` | Free item confirmed: offered/provided item up to £${d.gift.limit} value.`;
+      if(d.company)notes+=` | Company: ${d.company}`;if(d.dueDate)notes+=` | Due: ${d.dueDate}`;if(d.invoiceNotes)notes+=` | Invoice notes: ${d.invoiceNotes}`;if(d.notes)notes+=` | Notes: ${d.notes}`;
+      const order={id:uid(),num:d.orderNum,order_type:'pos',date:d.date,suppliers:['Straits Aquatics'],shipping:0,other_costs:0,notes,cust_lines:[line],sa_lines:[],total_quoted:R2(d.totalGBP),total_actual:d.costGBP==null?null:R2(d.costGBP),profit:d.costGBP==null?null:R2(d.totalGBP-d.costGBP),doa_total:0,total_pending:paidNow?0:R2(d.totalGBP),manual_complete:paidNow,created:today()};
+      setSyncStatus('sync-busy','Saving POS sale…');await sbInsert('orders',order);
+      const local={id:order.id,num:order.num,orderType:'pos',date:order.date,suppliers:order.suppliers,shipping:0,otherCosts:0,notes:order.notes,custLines:[line],saLines:[],totalQuoted:order.total_quoted,totalActual:order.total_actual,profit:order.profit,doaTotal:0,totalPending:order.total_pending,manualComplete:paidNow,created:order.created};db.orders.push(local);
+      if(d.method==='Customer Credit'){const cr={id:uid(),customer:d.client,type:'credit',amount:-R2(d.totalEUR),reason:`POS sale paid using customer credit (${d.orderNum})`,order_num:d.orderNum,date:d.date};await sbInsert('credits',cr);db.credits.push({id:cr.id,customer:cr.customer,type:cr.type,amount:cr.amount,reason:cr.reason,order:cr.order_num,date:cr.date});}
+      if(d.client!=='Walk-in Customer - unknown'&&!db.customers.some(c=>String(c.name).toLowerCase()===String(d.client).toLowerCase())){const nc={id:uid(),name:d.client,location:'',phone:'',email:'',notes:d.method==='Invoice / Pay Later'?'Created from POS invoice':'Created from POS sale',created:today()};await sbInsert('customers',nc);db.customers.push(nc);try{refreshDatalist();refreshPOSDatalists();}catch(e){}}
+      document.getElementById('modal-pos-real-fx-confirm')?.classList.remove('open');setSyncStatus('sync-ok','✓ Synced');renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');renderCredits();if(typeof updatePOSDailySummary==='function')updatePOSDailySummary();
+      const receipt={orderId:order.id,orderNum:d.orderNum,receiptRef:d.ref,saleDate:d.date,client:d.client,company:d.company,dueDate:d.dueDate,invoiceNotes:d.invoiceNotes,method:d.method,paidCurrency:d.sc,totalGbp:R2(d.totalGBP),totalEur:R2(d.totalEUR),items:itemRows.map(it=>({name:it.name,qty:1,soldGbp:it.quoted_gbp,soldEur:it.quoted_eur})),notes,enteredBy:entered,giftLimit:d.gift?.limit||0};
+      resetPOSForm();if(typeof showPOSReceiptClean==='function')showPOSReceiptClean(receipt);else toast(`POS sale saved: ${d.orderNum}`);
+    }catch(e){console.error(e);setSyncStatus('sync-err','✗ Error');alert('POS sale failed: '+(e.message||e));}
+    finally{if(btn){btn.disabled=false;btn.textContent='Confirm & Submit Sale';}window.__realFxPosDraft=null;}
+  };
+
+  /* ---------- Order list / detail / profit tracker ---------- */
+  function nativeRevenueLabel(o){
+    const cls=lines(o);if(!cls.length){const f=orderFinance(o);return MONEY(f.revenueGBP,'GBP');}
+    const cs=[...new Set(cls.map(cl=>lineMeta(cl,o).saleCurrency))];
+    if(cs.length===1)return MONEY(cls.reduce((a,c)=>a+N(c.quoted),0),cs[0]);
+    return MONEY(orderFinance(o).revenueGBP,'GBP')+' GBP eq.';
+  }
+  function nativeCostLabel(o){
+    const f=orderFinance(o);if(f.costGBP==null||!Number.isFinite(f.costGBP))return '<span class="text-muted">Not calculated</span>';
+    const cls=lines(o),cs=[...new Set(cls.filter(c=>lineMeta(c,o).costKnown).map(c=>lineMeta(c,o).costCurrency))];
+    if(cls.length&&cs.length===1&&cls.every(c=>lineMeta(c,o).costKnown))return MONEY(cls.reduce((a,c)=>a+N(c.actual),0),cs[0]);
+    return MONEY(f.costGBP,'GBP')+' GBP eq.';
+  }
+  function decorateOrderRows(){
+    document.querySelectorAll('#orders-body tr').forEach(tr=>{
+      const numtxt=(tr.children[0]?.textContent||'').replace(/^#/,'').replace(/POS Sale/g,'').trim();
+      const o=orders().find(x=>numtxt.includes(String(x.num||'')));if(!o)return;const f=orderFinance(o),td=tr.children;
+      if(td[4])td[4].innerHTML=`<div class="font-bold">${nativeRevenueLabel(o)}</div>${f.rate?`<div class="text-xs text-muted">GBP eq. ${MONEY(f.revenueGBP,'GBP')} · £1=€${f.rate.toFixed(4)}</div>`:''}`;
+      if(td[5])td[5].innerHTML=nativeCostLabel(o);
+      if(td[6])td[6].innerHTML=f.profitGBP==null?'<span class="text-muted">Not calculated</span>':`<span class="font-bold ${f.profitGBP>=0?'text-green':'text-red'}">${MONEY(f.profitGBP,'GBP')}</span>`;
+      if(td[7]){
+        if(f.pendingGBP>0.01)td[7].innerHTML=`<span class="font-bold text-red">${MONEY(f.pendingGBP,'GBP')} eq.</span>`;else td[7].innerHTML='<span class="font-bold text-green">Paid</span>';
+      }
+    });
+  }
+  const baseRO=window.renderOrders||((typeof renderOrders==='function')?renderOrders:null);
+  window.renderOrders=function(){const r=baseRO?baseRO.apply(this,arguments):undefined;setTimeout(()=>{decorateOrderRows();enforceStaffFinanceLock();},0);return r;};
+  try{renderOrders=window.renderOrders;}catch(e){}
+
+  function enforceStaffFinanceLock(){
+    let st=document.getElementById('final-real-fx-staff-lock');if(!st){st=document.createElement('style');st.id='final-real-fx-staff-lock';st.textContent=`body.role-staff #page-orders table thead th:nth-child(6),body.role-staff #page-orders table thead th:nth-child(7),body.role-staff #orders-body td:nth-child(6),body.role-staff #orders-body td:nth-child(7){display:none!important}body.role-staff .admin-finance-only{display:none!important}`;document.head.appendChild(st);}
+    if(isStaff())document.body.classList.add('role-staff');
+  }
+
+  function receiptDataForLine(o,cl){
+    const m=lineMeta(cl,o),saleCur=m.saleCurrency,total=N(cl.quoted),paid=paymentNativeTotal(cl),rem=Math.max(0,total-paid),invoice=rem>0.01,docTotal=invoice&&paid>0?rem:total;
+    let its=(cl.items||[]).map(it=>{const q=N(it.quoted),g=convert(q,saleCur,'GBP',m.rate),e=convert(q,saleCur,'EUR',m.rate);return {name:it.name||'Item',qty:1,soldGbp:R2(g),soldEur:R2(e)};});
+    if(invoice&&paid>0)its=[{name:`Outstanding balance — Order #${o.num}`,qty:1,soldGbp:R2(convert(rem,saleCur,'GBP',m.rate)),soldEur:R2(convert(rem,saleCur,'EUR',m.rate))}];
+    const totalGBP=R2(convert(docTotal,saleCur,'GBP',m.rate)),totalEUR=R2(convert(docTotal,saleCur,'EUR',m.rate));
+    return {orderId:o.id,orderNum:String(o.num||''),receiptRef:String(o.num||''),saleDate:o.date||o.created||'',client:cl.name||'Customer',company:'',dueDate:invoice?(cl.payBy||''):'',invoiceNotes:invoice&&paid>0?`Original total: ${MONEY(total,saleCur)}. Paid to date: ${MONEY(paid,saleCur)}. Remaining: ${MONEY(rem,saleCur)}.`:'',method:cl.payMethod||cl.payments?.[0]?.method||'Not specified',paidCurrency:saleCur,totalGbp:totalGBP,totalEur:totalEUR,items:its,notes:o.notes||'',enteredBy:'',giftLimit:0};
+  }
+  function receiptDataForPOS(o){
+    const cl=lines(o)[0]||{},m=lineMeta(cl,o),pm=cl.pos_meta||{},saleCur=m.saleCurrency,total=N(cl.quoted);
+    return {orderId:o.id,orderNum:o.num,receiptRef:pm.invoice_ref||o.num,saleDate:o.date,client:cl.name||'Walk-in Customer - unknown',company:pm.company||'',dueDate:pm.due_date||cl.payBy||'',invoiceNotes:pm.invoice_notes||'',method:pm.payment_method||cl.payMethod||'',paidCurrency:saleCur,totalGbp:R2(convert(total,saleCur,'GBP',m.rate)),totalEur:R2(convert(total,saleCur,'EUR',m.rate)),
+      items:(cl.items||[]).map(it=>({name:it.name,qty:1,soldGbp:R2(convert(N(it.quoted),saleCur,'GBP',m.rate)),soldEur:R2(convert(N(it.quoted),saleCur,'EUR',m.rate))})),notes:o.notes||'',enteredBy:pm.entered_by||'',giftLimit:/up to £10/.test(o.notes||'')?10:/up to £5/.test(o.notes||'')?5:0};
+  }
+  window.openAdhocDocumentLine=function(orderId,index){const o=orders().find(x=>String(x.id)===String(orderId)),cl=lines(o)[index];if(!o||!cl)return;if(typeof showPOSReceiptClean!=='function'){alert('Receipt generator unavailable.');return;}showPOSReceiptClean(receiptDataForLine(o,cl));};
+  window.openOrderDocumentById=function(orderId){
+    const o=orders().find(x=>String(x.id)===String(orderId));if(!o)return;
+    if(isPOS(o)){if(typeof showPOSReceiptClean==='function')showPOSReceiptClean(receiptDataForPOS(o));return;}
+    const cls=lines(o);if(!cls.length)return;
+    if(cls.length===1){window.openAdhocDocumentLine(o.id,0);return;}
+    let modal=document.getElementById('modal-adhoc-document-chooser');if(!modal){modal=document.createElement('div');modal.id='modal-adhoc-document-chooser';modal.className='modal-ov';modal.innerHTML='<div class="modal"><div class="modal-head"><div class="modal-title">Choose customer document</div><button class="modal-close" onclick="closeModal(\'modal-adhoc-document-chooser\')">✕</button></div><div class="modal-body" id="adhoc-document-chooser-body"></div></div>';document.body.appendChild(modal);}
+    document.getElementById('adhoc-document-chooser-body').innerHTML=cls.map((cl,i)=>{const m=lineMeta(cl,o),rem=lineBalanceNative(cl);return `<div class="flex items-c gap-8" style="padding:9px 0;border-bottom:1px solid var(--border)"><div style="flex:1"><div class="font-bold">${SAFE(cl.name)}</div><div class="text-xs text-muted">${MONEY(cl.quoted,m.saleCurrency)} · ${rem>0.01?MONEY(rem,m.saleCurrency)+' outstanding':'Paid'}</div></div><button class="btn btn-reef btn-sm" onclick="openAdhocDocumentLine('${SAFE(o.id)}',${i})">${rem>0.01?'Invoice':'Receipt'}</button></div>`;}).join('');
+    openModal('modal-adhoc-document-chooser');
+  };
+
+  window.viewOrder=function(id){
+    const o=orders().find(x=>String(x.id)===String(id));if(!o)return;const f=orderFinance(o),staff=isStaff();
+    document.getElementById('od-title').textContent=(isPOS(o)?'POS Sale #':'Order #')+o.num;
+    const rate=f.rate?`£1 = €${f.rate.toFixed(4)}${f.rateDate?' · '+DATELABEL(f.rateDate):''}`:'Rate unavailable';
+    let stat=`<div><div class="ostat-lbl">Date</div><div class="ostat-val">${SAFE(o.date||'—')}</div></div><div><div class="ostat-lbl">Sale / Quoted</div><div class="ostat-val text-green">${nativeRevenueLabel(o)}</div></div><div><div class="ostat-lbl">FX</div><div class="ostat-val">${SAFE(rate)}</div></div>`;
+    if(!staff){stat+=`<div class="admin-finance-only"><div class="ostat-lbl">Actual Cost</div><div class="ostat-val text-amber">${f.costGBP==null?'Not entered':MONEY(f.costGBP,'GBP')+' eq.'}</div></div><div class="admin-finance-only"><div class="ostat-lbl">Profit GBP</div><div class="ostat-val ${f.profitGBP==null?'text-muted':f.profitGBP>=0?'text-green':'text-red'}">${f.profitGBP==null?'Not calculated':MONEY(f.profitGBP,'GBP')}</div></div>`;}
+    document.getElementById('od-statbar').innerHTML=stat;
+    let html='';
+    lines(o).forEach((cl,ci)=>{
+      const m=lineMeta(cl,o),cg=lineCostGBP(cl,o),sg=lineSaleGBP(cl,o),p=cg==null?null:sg-cg;
+      html+=`<div style="margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px"><div class="flex items-c gap-8 mb-8"><div style="flex:1"><div class="font-bold">${SAFE(cl.name||'Customer')}</div><div class="text-xs text-muted">${MONEY(cl.quoted,m.saleCurrency)} · ${cl.payMethod||''}</div></div>${!staff?`<div class="admin-finance-only text-right"><div class="font-bold">${MONEY(cl.quoted,m.saleCurrency)}</div><div class="text-xs ${p==null?'text-muted':p>=0?'text-green':'text-red'}">${p==null?'Profit not calculated':MONEY(p,'GBP')+' profit'}</div></div>`:''}</div>`;
+      if((cl.items||[]).length){html+=`<table class="itbl"><thead><tr><th>Item</th><th>Sold / Quoted</th>${staff?'':'<th class="admin-finance-only">Actual Cost</th>'}<th>Status</th></tr></thead><tbody>${cl.items.map(it=>`<tr><td>${SAFE(it.name||'')}</td><td>${MONEY(it.quoted,m.saleCurrency)}</td>${staff?'':`<td class="admin-finance-only">${(typeof it.cost_known==='boolean'&&!it.cost_known)||(!m.costKnown&&N(it.actual)===0)?'Not entered':MONEY(it.actual,it.cost_currency||m.costCurrency)}</td>`}<td>${SAFE(it.status||'')}</td></tr>`).join('')}</tbody></table>`;}
+      html+='</div>';
+    });
+    if(o.notes){
+      const visibleNotes=isPOS(o)
+        ? String(o.notes).split('|').map(x=>x.trim()).filter(x=>x&&!/^Sale .*@\s*x1\.20/i.test(x)&&!/^FX .*1\.20/i.test(x)).join(' | ')
+        : String(o.notes);
+      if(visibleNotes)html+=`<p class="text-sm text-muted mt-8">📝 ${SAFE(visibleNotes)}</p>`;
+    }
+    document.getElementById('od-body').innerHTML=html||'<p class="text-muted">No items.</p>';
+    const foot=document.querySelector('#modal-order-detail .modal-foot');if(foot){let b=document.getElementById('od-doc-real-fx');if(!b&&(isPOS(o)||String(o.orderType).toLowerCase()==='adhoc')){b=document.createElement('button');b.id='od-doc-real-fx';b.className='btn btn-reef';foot.insertBefore(b,foot.firstChild);}if(b){b.style.display=(isPOS(o)||String(o.orderType).toLowerCase()==='adhoc')?'inline-flex':'none';b.textContent=isPOS(o)?'Receipt':'Receipt / Invoice';b.onclick=()=>openOrderDocumentById(o.id);}}
+    const del=document.getElementById('od-del-btn');if(del)del.style.display=staff?'none':'inline-flex';if(del&&!staff)del.onclick=()=>{deleteOrder(id);closeModal('modal-order-detail');};
+    openModal('modal-order-detail');enforceStaffFinanceLock();
+  };
+  try{viewOrder=window.viewOrder;}catch(e){}
+
+  window.renderProfits=function(){
+    const body=document.getElementById('profit-body');if(!body)return;
+    const head=body.closest('table')?.querySelector('thead tr');if(head)head.innerHTML='<th>Order #</th><th>Date</th><th>Supplier(s)</th><th>Revenue</th><th>Actual Cost</th><th>FX</th><th>Profit GBP</th><th>Margin</th><th>Status</th>';
+    if(!orders().length){body.innerHTML='<tr><td colspan="9"><div class="empty"><p>No orders yet</p></div></td></tr>';return;}
+    body.innerHTML=[...orders()].reverse().map(o=>{const f=orderFinance(o),margin=f.profitGBP==null||!f.revenueGBP?'—':(100*f.profitGBP/f.revenueGBP).toFixed(1)+'%';return `<tr><td><span class="badge b-blue">#${SAFE(o.num)}</span></td><td>${SAFE(o.date||'—')}</td><td>${SAFE((o.suppliers||[]).join(', '))}</td><td>${nativeRevenueLabel(o)}<div class="text-xs text-muted">${MONEY(f.revenueGBP,'GBP')} eq.</div></td><td>${f.costGBP==null?'<span class="text-muted">Not calculated</span>':MONEY(f.costGBP,'GBP')}</td><td>${f.rate?'£1=€'+f.rate.toFixed(4):'—'}</td><td class="${f.profitGBP==null?'text-muted':f.profitGBP>=0?'text-green':'text-red'} font-bold">${f.profitGBP==null?'Not calculated':MONEY(f.profitGBP,'GBP')}</td><td>${margin}</td><td>${typeof isOrderComplete==='function'&&isOrderComplete(o)?'<span class="badge b-green">Completed</span>':'<span class="badge b-amber">Active</span>'}</td></tr>`;}).join('');
+  };
+  try{renderProfits=window.renderProfits;}catch(e){}
+
+  /* ---------- Daily POS summary without a fixed conversion ---------- */
+  window.updatePOSDailySummary=function(){
+    const page=document.getElementById('page-pos-sale');if(!page)return;ensurePOSCurrencyUI();
+    const date=DATEKEY(document.getElementById('pos-date')?.value||today()),rows=orders().filter(o=>isPOS(o)&&DATEKEY(o.date||o.created)===date);
+    let saleGBP=0,saleEUR=0,invoiceGBP=0,invoiceEUR=0,creditEUR=0;
+    const by={cash:{GBP:0,EUR:0},card:{GBP:0,EUR:0},revolut:{GBP:0,EUR:0},paypal:{GBP:0,EUR:0},bank:{GBP:0,EUR:0}};
+    rows.forEach(o=>{const cl=lines(o)[0]||{},m=lineMeta(cl,o),pm=cl.pos_meta||{},cur=m.saleCurrency,v=N(cl.quoted),method=String(pm.payment_method||cl.payMethod||'').toLowerCase();if(cur==='GBP')saleGBP+=v;else saleEUR+=v;if(method.includes('invoice')||method.includes('pay later')){if(cur==='GBP')invoiceGBP+=v;else invoiceEUR+=v;}else if(method.includes('customer credit')){creditEUR+=convert(v,cur,'EUR',m.rate);}else{const k=method.includes('cash')?'cash':method.includes('revolut')?'revolut':method.includes('paypal')?'paypal':method.includes('bank')?'bank':(method.includes('card')||method.includes('sum'))?'card':null;if(k)by[k][cur]+=v;}});
+    const set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;},dual=x=>`${MONEY(x.GBP,'GBP')} / ${MONEY(x.EUR,'EUR')}`;
+    set('pos-sum-gbp-received',MONEY(saleGBP,'GBP'));set('pos-sum-eur-accounting',MONEY(saleEUR,'EUR'));
+    const eurCard=document.getElementById('pos-sum-eur-accounting')?.closest('.metric');if(eurCard){eurCard.querySelector('.metric-lbl').textContent='EUR Sales';eurCard.querySelector('.metric-sub').textContent='Native EUR POS sales';}
+    const gbpCard=document.getElementById('pos-sum-gbp-received')?.closest('.metric');if(gbpCard)gbpCard.querySelector('.metric-sub').textContent='Native GBP POS sales';
+    set('pos-sum-cash',dual(by.cash));set('pos-sum-card-sumup',dual(by.card));set('pos-sum-revolut',dual(by.revolut));set('pos-sum-paypal',dual(by.paypal));set('pos-sum-bank',dual(by.bank));set('pos-sum-invoice',MONEY(invoiceGBP,'GBP'));set('pos-sum-invoice-eur',MONEY(invoiceEUR,'EUR'));set('pos-sum-credit-used',MONEY(creditEUR,'EUR'));set('pos-sum-count',`${rows.length} POS sale${rows.length===1?'':'s'} for ${DATELABEL(date)}.`);
+  };
+  try{updatePOSDailySummary=window.updatePOSDailySummary;}catch(e){}
+
+  /* ---------- Remove visible legacy fixed-rate wording ---------- */
+  function removeLegacyRateText(){
+    document.querySelectorAll('.metric-sub,.text-muted').forEach(e=>{if(/x1\.20|x\s*1\.20|GBP x1\.20/i.test(e.textContent||''))e.textContent=(e.textContent||'').replace(/@?\s*x1\.20/ig,'').replace(/GBP\s*x1\.20\s*=?\s*EUR/ig,'Transaction-date FX').trim();});
+  }
+
+  async function boot(){
+    ensureFxCard();ensureCustomerCurrencyFields();ensurePOSCurrencyUI();enforceStaffFinanceLock();removeLegacyRateText();
+    try{await refreshFxCard(false);}catch(e){}
+    try{await prefetchHistory();}catch(e){}
+    const od=document.getElementById('o-date');if(od&&!od.dataset.fxHook){od.dataset.fxHook='1';od.addEventListener('change',()=>{const rate=document.getElementById('cl-fx-rate');if(rate)rate.value='';refreshCustomerFx(false);});}
+    const pd=document.getElementById('pos-date');if(pd&&!pd.dataset.realFxHook){pd.dataset.realFxHook='1';pd.addEventListener('change',()=>refreshPOSFx(false));}
+    const pc=document.getElementById('pos-paid-currency');if(pc&&!pc.dataset.realFxTouchHook){pc.dataset.realFxTouchHook='1';pc.addEventListener('change',()=>pc.dataset.fxTouched='1');}
+    try{renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');renderProfits();updatePOSDailySummary();}catch(e){}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,50));else setTimeout(boot,50);
+  setTimeout(boot,1000);
+})();
+</script>
 </body>
 </html>
