@@ -1771,7 +1771,7 @@ body:not(.auth-locked) #login-screen{display:none !important;}
     else page.prepend(card);
     return card;
   }
-  function dsUpdateSummary(){
+  function dsUpdateSummary(){ if(window.SA_DISABLE_LEGACY_POS_SUMMARY)return;
     const page = document.getElementById('page-pos-sale');
     if(!page) return;
     dsEnsureSummaryCard();
@@ -7398,7 +7398,7 @@ function applyStaffMode(){
     if(section) section.insertAdjacentElement('afterend', card);
     else page.insertAdjacentElement('afterbegin', card);
   }
-  function updateDailySummary(){
+  function updateDailySummary(){ if(window.SA_DISABLE_LEGACY_POS_SUMMARY)return;
     ensureDailySummaryCard();
     const date = document.getElementById('pos-date')?.value || todayISO();
     const summary = {count:0, gbpReceived:0, eurAccounting:0, cash:0, cardSumup:0, revolut:0, paypal:0, invoiceGbp:0, invoiceEur:0, creditEur:0};
@@ -8404,7 +8404,7 @@ function applyStaffMode(){
     else page.prepend(card);
     return card;
   }
-  function dsUpdateSummary(){
+  function dsUpdateSummary(){ if(window.SA_DISABLE_LEGACY_POS_SUMMARY)return;
     const page = document.getElementById('page-pos-sale');
     if(!page) return;
     dsEnsureSummaryCard();
@@ -12229,5 +12229,359 @@ function applyStaffMode(){
 })();
 </script>
 \n<script>\n/* ===== ORDER DETAIL CUSTOMER-FACING TOTAL PATCH 2026-10-03 ===== */\n(function(){\n  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0;};\n  const safe=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n  const money=(v,c)=>`${String(c||'EUR').toUpperCase()==='GBP'?'£':'€'}${num(v).toFixed(2)}`;\n  function isPOS(o){return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos'||String(o?.num||'').startsWith('POS - ');}\n  function lines(o){return o?.custLines||o?.cust_lines||[];}\n  function nativeLineTotal(o,cl){\n    const pm=cl?.pos_meta||{};\n    const engine=String(pm.currency_engine||'');\n    if(engine==='actual_fx_v1' || cl?.sale_currency){\n      return {amount:num(cl.quoted),currency:String(cl.sale_currency||pm.sale_currency||'EUR').toUpperCase()};\n    }\n    if(isPOS(o)){\n      const gbp=cl?.total_gbp ?? cl?.quoted_gbp ?? pm.total_gbp;\n      if(gbp!==undefined && gbp!==null && String(gbp)!=='') return {amount:num(gbp),currency:'GBP'};\n      // Legacy POS rows stored their accounting value in quoted. Prefer explicit GBP metadata when available.\n      if(pm.total_gbp!==undefined && pm.total_gbp!==null) return {amount:num(pm.total_gbp),currency:'GBP'};\n    }\n    return {amount:num(cl?.quoted),currency:String(cl?.sale_currency||'EUR').toUpperCase()};\n  }\n  function addCustomerFacingTotal(order){\n    const body=document.getElementById('od-body');\n    if(!body||!order)return;\n    body.querySelector('#od-customer-total-block')?.remove();\n    const cls=lines(order);\n    if(!cls.length)return;\n    const totals=cls.map(cl=>({name:cl.name||'Customer',...nativeLineTotal(order,cl)}));\n    const currencies=[...new Set(totals.map(x=>x.currency))];\n    let content='';\n    if(totals.length===1){\n      const x=totals[0];\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(x.amount,x.currency)}</div>`;\n    }else if(currencies.length===1){\n      const cur=currencies[0],sum=totals.reduce((a,x)=>a+x.amount,0);\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Order Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(sum,cur)}</div>`;\n    }else{\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px\">Customer Totals</div>${totals.map(x=>`<div style=\"display:flex;justify-content:space-between;gap:12px;padding:4px 0\"><span>${safe(x.name)}</span><strong>${money(x.amount,x.currency)}</strong></div>`).join('')}`;\n    }\n    const block=document.createElement('div');\n    block.id='od-customer-total-block';\n    block.style.cssText='margin-top:16px;padding:14px 16px;border:2px solid var(--ocean);border-radius:12px;background:#fff;text-align:right;';\n    block.innerHTML=content;\n    body.appendChild(block);\n  }\n  const base=window.viewOrder;\n  if(base && !base.__customerTotalWrapped){\n    const wrapped=function(id){\n      const r=base.apply(this,arguments);\n      const order=(window.db?.orders||[]).find(x=>String(x.id)===String(id));\n      setTimeout(()=>addCustomerFacingTotal(order),0);\n      return r;\n    };\n    wrapped.__customerTotalWrapped=true;\n    window.viewOrder=wrapped;\n    try{viewOrder=window.viewOrder;}catch(e){}\n  }\n})();\n/* ===== END ORDER DETAIL CUSTOMER-FACING TOTAL PATCH ===== */\n</script>\n
+
+<script>
+/* ===== FINAL DAILY POS REVENUE + KNOWN PROFIT REPORTING FIX 2026-10-03 ===== */
+(function(){
+  window.SA_DISABLE_LEGACY_POS_SUMMARY = true;
+
+  const N = v => {
+    const x = parseFloat(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const money = (v,c='GBP') => `${String(c).toUpperCase()==='EUR'?'€':'£'}${N(v).toFixed(2)}`;
+  const dateKey = v => {
+    if(!v) return '';
+    const s=String(v).trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d=new Date(s);
+    return isNaN(d)?'':d.toISOString().slice(0,10);
+  };
+  const dateLabel = v => {
+    const k=dateKey(v);
+    if(!k) return '—';
+    const [y,m,d]=k.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  const orders = () => (window.db && Array.isArray(window.db.orders)) ? window.db.orders : [];
+  const lines = o => o?.custLines || o?.cust_lines || [];
+  const isPOS = o => String(o?.orderType||o?.order_type||'').toLowerCase()==='pos' || String(o?.num||'').startsWith('POS - ') || !!lines(o)[0]?.pos_meta;
+  const isStock = o => String(o?.orderType||o?.order_type||'').toLowerCase()==='stock';
+
+  function posNative(o){
+    const cl=lines(o)[0]||{};
+    const pm=cl.pos_meta||{};
+    const engine=String(pm.currency_engine||'');
+    let saleCurrency=String(cl.sale_currency||pm.sale_currency||'').toUpperCase();
+    let saleAmount;
+
+    if(engine==='actual_fx_v1' || saleCurrency){
+      saleCurrency = saleCurrency || 'GBP';
+      saleAmount = N(cl.quoted ?? pm.total_native);
+    }else if(pm.total_gbp!=null || cl.total_gbp!=null || cl.quoted_gbp!=null){
+      saleCurrency='GBP';
+      saleAmount=N(pm.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp);
+    }else{
+      // Pre real-FX POS rows were entered in GBP even if quoted held an old EUR accounting value.
+      saleCurrency='GBP';
+      saleAmount=N(pm.total_gbp ?? cl.total_gbp ?? cl.quoted_gbp);
+      if(!saleAmount){
+        const legacyRate=N(pm.fx_rate);
+        const quoted=N(cl.quoted);
+        saleAmount=(legacyRate>0 && quoted>0) ? quoted/legacyRate : quoted;
+      }
+    }
+
+    const method=String(pm.payment_method||cl.payMethod||(cl.payments||[])[0]?.method||'').trim();
+    const payments=cl.payments||[];
+    const p=payments[0]||{};
+
+    let paidCurrency=String(p.paid_currency||pm.paid_currency||cl.payment_currency||p.currency||saleCurrency||'GBP').toUpperCase();
+    let paidAmount;
+    if(p.paid_amount!=null && String(p.paid_amount)!==''){
+      paidAmount=N(p.paid_amount);
+    }else if(p.amount!=null && String(p.amount)!==''){
+      const paymentCurrency=String(p.currency||saleCurrency).toUpperCase();
+      if(paymentCurrency===paidCurrency){
+        paidAmount=N(p.amount);
+      }else{
+        const rate=N(p.fx_rate||cl.fx_rate||pm.fx_rate);
+        if(rate>0){
+          if(paymentCurrency==='GBP'&&paidCurrency==='EUR') paidAmount=N(p.amount)*rate;
+          else if(paymentCurrency==='EUR'&&paidCurrency==='GBP') paidAmount=N(p.amount)/rate;
+          else paidAmount=N(p.amount);
+        }else paidAmount=N(p.amount);
+      }
+    }else{
+      paidAmount=saleAmount;
+      paidCurrency=saleCurrency;
+    }
+
+    let finance=null;
+    try{ finance=typeof window.SAOrderFinance==='function' ? window.SAOrderFinance(o) : null; }catch(e){}
+    let revenueGBP=finance && Number.isFinite(finance.revenueGBP) ? finance.revenueGBP : null;
+    if(revenueGBP==null){
+      if(saleCurrency==='GBP') revenueGBP=saleAmount;
+      else {
+        const rate=N(cl.fx_rate||pm.fx_rate);
+        revenueGBP=rate>0?saleAmount/rate:0;
+      }
+    }
+    const profitGBP=finance && finance.profitGBP!=null && Number.isFinite(finance.profitGBP) ? finance.profitGBP : null;
+    const costKnown=profitGBP!=null;
+
+    return {cl,pm,saleCurrency,saleAmount,method,paidCurrency,paidAmount,revenueGBP,profitGBP,costKnown};
+  }
+
+  function ensureOverviewCards(){
+    const metrics=document.querySelector('#page-overview .metrics');
+    if(!metrics) return;
+
+    const revenueCard=document.getElementById('ov-today-sales-profit')?.closest('.metric');
+    if(revenueCard){
+      const lbl=revenueCard.querySelector('.metric-lbl');
+      const sub=revenueCard.querySelector('.metric-sub');
+      if(lbl) lbl.textContent="Today's POS Revenue";
+      if(sub) sub.textContent='Completed/recorded POS sales today';
+    }
+
+    if(!document.getElementById('ov-today-known-profit')){
+      const card=document.createElement('div');
+      card.className='metric';
+      card.innerHTML=`<div class="metric-lbl">Today's Known Profit</div>
+        <div class="metric-val mv-green" id="ov-today-known-profit">£0.00</div>
+        <div class="metric-sub" id="ov-today-known-profit-sub">Only sales with actual cost entered</div>`;
+      if(revenueCard) revenueCard.insertAdjacentElement('afterend',card); else metrics.appendChild(card);
+    }
+
+    if(!document.getElementById('ov-pos-awaiting-cost')){
+      const card=document.createElement('div');
+      card.className='metric';
+      card.innerHTML=`<div class="metric-lbl">POS Sales Awaiting Cost</div>
+        <div class="metric-val mv-amber" id="ov-pos-awaiting-cost">0</div>
+        <div class="metric-sub">Today's POS sales where cost was not entered</div>`;
+      const known=document.getElementById('ov-today-known-profit')?.closest('.metric');
+      if(known) known.insertAdjacentElement('afterend',card); else metrics.appendChild(card);
+    }
+
+    const net=document.getElementById('ov-today-profit')?.closest('.metric');
+    if(net){
+      const lbl=net.querySelector('.metric-lbl');
+      const sub=net.querySelector('.metric-sub');
+      if(lbl) lbl.textContent="Today's Known Net Position";
+      if(sub) sub.textContent='Known profit − stock spend; missing costs excluded';
+    }
+  }
+
+  function updateTodayOverview(){
+    ensureOverviewCards();
+    const today=dateKey(typeof window.today==='function'?window.today():new Date().toISOString().slice(0,10));
+    const todays=orders().filter(o=>dateKey(o.date||o.created)===today);
+
+    let posRevenueGBP=0, nativeGBP=0, nativeEUR=0, posAwaiting=0;
+    let knownProfit=0, knownProfitCount=0, unknownCustomerCost=0, stockSpend=0;
+
+    todays.forEach(o=>{
+      if(isPOS(o)){
+        const p=posNative(o);
+        posRevenueGBP += N(p.revenueGBP);
+        if(p.saleCurrency==='EUR') nativeEUR += p.saleAmount; else nativeGBP += p.saleAmount;
+        if(!p.costKnown) posAwaiting++;
+      }
+
+      let f=null;
+      try{ f=typeof window.SAOrderFinance==='function' ? window.SAOrderFinance(o) : null; }catch(e){}
+      if(isStock(o)){
+        if(f && f.costGBP!=null && Number.isFinite(f.costGBP)) stockSpend+=f.costGBP;
+      }else{
+        if(f && f.profitGBP!=null && Number.isFinite(f.profitGBP)){
+          knownProfit+=f.profitGBP;
+          knownProfitCount++;
+        }else{
+          unknownCustomerCost++;
+        }
+      }
+    });
+
+    const set=(id,val)=>{const e=document.getElementById(id);if(e)e.textContent=val;};
+    set('ov-today-sales-profit',money(posRevenueGBP,'GBP'));
+    const revSub=document.getElementById('ov-today-sales-profit')?.closest('.metric')?.querySelector('.metric-sub');
+    if(revSub){
+      const parts=[];
+      if(nativeGBP)parts.push(money(nativeGBP,'GBP')+' native');
+      if(nativeEUR)parts.push(money(nativeEUR,'EUR')+' native');
+      revSub.textContent=parts.length?parts.join(' + ')+' · GBP equivalent at transaction FX':'No POS sales today';
+    }
+
+    if(knownProfitCount===0 && unknownCustomerCost>0){
+      set('ov-today-known-profit','Not calculated');
+    }else{
+      set('ov-today-known-profit',money(knownProfit,'GBP'));
+    }
+    const kpSub=document.getElementById('ov-today-known-profit-sub');
+    if(kpSub){
+      if(unknownCustomerCost){
+        kpSub.textContent=`${unknownCustomerCost} sale${unknownCustomerCost===1?'':'s'} excluded because actual cost is missing`;
+      }else{
+        kpSub.textContent=knownProfitCount?'All customer-sale costs entered':'No customer sales today';
+      }
+    }
+
+    set('ov-pos-awaiting-cost',String(posAwaiting));
+
+    // Keep the existing stock-spend card and make the net position explicitly "known".
+    set('ov-today-stock-spend',money(stockSpend,'GBP'));
+    set('ov-today-profit',money(knownProfit-stockSpend,'GBP'));
+    const netSub=document.getElementById('ov-today-profit')?.closest('.metric')?.querySelector('.metric-sub');
+    if(netSub){
+      netSub.textContent=unknownCustomerCost
+        ? `Partial: excludes ${unknownCustomerCost} sale${unknownCustomerCost===1?'':'s'} without actual cost`
+        : 'Known profit − stock spend';
+    }
+  }
+
+  function ensureDailySummaryStructure(){
+    const page=document.getElementById('page-pos-sale');
+    if(!page) return;
+    const card=document.getElementById('pos-daily-summary-card');
+    if(!card) return;
+
+    const gbp=document.getElementById('pos-sum-gbp-received')?.closest('.metric');
+    if(gbp && !gbp.querySelector('.metric-sub')){
+      const sub=document.createElement('div');
+      sub.className='metric-sub';
+      gbp.appendChild(sub);
+    }
+
+    const eur=document.getElementById('pos-sum-eur-accounting')?.closest('.metric');
+    if(eur){
+      const lbl=eur.querySelector('.metric-lbl');
+      if(lbl) lbl.textContent='EUR Received';
+      let sub=eur.querySelector('.metric-sub');
+      if(!sub){sub=document.createElement('div');sub.className='metric-sub';eur.appendChild(sub);}
+      sub.textContent='Actually received in EUR';
+    }
+    if(gbp){
+      const lbl=gbp.querySelector('.metric-lbl');
+      const sub=gbp.querySelector('.metric-sub');
+      if(lbl) lbl.textContent='GBP Received';
+      if(sub) sub.textContent='Actually received in GBP';
+    }
+  }
+
+  function updateDailySummaryFinal(){
+    const page=document.getElementById('page-pos-sale');
+    if(!page) return;
+    ensureDailySummaryStructure();
+
+    const selected=dateKey(document.getElementById('pos-date')?.value || (typeof window.today==='function'?window.today():new Date().toISOString().slice(0,10)));
+    const rows=orders().filter(o=>isPOS(o)&&dateKey(o.date||o.created)===selected);
+
+    const received={GBP:0,EUR:0};
+    const invoice={GBP:0,EUR:0};
+    const methods={
+      cash:{GBP:0,EUR:0},
+      card:{GBP:0,EUR:0},
+      revolut:{GBP:0,EUR:0},
+      paypal:{GBP:0,EUR:0},
+      bank:{GBP:0,EUR:0}
+    };
+    let creditEUR=0;
+
+    rows.forEach(o=>{
+      const p=posNative(o);
+      const method=String(p.method||'').toLowerCase();
+
+      if(method.includes('invoice')||method.includes('pay later')){
+        invoice[p.saleCurrency]=(invoice[p.saleCurrency]||0)+p.saleAmount;
+        return;
+      }
+      if(method.includes('customer credit')){
+        if(p.saleCurrency==='EUR') creditEUR+=p.saleAmount;
+        else {
+          const rate=N(p.cl?.fx_rate||p.pm?.fx_rate);
+          creditEUR+=rate>0?p.saleAmount*rate:0;
+        }
+        return;
+      }
+
+      const cur=(p.paidCurrency==='EUR'?'EUR':'GBP');
+      const amt=N(p.paidAmount);
+      received[cur]+=amt;
+
+      const k=method.includes('cash')?'cash':
+        method.includes('revolut')?'revolut':
+        method.includes('paypal')?'paypal':
+        method.includes('bank')?'bank':
+        (method.includes('card')||method.includes('sumup')||method.includes('sum up'))?'card':null;
+      if(k) methods[k][cur]+=amt;
+    });
+
+    const set=(id,val)=>{const e=document.getElementById(id);if(e)e.textContent=val;};
+    const dual=x=>`${money(x.GBP,'GBP')} / ${money(x.EUR,'EUR')}`;
+
+    set('pos-sum-gbp-received',money(received.GBP,'GBP'));
+    set('pos-sum-eur-accounting',money(received.EUR,'EUR'));
+    set('pos-sum-cash',dual(methods.cash));
+    set('pos-sum-card-sumup',dual(methods.card));
+    set('pos-sum-revolut',dual(methods.revolut));
+    set('pos-sum-paypal',dual(methods.paypal));
+    set('pos-sum-bank',dual(methods.bank));
+    set('pos-sum-invoice',money(invoice.GBP,'GBP'));
+    set('pos-sum-invoice-eur',money(invoice.EUR,'EUR'));
+    set('pos-sum-credit-used',money(creditEUR,'EUR'));
+    set('pos-sum-count',`${rows.length} POS sale${rows.length===1?'':'s'} for ${dateLabel(selected)}.`);
+    const badge=document.getElementById('pos-daily-summary-date');
+    if(badge)badge.textContent=dateLabel(selected);
+  }
+
+  // Final owner of the daily summary.
+  window.updatePOSDailySummary=updateDailySummaryFinal;
+  try{ updatePOSDailySummary=window.updatePOSDailySummary; }catch(e){}
+
+  const priorOverview=window.renderOverview;
+  if(priorOverview && !priorOverview.__todayRevenueFixed){
+    const wrapped=function(){
+      const r=priorOverview.apply(this,arguments);
+      try{updateTodayOverview();}catch(e){console.error('Today overview refresh failed',e);}
+      return r;
+    };
+    wrapped.__todayRevenueFixed=true;
+    window.renderOverview=wrapped;
+    try{renderOverview=window.renderOverview;}catch(e){}
+  }
+
+  const priorRenderOrders=window.renderOrders;
+  if(priorRenderOrders && !priorRenderOrders.__todayRevenueRefresh){
+    const wrapped=function(){
+      const r=priorRenderOrders.apply(this,arguments);
+      setTimeout(()=>{try{updateTodayOverview();updateDailySummaryFinal();}catch(e){}},0);
+      return r;
+    };
+    wrapped.__todayRevenueRefresh=true;
+    window.renderOrders=wrapped;
+    try{renderOrders=window.renderOrders;}catch(e){}
+  }
+
+  const priorNav=window.nav;
+  if(priorNav && !priorNav.__dailySummaryFinal){
+    const wrapped=function(id,btn){
+      const r=priorNav.apply(this,arguments);
+      if(id==='overview')setTimeout(updateTodayOverview,0);
+      if(id==='pos-sale')setTimeout(updateDailySummaryFinal,0);
+      return r;
+    };
+    wrapped.__dailySummaryFinal=true;
+    window.nav=wrapped;
+    try{nav=window.nav;}catch(e){}
+  }
+
+  document.addEventListener('change',e=>{
+    if(e.target?.id==='pos-date')setTimeout(updateDailySummaryFinal,0);
+  });
+
+  function boot(){
+    try{ensureOverviewCards();updateTodayOverview();}catch(e){}
+    try{ensureDailySummaryStructure();updateDailySummaryFinal();}catch(e){}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,100));
+  else setTimeout(boot,100);
+  setTimeout(boot,800);
+})();
+ /* ===== END FINAL DAILY POS REVENUE + KNOWN PROFIT REPORTING FIX ===== */
+</script>
+
 </body>
 </html>
