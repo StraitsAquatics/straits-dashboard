@@ -10903,12 +10903,12 @@ function applyStaffMode(){
   function cashIsoDate(v){return String(v||'').slice(0,10);}
   function cashDateLabel(v){const s=cashIsoDate(v);if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const[y,m,d]=s.split('-');return `${d}/${m}/${y}`;}return s||'—';}
   function cashTypeLabel(t){return ({
-    pos_cash_sale:'POS cash sale', petty_expense:'Petty cash expense', cash_advance:'Staff cash advance',
+    pos_cash_sale:'POS cash sale', customer_cash_payment:'Customer cash payment', petty_expense:'Petty cash expense', cash_advance:'Staff cash advance',
     advance_expense:'Advance expense', cash_return:'Cash returned', bank_deposit:'Bank deposit',
     bank_withdrawal:'Bank withdrawal', owner_injection:'Owner cash injection', opening_balance:'Opening balance / till float',
     customer_refund:'Customer refund', adjustment_in:'Cash adjustment in', adjustment_out:'Cash adjustment out'
   })[t]||String(t||'').replaceAll('_',' ');}
-  function cashTypeDirection(t){return ['pos_cash_sale','cash_return','bank_withdrawal','owner_injection','opening_balance','adjustment_in'].includes(t)?'in':'out';}
+  function cashTypeDirection(t){return ['pos_cash_sale','customer_cash_payment','cash_return','bank_withdrawal','owner_injection','opening_balance','adjustment_in'].includes(t)?'in':'out';}
   function cashAffects(row){return row.affects_cash!==false && row.status!=='void';}
   function cashSummary(currency){
     return cashLedger.reduce((sum,r)=>{
@@ -10961,7 +10961,7 @@ function applyStaffMode(){
           <div class="cash-filter-row">
             <div class="fg"><label>From</label><input type="date" id="cash-filter-from"></div>
             <div class="fg"><label>To</label><input type="date" id="cash-filter-to"></div>
-            <div class="fg"><label>Type</label><select id="cash-filter-type"><option value="">All movements</option><option value="expenses">Expenses only</option><option value="pos_cash_sale">POS cash sales</option><option value="cash_advance">Cash advances</option><option value="cash_return">Cash returns</option><option value="bank_deposit">Bank deposits</option></select></div>
+            <div class="fg"><label>Type</label><select id="cash-filter-type"><option value="">All movements</option><option value="expenses">Expenses only</option><option value="pos_cash_sale">POS cash sales</option><option value="customer_cash_payment">Customer cash payments</option><option value="cash_advance">Cash advances</option><option value="cash_return">Cash returns</option><option value="bank_deposit">Bank deposits</option></select></div>
             <button class="btn btn-sec" onclick="renderCashLedger()">Apply</button>
             <button class="btn btn-sec" onclick="clearCashFilters()">Clear</button>
             <span class="ml-auto"></span>
@@ -11108,7 +11108,7 @@ function applyStaffMode(){
       await syncCashPOSSales();
       cashLedger=await sbGet('cash_ledger','order=tx_date.desc,created_at.desc');
       if(!cashLoaded){await loadCashUsers();cashLoaded=true;}
-      const sn=document.getElementById('cash-start-note');if(sn&&cashLedgerStartDate)sn.textContent=` · POS cash tracking from ${cashDateLabel(cashLedgerStartDate)}`;
+      const sn=document.getElementById('cash-start-note');if(sn&&cashLedgerStartDate)sn.textContent=` · Automatic cash-payment tracking from ${cashDateLabel(cashLedgerStartDate)}`;
       renderCashSummary();renderCashLedger();renderCashAdvances();renderCashCounts();applyCashPermissions();
     }catch(e){console.error(e);if(body)body.innerHTML=`<tr><td colspan="11"><div class="empty"><p>Cash ledger could not load. Run the supplied Supabase SQL first.</p><div class="text-xs text-muted">${cashEsc(e.message||e)}</div></div></td></tr>`;}
   };
@@ -12581,6 +12581,556 @@ function applyStaffMode(){
   setTimeout(boot,800);
 })();
  /* ===== END FINAL DAILY POS REVENUE + KNOWN PROFIT REPORTING FIX ===== */
+</script>
+
+
+<script>
+/* ===== FINAL POS REVENUE + STOCK-COST SEPARATION + ALL-ORDER CASH SYNC 2026-10-05 ===== */
+(function(){
+  const num = v => {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const round2 = v => Math.round(num(v) * 100) / 100;
+  const safe = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = (v,c='GBP') => `${String(c).toUpperCase()==='EUR'?'€':'£'}${num(v).toFixed(2)}`;
+  const dateKey = v => {
+    if(!v) return '';
+    const s = String(v).trim();
+    if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+    const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(m) return `${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+    const d=new Date(s);
+    return isNaN(d)?'':d.toISOString().slice(0,10);
+  };
+
+  // IMPORTANT: db is a top-level lexical binding, not window.db in this dashboard.
+  function allOrders(){
+    try{
+      return (typeof db !== 'undefined' && db && Array.isArray(db.orders)) ? db.orders : [];
+    }catch(e){
+      return [];
+    }
+  }
+  const orderLines = o => o?.custLines || o?.cust_lines || [];
+  const isPOS = o => String(o?.orderType||o?.order_type||'').toLowerCase()==='pos'
+    || String(o?.num||'').startsWith('POS - ')
+    || !!orderLines(o)[0]?.pos_meta;
+  const isStock = o => String(o?.orderType||o?.order_type||'').toLowerCase()==='stock';
+
+  function finance(o){
+    try{
+      if(typeof window.SAOrderFinance === 'function') return window.SAOrderFinance(o);
+    }catch(e){}
+    return null;
+  }
+
+  function saleNative(o,cl){
+    const pm=cl?.pos_meta||{};
+    let currency=String(cl?.sale_currency||pm.sale_currency||'').toUpperCase();
+    let amount=0;
+    if(currency){
+      amount=num(cl?.quoted);
+    }else if(isPOS(o)){
+      currency='GBP';
+      amount=num(pm.total_gbp ?? cl?.total_gbp ?? cl?.quoted_gbp);
+      if(!amount){
+        const q=num(cl?.quoted);
+        const legacyRate=num(pm.fx_rate);
+        amount=(legacyRate>0&&q>0)?q/legacyRate:q;
+      }
+    }else{
+      currency='EUR';
+      amount=num(cl?.quoted);
+    }
+    return {amount,currency:currency==='EUR'?'EUR':'GBP'};
+  }
+
+  /* ---------- Dashboard: revenue is revenue; POS stock cost is separate ---------- */
+  function ensureDashboardMeaning(){
+    const rev=document.getElementById('ov-rev')?.closest('.metric');
+    if(rev){
+      rev.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode('Sales Revenue'));
+      rev.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('GBP equivalent using transaction-date FX'));
+    }
+
+    const gp=document.getElementById('ov-profit')?.closest('.metric');
+    if(gp){
+      gp.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode('Known Direct Profit'));
+      gp.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('Direct-cost customer orders only; POS stock cost is accounted separately'));
+    }
+
+    const posRev=document.getElementById('ov-today-sales-profit')?.closest('.metric');
+    if(posRev){
+      posRev.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode("Today's POS Revenue"));
+    }
+
+    const known=document.getElementById('ov-today-known-profit')?.closest('.metric');
+    if(known){
+      known.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode("Today's Known Direct Profit"));
+    }
+
+    const posCount=document.getElementById('ov-pos-awaiting-cost')?.closest('.metric');
+    if(posCount){
+      posCount.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode("Today's POS Sales"));
+      posCount.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('Number of POS transactions today'));
+      document.getElementById('ov-pos-awaiting-cost')?.classList.remove('mv-amber');
+      document.getElementById('ov-pos-awaiting-cost')?.classList.add('mv-blue');
+    }
+
+    const stock=document.getElementById('ov-today-stock-spend')?.closest('.metric');
+    if(stock){
+      stock.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode("Today's Stock Purchases"));
+      stock.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('SA stock orders bought today'));
+    }
+
+    // Repurpose the old "net position" card. Subtracting today's stock purchases
+    // from today's POS sales would not be a meaningful profit figure because stock
+    // may have been bought on a different day.
+    const custRev=document.getElementById('ov-today-profit')?.closest('.metric');
+    if(custRev){
+      custRev.querySelector('.metric-lbl')?.replaceChildren(document.createTextNode("Today's Customer Revenue"));
+      custRev.querySelector('.metric-sub')?.replaceChildren(document.createTextNode('All customer orders today · GBP equivalent'));
+    }
+  }
+
+  function refreshDashboardMeaning(){
+    ensureDashboardMeaning();
+    const today=dateKey(typeof today==='function'?today():new Date().toISOString().slice(0,10));
+    const todays=allOrders().filter(o=>dateKey(o.date||o.created)===today);
+
+    let allRevenueGBP=0, knownDirectProfitGBP=0, directUnknown=0;
+    allOrders().filter(o=>!isStock(o)).forEach(o=>{
+      const f=finance(o);
+      if(f && Number.isFinite(f.revenueGBP)) allRevenueGBP += f.revenueGBP;
+      // POS gross profit is deliberately excluded: its stock cost belongs to SA stock purchasing.
+      if(!isPOS(o)){
+        if(f && f.profitGBP!=null && Number.isFinite(f.profitGBP)) knownDirectProfitGBP += f.profitGBP;
+        else directUnknown++;
+      }
+    });
+
+    let posRevenueGBP=0, posCount=0, posGBP=0, posEUR=0;
+    let directProfitToday=0, directKnownToday=0, directUnknownToday=0;
+    let stockSpendToday=0, customerRevenueToday=0;
+
+    todays.forEach(o=>{
+      const f=finance(o);
+      if(!isStock(o) && f && Number.isFinite(f.revenueGBP)) customerRevenueToday += f.revenueGBP;
+
+      if(isPOS(o)){
+        posCount++;
+        if(f && Number.isFinite(f.revenueGBP)) posRevenueGBP += f.revenueGBP;
+        orderLines(o).forEach(cl=>{
+          const n=saleNative(o,cl);
+          if(n.currency==='EUR') posEUR+=n.amount; else posGBP+=n.amount;
+        });
+        return;
+      }
+
+      if(isStock(o)){
+        if(f && f.costGBP!=null && Number.isFinite(f.costGBP)) stockSpendToday += f.costGBP;
+        return;
+      }
+
+      if(f && f.profitGBP!=null && Number.isFinite(f.profitGBP)){
+        directProfitToday += f.profitGBP;
+        directKnownToday++;
+      }else{
+        directUnknownToday++;
+      }
+    });
+
+    const set=(id,value)=>{const e=document.getElementById(id);if(e)e.textContent=value;};
+    set('ov-rev',money(allRevenueGBP,'GBP'));
+    set('ov-profit',money(knownDirectProfitGBP,'GBP'));
+
+    const gpSub=document.getElementById('ov-profit')?.closest('.metric')?.querySelector('.metric-sub');
+    if(gpSub){
+      gpSub.textContent=directUnknown
+        ? `Direct-cost orders only · ${directUnknown} non-POS order${directUnknown===1?'':'s'} without a direct cost`
+        : 'Direct-cost customer orders only · POS stock cost accounted separately';
+    }
+
+    set('ov-today-sales-profit',money(posRevenueGBP,'GBP'));
+    const posSub=document.getElementById('ov-today-sales-profit')?.closest('.metric')?.querySelector('.metric-sub');
+    if(posSub){
+      const native=[];
+      if(posGBP)native.push(money(posGBP,'GBP'));
+      if(posEUR)native.push(money(posEUR,'EUR'));
+      posSub.textContent=posCount
+        ? `${posCount} POS sale${posCount===1?'':'s'} · ${native.join(' + ') || 'recorded'}`
+        : 'No POS sales today';
+    }
+
+    set('ov-pos-awaiting-cost',String(posCount));
+    set('ov-today-known-profit',money(directProfitToday,'GBP'));
+    const dpSub=document.getElementById('ov-today-known-profit-sub');
+    if(dpSub){
+      if(directUnknownToday){
+        dpSub.textContent=`Non-POS direct profit only · ${directUnknownToday} order${directUnknownToday===1?'':'s'} missing direct cost`;
+      }else if(directKnownToday){
+        dpSub.textContent='Non-POS direct-cost orders only · POS stock cost separate';
+      }else{
+        dpSub.textContent='No direct-cost customer orders today · POS stock cost separate';
+      }
+    }
+
+    set('ov-today-stock-spend',money(stockSpendToday,'GBP'));
+    set('ov-today-profit',money(customerRevenueToday,'GBP'));
+  }
+
+  /* ---------- POS order display: no false "missing cost" warning ---------- */
+  function markPOSRowsStockCostSeparate(){
+    document.querySelectorAll('#orders-body tr').forEach(tr=>{
+      const first=(tr.children[0]?.textContent||'');
+      const order=allOrders().find(o=>first.includes(String(o.num||'')));
+      if(!order||!isPOS(order)) return;
+      if(tr.children[5]) tr.children[5].innerHTML='<span class="text-muted">Stock cost separate</span>';
+      if(tr.children[6]) tr.children[6].innerHTML='<span class="text-muted">—</span><div class="text-xs text-muted">POS stock cost recorded through SA stock orders</div>';
+    });
+  }
+
+  function markPOSDetailStockCostSeparate(id){
+    const o=allOrders().find(x=>String(x.id)===String(id));
+    if(!o||!isPOS(o))return;
+
+    const stat=document.getElementById('od-statbar');
+    if(stat){
+      [...stat.children].forEach(block=>{
+        const lbl=(block.querySelector('.ostat-lbl')?.textContent||'').trim().toLowerCase();
+        const val=block.querySelector('.ostat-val');
+        if(!val)return;
+        if(lbl==='actual cost'||lbl==='actual'){
+          val.textContent='Stock cost separate';
+          val.className='ostat-val text-muted';
+        }
+        if(lbl==='profit'){
+          val.textContent='—';
+          val.className='ostat-val text-muted';
+        }
+      });
+    }
+
+    const body=document.getElementById('od-body');
+    if(body){
+      // Replace misleading POS "Not entered" wording in cost cells only.
+      [...body.querySelectorAll('td')].forEach(td=>{
+        if(td.textContent.trim()==='Not entered') td.textContent='Stock cost separate';
+      });
+      if(!body.querySelector('#pos-stock-cost-note')){
+        const note=document.createElement('div');
+        note.id='pos-stock-cost-note';
+        note.className='text-xs text-muted';
+        note.style.cssText='margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:#f8fafc;';
+        note.textContent='POS stock cost is accounted for through Straits Aquatics stock purchase orders and is not expected to be entered again at the till.';
+        body.appendChild(note);
+      }
+    }
+  }
+
+  /* ---------- Physical cash: synchronise CASH payments from every order ---------- */
+  function paymentFxRate(o,cl,p){
+    const explicit=num(p?.fx_rate||cl?.fx_rate||cl?.pos_meta?.fx_rate);
+    if(explicit>0)return explicit;
+    try{
+      const cached=window.SAFX?.cached?.(p?.date||o?.date||o?.created);
+      if(num(cached?.rate)>0)return num(cached.rate);
+    }catch(e){}
+    return num(window.SA_FX_RATE);
+  }
+
+  function cashPaymentInfo(o,cl,p){
+    const pm=cl?.pos_meta||{};
+    const saleCurrency=String(cl?.sale_currency||pm.sale_currency||(isPOS(o)?'GBP':'EUR')).toUpperCase()==='EUR'?'EUR':'GBP';
+    let currency=String(p?.paid_currency||p?.currency||cl?.payment_currency||pm.paid_currency||saleCurrency).toUpperCase();
+    currency=currency==='EUR'?'EUR':'GBP';
+
+    let amount;
+    if(p?.paid_amount!=null && String(p.paid_amount)!=='') amount=num(p.paid_amount);
+    else {
+      const raw=num(p?.amount);
+      const from=String(p?.currency||saleCurrency).toUpperCase()==='EUR'?'EUR':'GBP';
+      const rate=paymentFxRate(o,cl,p);
+      if(from===currency) amount=raw;
+      else if(rate>0) amount=from==='GBP'?raw*rate:raw/rate;
+      else amount=raw;
+    }
+    return {currency,amount:round2(amount),rate:paymentFxRate(o,cl,p)};
+  }
+
+  function desiredCashRowsForOrder(o){
+    const desired=[];
+    const cls=orderLines(o);
+
+    cls.forEach((cl,lineIndex)=>{
+      const payments=Array.isArray(cl.payments)?cl.payments:[];
+      let hadExplicitCash=false;
+
+      payments.forEach((p,payIndex)=>{
+        if(String(p?.method||'').trim().toLowerCase()!=='cash')return;
+        hadExplicitCash=true;
+        const info=cashPaymentInfo(o,cl,p);
+        if(!(info.amount>0))return;
+
+        // Preserve the legacy POS source key when the old cash module already uses it.
+        const sourceKey=(isPOS(o)&&lineIndex===0&&payIndex===0)
+          ? String(o.id)
+          : `${o.id}::cash::${lineIndex}::${payIndex}`;
+
+        desired.push({
+          sourceKey,
+          txDate:dateKey(p.date||o.date||o.created),
+          movementType:isPOS(o)?'pos_cash_sale':'customer_cash_payment',
+          amount:info.amount,
+          currency:info.currency,
+          accountingEUR:info.currency==='EUR'?info.amount:round2(info.amount*(info.rate>0?info.rate:num(window.SA_FX_RATE)||1)),
+          description:isPOS(o)
+            ? `POS cash sale ${o.num||''}`.trim()
+            : `Cash payment ${o.num?'Order #'+o.num:'customer order'}${cl.name?' — '+cl.name:''}`,
+          customer:cl.name||'',
+          sourceOrderId:sourceKey,
+          sourceOrderNum:o.num||'',
+          note:`Automatically synchronised from ${isPOS(o)?'POS':'customer-order'} cash payment${p.note?' · '+p.note:''}`
+        });
+      });
+
+      // Older orders may store only the overall pay method. If the line is paid in
+      // full and no payment rows exist, safely treat it as one cash payment.
+      if(!hadExplicitCash && !payments.length && String(cl?.payMethod||'').trim().toLowerCase()==='cash'){
+        const outstanding=typeof window.SAOrderFinance==='function' ? null : null;
+        const status=String(cl?.status||'').toUpperCase();
+        if(status==='PAID'){
+          const pseudo={amount:num(cl.quoted),currency:cl.sale_currency||(isPOS(o)?'GBP':'EUR'),date:o.date,method:'Cash',fx_rate:cl.fx_rate};
+          const info=cashPaymentInfo(o,cl,pseudo);
+          if(info.amount>0){
+            const sourceKey=isPOS(o)&&lineIndex===0?String(o.id):`${o.id}::cash::${lineIndex}::fallback`;
+            desired.push({
+              sourceKey,
+              txDate:dateKey(o.date||o.created),
+              movementType:isPOS(o)?'pos_cash_sale':'customer_cash_payment',
+              amount:info.amount,
+              currency:info.currency,
+              accountingEUR:info.currency==='EUR'?info.amount:round2(info.amount*(info.rate>0?info.rate:num(window.SA_FX_RATE)||1)),
+              description:isPOS(o)?`POS cash sale ${o.num||''}`.trim():`Cash payment ${o.num?'Order #'+o.num:'customer order'}${cl.name?' — '+cl.name:''}`,
+              customer:cl.name||'',
+              sourceOrderId:sourceKey,
+              sourceOrderNum:o.num||'',
+              note:'Automatically synchronised from paid order with Cash payment method'
+            });
+          }
+        }
+      }
+    });
+    return desired;
+  }
+
+  let cashSyncBusy=false;
+  async function syncAllOrderCashPayments(){
+    if(cashSyncBusy)return;
+    cashSyncBusy=true;
+    try{
+      const [serverOrders,ledger,settings]=await Promise.all([
+        sbGet('orders','select=id,num,order_type,date,cust_lines,created'),
+        sbGet('cash_ledger','select=*'),
+        sbGet('cash_settings','select=key,value&key=eq.ledger_start_date').catch(()=>[])
+      ]);
+
+      const start=(settings&&settings[0]&&settings[0].value)?dateKey(settings[0].value):'';
+      const bySource=new Map((ledger||[]).filter(r=>r.source_order_id).map(r=>[String(r.source_order_id),r]));
+      const autoRows=(ledger||[]).filter(r=>['pos_cash_sale','customer_cash_payment'].includes(String(r.movement_type||'')) && r.source_order_id);
+      const desiredKeys=new Set();
+
+      for(const o of (serverOrders||[])){
+        if(start && dateKey(o.date||o.created)<start)continue;
+        const desired=desiredCashRowsForOrder(o);
+        for(const d of desired){
+          desiredKeys.add(String(d.sourceKey));
+          const existing=bySource.get(String(d.sourceKey));
+          const payload={
+            tx_date:d.txDate||dateKey(o.date||o.created),
+            movement_type:d.movementType,
+            direction:'in',
+            amount:d.amount,
+            currency:d.currency,
+            accounting_eur:d.accountingEUR,
+            description:d.description,
+            category:'Sales',
+            supplier:'',
+            staff_name:'',
+            status:'posted',
+            affects_cash:true,
+            source_order_id:d.sourceOrderId,
+            source_order_num:d.sourceOrderNum,
+            advance_id:null,
+            receipt_path:null,
+            receipt_name:null,
+            notes:d.note,
+            created_by:'Automatic order payment sync',
+            updated_at:new Date().toISOString()
+          };
+          if(existing){
+            const changed=
+              dateKey(existing.tx_date)!==payload.tx_date ||
+              round2(existing.amount)!==round2(payload.amount) ||
+              String(existing.currency)!==payload.currency ||
+              String(existing.status)!=='posted' ||
+              existing.affects_cash===false ||
+              String(existing.movement_type)!==payload.movement_type ||
+              String(existing.description||'')!==payload.description;
+            if(changed){
+              const {source_order_id,...updatePayload}=payload;
+              await sbUpdate('cash_ledger',existing.id,updatePayload);
+            }
+          }else{
+            await sbInsert('cash_ledger',{
+              id:(typeof uid==='function'?uid():Date.now().toString(36)+Math.random().toString(36).slice(2,8)),
+              ...payload,
+              created_at:new Date().toISOString()
+            });
+          }
+        }
+      }
+
+      // If an automatic cash payment was removed, changed to a non-cash method,
+      // or deleted from an order, void it rather than deleting the audit trail.
+      for(const row of autoRows){
+        const source=String(row.source_order_id||'');
+        // Only manage rows that belong to an order currently returned by the order table.
+        const realOrderId=source.split('::cash::')[0];
+        const orderExists=(serverOrders||[]).some(o=>String(o.id)===realOrderId);
+        if(orderExists && !desiredKeys.has(source) && row.status!=='void'){
+          await sbUpdate('cash_ledger',row.id,{
+            status:'void',
+            affects_cash:false,
+            notes:`${row.notes||''}${row.notes?' | ':''}Automatically voided because the linked order payment is no longer recorded as Cash.`,
+            updated_at:new Date().toISOString()
+          });
+        }
+      }
+    }catch(e){
+      console.warn('Automatic all-order cash sync skipped:',e);
+    }finally{
+      cashSyncBusy=false;
+    }
+  }
+  window.syncAllOrderCashPayments=syncAllOrderCashPayments;
+
+  // Cash page: old POS-only synchroniser runs first, then this reconciliation
+  // adds/updates all non-POS cash payments and corrects changed payments.
+  const baseCashRefresh=window.refreshCashLedger;
+  let cashRefreshWrappedBusy=false;
+  if(baseCashRefresh && !baseCashRefresh.__allOrderCashWrapped){
+    const wrapped=async function(){
+      if(cashRefreshWrappedBusy)return baseCashRefresh.apply(this,arguments);
+      cashRefreshWrappedBusy=true;
+      try{
+        await baseCashRefresh.apply(this,arguments);
+        await syncAllOrderCashPayments();
+        return await baseCashRefresh.apply(this,arguments);
+      }finally{
+        cashRefreshWrappedBusy=false;
+      }
+    };
+    wrapped.__allOrderCashWrapped=true;
+    window.refreshCashLedger=wrapped;
+  }
+
+  // Also synchronise immediately after an order/customer payment is saved.
+  const baseSaveOrderFinal=window.saveOrder;
+  if(baseSaveOrderFinal && !baseSaveOrderFinal.__cashAllOrdersWrapped){
+    const wrapped=async function(){
+      const r=await baseSaveOrderFinal.apply(this,arguments);
+      await syncAllOrderCashPayments();
+      return r;
+    };
+    wrapped.__cashAllOrdersWrapped=true;
+    window.saveOrder=wrapped;
+    try{saveOrder=window.saveOrder;}catch(e){}
+  }
+
+  const baseSaveCustFinal=window.saveCustLine;
+  if(baseSaveCustFinal && !baseSaveCustFinal.__cashAllOrdersWrapped){
+    const wrapped=async function(){
+      const r=await baseSaveCustFinal.apply(this,arguments);
+      if(typeof editingOrderId!=='undefined' && editingOrderId) await syncAllOrderCashPayments();
+      return r;
+    };
+    wrapped.__cashAllOrdersWrapped=true;
+    window.saveCustLine=wrapped;
+    try{saveCustLine=window.saveCustLine;}catch(e){}
+  }
+
+  const baseConfirmPOSFinal=window.confirmRealFxPOS;
+  if(baseConfirmPOSFinal && !baseConfirmPOSFinal.__cashAllOrdersWrapped){
+    const wrapped=async function(){
+      const r=await baseConfirmPOSFinal.apply(this,arguments);
+      await syncAllOrderCashPayments();
+      return r;
+    };
+    wrapped.__cashAllOrdersWrapped=true;
+    window.confirmRealFxPOS=wrapped;
+  }
+
+  /* ---------- Final wrappers so older render patches cannot overwrite this ---------- */
+  const baseOverviewFinal=window.renderOverview;
+  if(baseOverviewFinal && !baseOverviewFinal.__stockCostSeparated){
+    const wrapped=function(){
+      const r=baseOverviewFinal.apply(this,arguments);
+      setTimeout(refreshDashboardMeaning,0);
+      return r;
+    };
+    wrapped.__stockCostSeparated=true;
+    window.renderOverview=wrapped;
+    try{renderOverview=window.renderOverview;}catch(e){}
+  }
+
+  const baseOrdersFinal=window.renderOrders;
+  if(baseOrdersFinal && !baseOrdersFinal.__stockCostSeparated){
+    const wrapped=function(){
+      const r=baseOrdersFinal.apply(this,arguments);
+      setTimeout(()=>{markPOSRowsStockCostSeparate();refreshDashboardMeaning();},0);
+      return r;
+    };
+    wrapped.__stockCostSeparated=true;
+    window.renderOrders=wrapped;
+    try{renderOrders=window.renderOrders;}catch(e){}
+  }
+
+  const baseViewFinal=window.viewOrder;
+  if(baseViewFinal && !baseViewFinal.__stockCostSeparated){
+    const wrapped=function(id){
+      const r=baseViewFinal.apply(this,arguments);
+      setTimeout(()=>markPOSDetailStockCostSeparate(id),0);
+      return r;
+    };
+    wrapped.__stockCostSeparated=true;
+    window.viewOrder=wrapped;
+    try{viewOrder=window.viewOrder;}catch(e){}
+  }
+
+  const baseNavFinal=window.nav;
+  if(baseNavFinal && !baseNavFinal.__stockCostSeparated){
+    const wrapped=function(id,btn){
+      const r=baseNavFinal.apply(this,arguments);
+      if(id==='overview')setTimeout(refreshDashboardMeaning,0);
+      if(id==='orders')setTimeout(markPOSRowsStockCostSeparate,0);
+      return r;
+    };
+    wrapped.__stockCostSeparated=true;
+    window.nav=wrapped;
+    try{nav=window.nav;}catch(e){}
+  }
+
+  function boot(){
+    refreshDashboardMeaning();
+    markPOSRowsStockCostSeparate();
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,150));
+  else setTimeout(boot,150);
+  setTimeout(boot,900);
+})();
+ /* ===== END FINAL POS REVENUE + STOCK-COST SEPARATION + ALL-ORDER CASH SYNC ===== */
 </script>
 
 </body>
