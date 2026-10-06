@@ -12228,7 +12228,7 @@ function applyStaffMode(){
   setTimeout(boot,1000);
 })();
 </script>
-\n<script>\n/* ===== ORDER DETAIL CUSTOMER-FACING TOTAL PATCH 2026-10-03 ===== */\n(function(){\n  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0;};\n  const safe=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n  const money=(v,c)=>`${String(c||'EUR').toUpperCase()==='GBP'?'£':'€'}${num(v).toFixed(2)}`;\n  function isPOS(o){return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos'||String(o?.num||'').startsWith('POS - ');}\n  function lines(o){return o?.custLines||o?.cust_lines||[];}\n  function nativeLineTotal(o,cl){\n    const pm=cl?.pos_meta||{};\n    const engine=String(pm.currency_engine||'');\n    if(engine==='actual_fx_v1' || cl?.sale_currency){\n      return {amount:num(cl.quoted),currency:String(cl.sale_currency||pm.sale_currency||'EUR').toUpperCase()};\n    }\n    if(isPOS(o)){\n      const gbp=cl?.total_gbp ?? cl?.quoted_gbp ?? pm.total_gbp;\n      if(gbp!==undefined && gbp!==null && String(gbp)!=='') return {amount:num(gbp),currency:'GBP'};\n      // Legacy POS rows stored their accounting value in quoted. Prefer explicit GBP metadata when available.\n      if(pm.total_gbp!==undefined && pm.total_gbp!==null) return {amount:num(pm.total_gbp),currency:'GBP'};\n    }\n    return {amount:num(cl?.quoted),currency:String(cl?.sale_currency||'EUR').toUpperCase()};\n  }\n  function addCustomerFacingTotal(order){\n    const body=document.getElementById('od-body');\n    if(!body||!order)return;\n    body.querySelector('#od-customer-total-block')?.remove();\n    const cls=lines(order);\n    if(!cls.length)return;\n    const totals=cls.map(cl=>({name:cl.name||'Customer',...nativeLineTotal(order,cl)}));\n    const currencies=[...new Set(totals.map(x=>x.currency))];\n    let content='';\n    if(totals.length===1){\n      const x=totals[0];\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(x.amount,x.currency)}</div>`;\n    }else if(currencies.length===1){\n      const cur=currencies[0],sum=totals.reduce((a,x)=>a+x.amount,0);\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Order Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(sum,cur)}</div>`;\n    }else{\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px\">Customer Totals</div>${totals.map(x=>`<div style=\"display:flex;justify-content:space-between;gap:12px;padding:4px 0\"><span>${safe(x.name)}</span><strong>${money(x.amount,x.currency)}</strong></div>`).join('')}`;\n    }\n    const block=document.createElement('div');\n    block.id='od-customer-total-block';\n    block.style.cssText='margin-top:16px;padding:14px 16px;border:2px solid var(--ocean);border-radius:12px;background:#fff;text-align:right;';\n    block.innerHTML=content;\n    body.appendChild(block);\n  }\n  const base=window.viewOrder;\n  if(base && !base.__customerTotalWrapped){\n    const wrapped=function(id){\n      const r=base.apply(this,arguments);\n      const order=(window.db?.orders||[]).find(x=>String(x.id)===String(id));\n      setTimeout(()=>addCustomerFacingTotal(order),0);\n      return r;\n    };\n    wrapped.__customerTotalWrapped=true;\n    window.viewOrder=wrapped;\n    try{viewOrder=window.viewOrder;}catch(e){}\n  }\n})();\n/* ===== END ORDER DETAIL CUSTOMER-FACING TOTAL PATCH ===== */\n</script>\n
+\n<script>\n/* ===== ORDER DETAIL CUSTOMER-FACING TOTAL PATCH 2026-10-03 ===== */\n(function(){\n  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0;};\n  const safe=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n  const money=(v,c)=>`${String(c||'EUR').toUpperCase()==='GBP'?'£':'€'}${num(v).toFixed(2)}`;\n  function isPOS(o){return String(o?.orderType||o?.order_type||'').toLowerCase()==='pos'||String(o?.num||'').startsWith('POS - ');}\n  function lines(o){return o?.custLines||o?.cust_lines||[];}\n  function nativeLineTotal(o,cl){\n    const pm=cl?.pos_meta||{};\n    const engine=String(pm.currency_engine||'');\n    if(engine==='actual_fx_v1' || cl?.sale_currency){\n      return {amount:num(cl.quoted),currency:String(cl.sale_currency||pm.sale_currency||'EUR').toUpperCase()};\n    }\n    if(isPOS(o)){\n      const gbp=cl?.total_gbp ?? cl?.quoted_gbp ?? pm.total_gbp;\n      if(gbp!==undefined && gbp!==null && String(gbp)!=='') return {amount:num(gbp),currency:'GBP'};\n      // Legacy POS rows stored their accounting value in quoted. Prefer explicit GBP metadata when available.\n      if(pm.total_gbp!==undefined && pm.total_gbp!==null) return {amount:num(pm.total_gbp),currency:'GBP'};\n    }\n    return {amount:num(cl?.quoted),currency:String(cl?.sale_currency||'EUR').toUpperCase()};\n  }\n  function addCustomerFacingTotal(order){\n    const body=document.getElementById('od-body');\n    if(!body||!order)return;\n    body.querySelector('#od-customer-total-block')?.remove();\n    const cls=lines(order);\n    if(!cls.length)return;\n    const totals=cls.map(cl=>({name:cl.name||'Customer',...nativeLineTotal(order,cl)}));\n    const currencies=[...new Set(totals.map(x=>x.currency))];\n    let content='';\n    if(totals.length===1){\n      const x=totals[0];\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(x.amount,x.currency)}</div>`;\n    }else if(currencies.length===1){\n      const cur=currencies[0],sum=totals.reduce((a,x)=>a+x.amount,0);\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em\">Order Total</div><div style=\"font-size:25px;font-weight:900;color:var(--ocean);margin-top:3px\">${money(sum,cur)}</div>`;\n    }else{\n      content=`<div style=\"font-size:12px;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:7px\">Customer Totals</div>${totals.map(x=>`<div style=\"display:flex;justify-content:space-between;gap:12px;padding:4px 0\"><span>${safe(x.name)}</span><strong>${money(x.amount,x.currency)}</strong></div>`).join('')}`;\n    }\n    const block=document.createElement('div');\n    block.id='od-customer-total-block';\n    block.style.cssText='margin-top:16px;padding:14px 16px;border:2px solid var(--ocean);border-radius:12px;background:#fff;text-align:right;';\n    block.innerHTML=content;\n    body.appendChild(block);\n  }\n  const base=window.viewOrder;\n  if(base && !base.__customerTotalWrapped){\n    const wrapped=function(id){\n      const r=base.apply(this,arguments);\n      const order=((typeof db!=='undefined'&&db&&Array.isArray(db.orders))?db.orders:[]).find(x=>String(x.id)===String(id));\n      setTimeout(()=>addCustomerFacingTotal(order),0);\n      return r;\n    };\n    wrapped.__customerTotalWrapped=true;\n    window.viewOrder=wrapped;\n    try{viewOrder=window.viewOrder;}catch(e){}\n  }\n})();\n/* ===== END ORDER DETAIL CUSTOMER-FACING TOTAL PATCH ===== */\n</script>\n
 
 <script>
 /* ===== FINAL DAILY POS REVENUE + KNOWN PROFIT REPORTING FIX 2026-10-03 ===== */
@@ -12696,8 +12696,8 @@ function applyStaffMode(){
 
   function refreshDashboardMeaning(){
     ensureDashboardMeaning();
-    const today=dateKey(typeof today==='function'?today():new Date().toISOString().slice(0,10));
-    const todays=allOrders().filter(o=>dateKey(o.date||o.created)===today);
+    const currentDayKey=dateKey((typeof window.today==='function'?window.today():(typeof globalThis.today==='function'?globalThis.today():new Date().toISOString().slice(0,10))));
+    const todays=allOrders().filter(o=>dateKey(o.date||o.created)===currentDayKey);
 
     let allRevenueGBP=0, knownDirectProfitGBP=0, directUnknown=0;
     allOrders().filter(o=>!isStock(o)).forEach(o=>{
@@ -12720,16 +12720,40 @@ function applyStaffMode(){
 
       if(isPOS(o)){
         posCount++;
-        if(f && Number.isFinite(f.revenueGBP)) posRevenueGBP += f.revenueGBP;
+        let posOrderRevenueGBP = (f && Number.isFinite(f.revenueGBP)) ? f.revenueGBP : 0;
+        let fallbackPOSGBP = 0;
         orderLines(o).forEach(cl=>{
           const n=saleNative(o,cl);
-          if(n.currency==='EUR') posEUR+=n.amount; else posGBP+=n.amount;
+          if(n.currency==='EUR'){
+            posEUR+=n.amount;
+            const rate=num(cl?.fx_rate||cl?.pos_meta?.fx_rate||window.SA_FX_RATE);
+            if(rate>0) fallbackPOSGBP += n.amount/rate;
+          }else{
+            posGBP+=n.amount;
+            fallbackPOSGBP += n.amount;
+          }
         });
+        if(!(posOrderRevenueGBP>0) && fallbackPOSGBP>0) posOrderRevenueGBP=fallbackPOSGBP;
+        posRevenueGBP += posOrderRevenueGBP;
         return;
       }
 
       if(isStock(o)){
-        if(f && f.costGBP!=null && Number.isFinite(f.costGBP)) stockSpendToday += f.costGBP;
+        if(f && f.costGBP!=null && Number.isFinite(f.costGBP)){
+          stockSpendToday += f.costGBP;
+        }else{
+          // New SA stock orders store totalActual in GBP. Older stock orders
+          // may still be EUR, so convert them only when no actual-FX marker exists.
+          const sa=o?.saLines||o?.sa_lines||[];
+          const currentEngine=sa.some(s=>s?.currency_engine==='actual_fx_v1');
+          const raw=num(o.totalActual??o.total_actual);
+          if(currentEngine){
+            stockSpendToday += raw;
+          }else{
+            const rate=num(sa[0]?.fx_rate||window.SA_FX_RATE);
+            stockSpendToday += rate>0 ? raw/rate : raw;
+          }
+        }
         return;
       }
 
