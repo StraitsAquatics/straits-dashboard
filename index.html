@@ -11970,7 +11970,16 @@ function applyStaffMode(){
     const grid=form.querySelector('.form-grid');if(grid&&!document.getElementById('pos-sale-currency')){
       const sc=document.createElement('div');sc.className='fg';sc.innerHTML='<label>Sale / invoice currency</label><select id="pos-sale-currency" onchange="updatePOSCurrencyUI();updatePOSTotals()"><option value="GBP">GBP £</option><option value="EUR">EUR €</option></select>';
       const cc=document.createElement('div');cc.className='fg';cc.innerHTML='<label>Actual cost currency</label><select id="pos-cost-currency" onchange="updatePOSCurrencyUI();updatePOSTotals()"><option value="EUR">EUR €</option><option value="GBP">GBP £</option></select>';
-      const fx=document.createElement('div');fx.className='fg fg-full';fx.innerHTML='<div style="padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#f8fafc"><strong>Transaction FX:</strong> <span id="pos-fx-display">Loading…</span> <button type="button" class="btn btn-sec btn-xs" style="margin-left:8px" onclick="refreshPOSFx(true)">↻ Refresh</button><input type="hidden" id="pos-fx-rate"><input type="hidden" id="pos-fx-date"></div>';
+      const fx=document.createElement('div');fx.className='fg fg-full';fx.innerHTML=`<div style="padding:10px;border:1px solid var(--border);border-radius:10px;background:#f8fafc">
+        <div class="flex items-c gap-8" style="flex-wrap:wrap">
+          <strong>Transaction FX · £1 = €</strong>
+          <input type="number" id="pos-fx-rate" step="0.0001" min="0" placeholder="e.g. 1.1781" style="width:125px;padding:6px 8px;border:1px solid var(--border);border-radius:7px" oninput="manualPOSFxChanged()">
+          <button type="button" class="btn btn-sec btn-xs" onclick="refreshPOSFx(true)">↻ Get live rate</button>
+          <span id="pos-fx-display" class="text-xs text-muted">Loading…</span>
+          <input type="hidden" id="pos-fx-date">
+        </div>
+        <div class="text-xs text-muted" style="margin-top:6px">If the live rate is unavailable, enter it manually. A GBP sale paid in GBP can still be completed without an FX rate.</div>
+      </div>`;
       const notes=document.getElementById('pos-notes')?.closest('.fg');if(notes){notes.insertAdjacentElement('beforebegin',sc);sc.insertAdjacentElement('afterend',cc);cc.insertAdjacentElement('afterend',fx);}else{grid.append(sc,cc,fx);}
     }
     const sub=document.querySelector('#page-pos-sale .section-hd .text-sm.text-muted');if(sub)sub.textContent='Sell in GBP or EUR. Actual costs can be entered separately; profit is reported in GBP using the stored transaction-date rate.';
@@ -11991,9 +12000,42 @@ function applyStaffMode(){
     });
     const paid=document.getElementById('pos-paid-currency');if(paid&&!paid.dataset.fxTouched){paid.value=sc;}
   };
+  window.manualPOSFxChanged=function(){
+    const ri=document.getElementById('pos-fx-rate'),di=document.getElementById('pos-fx-date'),disp=document.getElementById('pos-fx-display');
+    const rate=N(ri?.value),date=document.getElementById('pos-date')?.value||today();
+    if(ri)ri.dataset.manual=rate>0?'1':'';
+    if(di)di.value=date;
+    if(disp)disp.textContent=rate>0?`Manual rate · £1 = €${rate.toFixed(4)}`:'No FX rate entered';
+    try{updatePOSTotals();}catch(e){}
+  };
+
   window.refreshPOSFx=async function(force=false){
     const date=document.getElementById('pos-date')?.value||today(),disp=document.getElementById('pos-fx-display'),ri=document.getElementById('pos-fx-rate'),di=document.getElementById('pos-fx-date');
-    try{const x=await fetchRate(date,force);if(ri)ri.value=x.rate;if(di)di.value=x.date;if(disp)disp.textContent=`£1 = €${x.rate.toFixed(4)} · ${DATELABEL(x.date)} · ${x.source}`;updatePOSTotals();}catch(e){if(disp)disp.textContent='Rate unavailable — refresh or try again';}
+    try{
+      const x=await fetchRate(date,force);
+      if(ri){ri.value=x.rate;ri.dataset.manual='';}
+      if(di)di.value=x.date;
+      if(disp)disp.textContent=`Live/reference rate · £1 = €${x.rate.toFixed(4)} · ${DATELABEL(x.date)} · ${x.source}`;
+      updatePOSTotals();
+      return x;
+    }catch(e){
+      let fallback=null;
+      try{fallback=syncRate(date);}catch(_){}
+      if(!fallback && N(window.SA_FX_RATE)>0){
+        fallback={rate:N(window.SA_FX_RATE),date:date,source:'last dashboard rate'};
+      }
+      if(fallback&&N(fallback.rate)>0){
+        if(ri&&!N(ri.value)){ri.value=fallback.rate;ri.dataset.manual='';}
+        if(di)di.value=fallback.date||date;
+        if(disp)disp.textContent=`Live FX unavailable · using stored rate £1 = €${N(fallback.rate).toFixed(4)}${fallback.date?` · ${DATELABEL(fallback.date)}`:''}`;
+        updatePOSTotals();
+        return fallback;
+      }
+      if(di)di.value=date;
+      if(disp)disp.textContent='Live FX unavailable · enter a rate manually, or continue with a GBP sale paid in GBP';
+      try{updatePOSTotals();}catch(_){}
+      return null;
+    }
   };
 
   const baseAddPOS=window.addPOSItemRow||((typeof addPOSItemRow==='function')?addPOSItemRow:null);
@@ -12054,24 +12096,119 @@ function applyStaffMode(){
   window.submitPOSSale=async function(e){
     if(e)e.preventDefault();ensurePOSCurrencyUI();
     if(typeof canUsePOS==='function'&&!canUsePOS()){alert('You do not have access to POS sales.');return;}
-    const date=document.getElementById('pos-date')?.value||today();let rate=N(document.getElementById('pos-fx-rate')?.value),fxDate=document.getElementById('pos-fx-date')?.value||date;
-    if(!(rate>0)){try{const x=await fetchRate(date,false);rate=x.rate;fxDate=x.date;document.getElementById('pos-fx-rate').value=rate;document.getElementById('pos-fx-date').value=fxDate;}catch(err){alert(err.message);return;}}
-    const items=collectPOSNative();if(!items.length){toast('Add at least one item and price sold',false);return;}
-    const sc=document.getElementById('pos-sale-currency')?.value||'GBP',cc=document.getElementById('pos-cost-currency')?.value||'EUR',method=document.getElementById('pos-payment')?.value||'Cash',paidCurrency=document.getElementById('pos-paid-currency')?.value||sc;
-    const total=items.reduce((a,i)=>a+i.sale,0),totalGBP=convert(total,sc,'GBP',rate),totalEUR=convert(total,sc,'EUR',rate),allKnown=items.every(i=>i.costKnown),costNative=items.reduce((a,i)=>a+i.cost,0),costGBP=allKnown?convert(costNative,cc,'GBP',rate):null;
+
+    const date=document.getElementById('pos-date')?.value||today();
+    const sc=document.getElementById('pos-sale-currency')?.value||'GBP';
+    const cc=document.getElementById('pos-cost-currency')?.value||'EUR';
+    const method=document.getElementById('pos-payment')?.value||'Cash';
+    const paidCurrency=document.getElementById('pos-paid-currency')?.value||sc;
+    const rateEl=document.getElementById('pos-fx-rate');
+    const dateEl=document.getElementById('pos-fx-date');
+    let rate=N(rateEl?.value),fxDate=dateEl?.value||date;
+    let fxSource=rateEl?.dataset.manual==='1'?'Manual':'';
+
+    // Never hard-block immediately. Try live/reference, then cached/stored.
+    if(!(rate>0)){
+      try{
+        const x=await fetchRate(date,false);
+        rate=N(x.rate);fxDate=x.date||date;fxSource=x.source||'Frankfurter reference rate';
+        if(rateEl){rateEl.value=rate;rateEl.dataset.manual='';}
+        if(dateEl)dateEl.value=fxDate;
+      }catch(err){
+        let fallback=null;
+        try{fallback=syncRate(date);}catch(_){}
+        if(!fallback&&N(window.SA_FX_RATE)>0)fallback={rate:N(window.SA_FX_RATE),date,source:'last dashboard rate'};
+        if(fallback&&N(fallback.rate)>0){
+          rate=N(fallback.rate);fxDate=fallback.date||date;fxSource=fallback.source||'Stored rate';
+          if(rateEl){rateEl.value=rate;rateEl.dataset.manual='';}
+          if(dateEl)dateEl.value=fxDate;
+        }
+      }
+    }else if(!fxSource){
+      fxSource='Stored / entered rate';
+    }
+
+    const items=collectPOSNative();
+    if(!items.length){toast('Add at least one item and price sold',false);return;}
+
+    // A rate is only mandatory when the transaction genuinely needs a currency conversion.
+    // Standard GBP sale + GBP payment is allowed to continue with no FX at all.
+    const requiresRate =
+      sc==='EUR' ||
+      paidCurrency!==sc ||
+      method==='Customer Credit';
+
+    if(requiresRate&&!(rate>0)){
+      const why=sc==='EUR'
+        ? 'EUR sales need an FX rate so the dashboard can store the GBP reporting value.'
+        : method==='Customer Credit'
+          ? 'Customer Credit is held in EUR, so an FX rate is required.'
+          : 'The payment currency differs from the sale currency, so an FX rate is required.';
+      alert(`Live FX is currently unavailable.\n\n${why}\n\nEnter the rate manually in "Transaction FX · £1 = €" and press Submit Sale again.`);
+      if(rateEl){rateEl.focus();rateEl.scrollIntoView({behavior:'smooth',block:'center'});}
+      return;
+    }
+
+    const total=items.reduce((a,i)=>a+i.sale,0);
+    const totalGBP=sc==='GBP'?total:convert(total,sc,'GBP',rate);
+    const totalEUR=sc==='EUR'?total:(rate>0?convert(total,sc,'EUR',rate):null);
+    const allKnown=items.every(i=>i.costKnown);
+    const costNative=items.reduce((a,i)=>a+i.cost,0);
+    const costGBP=!allKnown?null:(cc==='GBP'?costNative:(rate>0?convert(costNative,cc,'GBP',rate):null));
+
     let client=(document.getElementById('pos-client')?.value||'').trim(),company='',dueDate='',invoiceNotes='';
-    if(method==='Invoice / Pay Later'){company=(document.getElementById('pos-company')?.value||'').trim();dueDate=document.getElementById('pos-due-date')?.value||'';invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();if(!company){toast('Company name is required for invoice/pay later',false);return;}if(!dueDate){toast('Due date is required for invoice/pay later',false);return;}if(!client)client=company;}
+    if(method==='Invoice / Pay Later'){
+      company=(document.getElementById('pos-company')?.value||'').trim();
+      dueDate=document.getElementById('pos-due-date')?.value||'';
+      invoiceNotes=(document.getElementById('pos-invoice-notes')?.value||'').trim();
+      if(!company){toast('Company name is required for invoice/pay later',false);return;}
+      if(!dueDate){toast('Due date is required for invoice/pay later',false);return;}
+      if(!client)client=company;
+    }
     if(!client)client='Walk-in Customer - unknown';
-    if(method==='Customer Credit'){if(client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}const bal=typeof customerCreditBalance==='function'?N(customerCreditBalance(client)):0;if(bal+0.001<totalEUR){alert(`Customer credit is not enough.\nAvailable: ${MONEY(bal,'EUR')}\nRequired: ${MONEY(totalEUR,'EUR')}`);return;}}
-    const saleNo=typeof posNextSaleNumber==='function'?posNextSaleNumber(date):String(orders().filter(o=>DATEKEY(o.date)===date&&isPOS(o)).length+1).padStart(3,'0'),ref=`${DATELABEL(date)} - ${saleNo}`;
-    const draft={items,total,totalGBP,totalEUR,allKnown,costNative,costGBP,sc,cc,rate,fxDate,date,method,paidCurrency,client,company,dueDate,invoiceNotes,ref,orderNum:`POS - ${ref}`,gift:posGift(totalEUR),notes:(document.getElementById('pos-notes')?.value||'').trim()};
+
+    if(method==='Customer Credit'){
+      if(client==='Walk-in Customer - unknown'){toast('Customer credit requires a named customer',false);return;}
+      const bal=typeof customerCreditBalance==='function'?N(customerCreditBalance(client)):0;
+      if(bal+0.001<N(totalEUR)){
+        alert(`Customer credit is not enough.\nAvailable: ${MONEY(bal,'EUR')}\nRequired: ${MONEY(totalEUR,'EUR')}`);
+        return;
+      }
+    }
+
+    const saleNo=typeof posNextSaleNumber==='function'
+      ?posNextSaleNumber(date)
+      :String(orders().filter(o=>DATEKEY(o.date)===date&&isPOS(o)).length+1).padStart(3,'0');
+    const ref=`${DATELABEL(date)} - ${saleNo}`;
+
+    const gift=(totalEUR!=null&&Number.isFinite(totalEUR))?posGift(totalEUR):null;
+    const draft={
+      items,total,totalGBP,totalEUR,allKnown,costNative,costGBP,
+      sc,cc,rate:rate>0?rate:0,fxDate,fxSource:fxSource||(rate>0?'Stored rate':'Not available / not required'),
+      date,method,paidCurrency,client,company,dueDate,invoiceNotes,ref,
+      orderNum:`POS - ${ref}`,gift,
+      fxUnavailable:!(rate>0),
+      notes:(document.getElementById('pos-notes')?.value||'').trim()
+    };
     window.__realFxPosDraft=draft;
-    const m=ensurePosConfirm(),body=document.getElementById('pos-real-fx-body'),invoice=method==='Invoice / Pay Later',payAmount=paidCurrency===sc?total:convert(total,sc,paidCurrency,rate);
+
+    const m=ensurePosConfirm(),body=document.getElementById('pos-real-fx-body');
+    const invoice=method==='Invoice / Pay Later';
+    const payAmount=paidCurrency===sc?total:convert(total,sc,paidCurrency,rate);
     document.getElementById('pos-real-fx-title').textContent=invoice?'Confirm Invoice Sale':'Confirm POS Sale';
+
+    const fxLine=rate>0
+      ?`£1 = €${rate.toFixed(4)} · ${DATELABEL(fxDate)}${fxSource?` · ${SAFE(fxSource)}`:''}`
+      :'Not available / not required — native GBP sale will be saved without conversion';
+
     body.innerHTML=`<div style="padding:12px;border:1px solid var(--border);border-radius:10px;background:#f8fafc">
-      <div><strong>Client:</strong> ${SAFE(client)}</div><div><strong>Sale / invoice total:</strong> ${MONEY(total,sc)}</div><div><strong>Payment:</strong> ${SAFE(method)}${invoice?'':` · ${MONEY(payAmount,paidCurrency)} in ${paidCurrency}`}</div><div><strong>FX stored:</strong> £1 = €${rate.toFixed(4)} · ${DATELABEL(fxDate)}</div>
+      <div><strong>Client:</strong> ${SAFE(client)}</div>
+      <div><strong>Sale / invoice total:</strong> ${MONEY(total,sc)}</div>
+      <div><strong>Payment:</strong> ${SAFE(method)}${invoice?'':` · ${MONEY(payAmount,paidCurrency)} in ${paidCurrency}`}</div>
+      <div><strong>FX stored:</strong> ${fxLine}</div>
       ${invoice?`<div class="text-red font-bold mt-8">This will be recorded as unpaid / Invoice Pay Later.</div>`:'<div class="font-bold mt-8">Confirm the client has paid the correct amount before saving.</div>'}
     </div>
+    ${draft.fxUnavailable?`<div style="margin-top:12px;padding:10px 12px;border:1px solid #f59e0b;border-radius:10px;background:#fffbeb" class="text-sm"><strong>FX unavailable:</strong> this GBP sale can still be saved. Cross-currency reporting and the €150/€250 free-gift threshold cannot be calculated until an FX rate is available.</div>`:''}
     ${draft.gift?`<div style="margin-top:12px;padding:12px;border:2px solid var(--red);border-radius:10px;background:#fff5f5"><div class="font-bold text-red">🎁 Free item required — up to £${draft.gift.limit}</div><label class="flex items-c gap-8 mt-8"><input type="checkbox" id="pos-real-fx-gift"> I have offered / provided the free item to the client</label></div>`:''}`;
     m.classList.add('open');
   };
@@ -12083,21 +12220,21 @@ function applyStaffMode(){
     try{
       const paidNow=d.method!=='Invoice / Pay Later',entered=window._session?.displayName||window._session?.username||'Unknown';
       const itemRows=d.items.map(i=>({name:i.name,quoted:R2(i.sale),actual:i.costKnown?R2(i.cost):0,status:'DELIVERED',delivered:true,doa:false,doaResolved:false,sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,cost_known:i.costKnown,
-        quoted_gbp:R2(convert(i.sale,d.sc,'GBP',d.rate)),quoted_eur:R2(convert(i.sale,d.sc,'EUR',d.rate)),actual_gbp:i.costKnown?R2(convert(i.cost,d.cc,'GBP',d.rate)):null,actual_eur:i.costKnown?R2(convert(i.cost,d.cc,'EUR',d.rate)):null}));
+        quoted_gbp:d.sc==='GBP'?R2(i.sale):(d.rate>0?R2(convert(i.sale,d.sc,'GBP',d.rate)):null),quoted_eur:d.sc==='EUR'?R2(i.sale):(d.rate>0?R2(convert(i.sale,d.sc,'EUR',d.rate)):null),actual_gbp:i.costKnown?(d.cc==='GBP'?R2(i.cost):(d.rate>0?R2(convert(i.cost,d.cc,'GBP',d.rate)):null)):null,actual_eur:i.costKnown?(d.cc==='EUR'?R2(i.cost):(d.rate>0?R2(convert(i.cost,d.cc,'EUR',d.rate)):null)):null}));
       const payment=paidNow?[{amount:R2(d.total),currency:d.sc,paid_currency:d.paidCurrency,paid_amount:R2(d.paidCurrency===d.sc?d.total:convert(d.total,d.sc,d.paidCurrency,d.rate)),date:d.date,method:d.method,note:d.method==='Customer Credit'?'Paid using customer credit':'Paid at POS',fx_rate:d.rate}]:[];
-      const meta={currency_engine:'actual_fx_v1',sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,fx_source:'ECB / Frankfurter',total_native:R2(d.total),total_gbp:R2(d.totalGBP),total_eur:R2(d.totalEUR),cost_known:d.allKnown,cost_native:d.allKnown?R2(d.costNative):null,cost_gbp:d.costGBP==null?null:R2(d.costGBP),profit_gbp:d.costGBP==null?null:R2(d.totalGBP-d.costGBP),paid_currency:d.paidCurrency,payment_method:d.method,invoice_ref:d.ref,company:d.company,due_date:d.dueDate,invoice_notes:d.invoiceNotes,entered_by:entered};
-      const line={id:uid(),name:d.client,location:'',delivery:'local',status:paidNow?'PAID':'TO BE PAID',quoted:R2(d.total),actual:d.allKnown?R2(d.costNative):0,actualBase:d.allKnown?R2(d.costNative):0,sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate,fx_date:d.fxDate,fx_source:'ECB / Frankfurter',cost_known:d.allKnown,
+      const meta={currency_engine:'actual_fx_v1',sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate>0?d.rate:null,fx_date:d.fxDate,fx_source:d.fxSource||'Not available / not required',total_native:R2(d.total),total_gbp:d.totalGBP==null?null:R2(d.totalGBP),total_eur:d.totalEUR==null?null:R2(d.totalEUR),cost_known:d.allKnown,cost_native:d.allKnown?R2(d.costNative):null,cost_gbp:d.costGBP==null?null:R2(d.costGBP),profit_gbp:(d.costGBP==null||d.totalGBP==null)?null:R2(d.totalGBP-d.costGBP),paid_currency:d.paidCurrency,payment_method:d.method,invoice_ref:d.ref,company:d.company,due_date:d.dueDate,invoice_notes:d.invoiceNotes,entered_by:entered};
+      const line={id:uid(),name:d.client,location:'',delivery:'local',status:paidNow?'PAID':'TO BE PAID',quoted:R2(d.total),actual:d.allKnown?R2(d.costNative):0,actualBase:d.allKnown?R2(d.costNative):0,sale_currency:d.sc,cost_currency:d.cc,fx_rate:d.rate>0?d.rate:null,fx_date:d.fxDate,fx_source:d.fxSource||'Not available / not required',cost_known:d.allKnown,
         items:itemRows,payments:payment,payBy:d.dueDate,payMethod:d.method,doaTotal:0,freeShipping:false,actualShippingCost:0,trackingNumber:'',tracking_number:'',pos_meta:meta,payment_currency:d.paidCurrency};
-      let notes=`POS sale entered by ${entered} | Payment: ${d.method} | Sale currency: ${d.sc} | FX £1=€${d.rate.toFixed(4)} (${d.fxDate})`;
+      let notes=`POS sale entered by ${entered} | Payment: ${d.method} | Sale currency: ${d.sc} | ${d.rate>0?`FX £1=€${d.rate.toFixed(4)} (${d.fxDate}) · ${d.fxSource||'Stored rate'}`:'FX unavailable / not required for native GBP sale'}`;
       if(d.gift)notes+=` | Free item confirmed: offered/provided item up to £${d.gift.limit} value.`;
       if(d.company)notes+=` | Company: ${d.company}`;if(d.dueDate)notes+=` | Due: ${d.dueDate}`;if(d.invoiceNotes)notes+=` | Invoice notes: ${d.invoiceNotes}`;if(d.notes)notes+=` | Notes: ${d.notes}`;
-      const order={id:uid(),num:d.orderNum,order_type:'pos',date:d.date,suppliers:['Straits Aquatics'],shipping:0,other_costs:0,notes,cust_lines:[line],sa_lines:[],total_quoted:R2(d.totalGBP),total_actual:d.costGBP==null?null:R2(d.costGBP),profit:d.costGBP==null?null:R2(d.totalGBP-d.costGBP),doa_total:0,total_pending:paidNow?0:R2(d.totalGBP),manual_complete:paidNow,created:today()};
+      const order={id:uid(),num:d.orderNum,order_type:'pos',date:d.date,suppliers:['Straits Aquatics'],shipping:0,other_costs:0,notes,cust_lines:[line],sa_lines:[],total_quoted:d.totalGBP==null?R2(d.total):R2(d.totalGBP),total_actual:d.costGBP==null?null:R2(d.costGBP),profit:(d.costGBP==null||d.totalGBP==null)?null:R2(d.totalGBP-d.costGBP),doa_total:0,total_pending:paidNow?0:(d.totalGBP==null?R2(d.total):R2(d.totalGBP)),manual_complete:paidNow,created:today()};
       setSyncStatus('sync-busy','Saving POS sale…');await sbInsert('orders',order);
       const local={id:order.id,num:order.num,orderType:'pos',date:order.date,suppliers:order.suppliers,shipping:0,otherCosts:0,notes:order.notes,custLines:[line],saLines:[],totalQuoted:order.total_quoted,totalActual:order.total_actual,profit:order.profit,doaTotal:0,totalPending:order.total_pending,manualComplete:paidNow,created:order.created};db.orders.push(local);
       if(d.method==='Customer Credit'){const cr={id:uid(),customer:d.client,type:'credit',amount:-R2(d.totalEUR),reason:`POS sale paid using customer credit (${d.orderNum})`,order_num:d.orderNum,date:d.date};await sbInsert('credits',cr);db.credits.push({id:cr.id,customer:cr.customer,type:cr.type,amount:cr.amount,reason:cr.reason,order:cr.order_num,date:cr.date});}
       if(d.client!=='Walk-in Customer - unknown'&&!db.customers.some(c=>String(c.name).toLowerCase()===String(d.client).toLowerCase())){const nc={id:uid(),name:d.client,location:'',phone:'',email:'',notes:d.method==='Invoice / Pay Later'?'Created from POS invoice':'Created from POS sale',created:today()};await sbInsert('customers',nc);db.customers.push(nc);try{refreshDatalist();refreshPOSDatalists();}catch(e){}}
       document.getElementById('modal-pos-real-fx-confirm')?.classList.remove('open');setSyncStatus('sync-ok','✓ Synced');try{renderOverview();renderOrders(document.getElementById('orders-search')?.value||'');renderCredits();if(typeof updatePOSDailySummary==='function')updatePOSDailySummary();}catch(uiErr){console.error('POS sale saved, but dashboard refresh failed',uiErr);toast('Sale saved ✓ — dashboard display refresh had an error',false);}
-      const receipt={orderId:order.id,orderNum:d.orderNum,receiptRef:d.ref,saleDate:d.date,client:d.client,company:d.company,dueDate:d.dueDate,invoiceNotes:d.invoiceNotes,method:d.method,paidCurrency:d.sc,totalGbp:R2(d.totalGBP),totalEur:R2(d.totalEUR),items:itemRows.map(it=>({name:it.name,qty:1,soldGbp:it.quoted_gbp,soldEur:it.quoted_eur})),notes,enteredBy:entered,giftLimit:d.gift?.limit||0};
+      const receipt={orderId:order.id,orderNum:d.orderNum,receiptRef:d.ref,saleDate:d.date,client:d.client,company:d.company,dueDate:d.dueDate,invoiceNotes:d.invoiceNotes,method:d.method,paidCurrency:d.sc,totalGbp:d.totalGBP==null?null:R2(d.totalGBP),totalEur:d.totalEUR==null?null:R2(d.totalEUR),items:itemRows.map(it=>({name:it.name,qty:1,soldGbp:it.quoted_gbp,soldEur:it.quoted_eur})),notes,enteredBy:entered,giftLimit:d.gift?.limit||0};
       resetPOSForm();if(typeof showPOSReceiptClean==='function')showPOSReceiptClean(receipt);else toast(`POS sale saved: ${d.orderNum}`);
     }catch(e){console.error(e);setSyncStatus('sync-err','✗ Error');alert('POS sale failed: '+(e.message||e));}
     finally{if(btn){btn.disabled=false;btn.textContent='Confirm & Submit Sale';}window.__realFxPosDraft=null;}
