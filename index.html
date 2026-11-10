@@ -6878,12 +6878,25 @@ function applyStaffMode(){
     if(productsLoaded && !force) return;
     productsLoading = true;
     try{
-      const rows = await sbGet(PRODUCT_TABLE, 'select=*&order=name.asc');
-      window.db.products = (rows || []).map(mapProductRow);
+      // Supabase/PostgREST returns at most 1,000 rows per request by default.
+      // The catalogue is already larger than that, so fetch every page.
+      const rows = [];
+      const pageSize = 1000;
+      for(let offset = 0; ; offset += pageSize){
+        const page = await sbGet(PRODUCT_TABLE, `select=*&order=name.asc,id.asc&limit=${pageSize}&offset=${offset}`);
+        rows.push(...(page || []));
+        if(!page || page.length < pageSize) break;
+        if(offset >= 99000) throw new Error('Product catalogue pagination exceeded the safety limit.');
+      }
+      window.db.products = rows.map(mapProductRow);
       productsTableAvailable = true;
       productsLoaded = true;
       refreshProductDatalists();
       renderProductsPage();
+      const status = document.getElementById('products-import-status');
+      if(status && !String(status.textContent || '').toLowerCase().includes('uploading') && !String(status.textContent || '').toLowerCase().includes('preparing')){
+        status.textContent = `Loaded ${window.db.products.length} products from Supabase.`;
+      }
     }catch(e){
       productsTableAvailable = false;
       productsLoaded = true;
@@ -6896,7 +6909,7 @@ function applyStaffMode(){
   }
 
   function refreshProductDatalists(){
-    const products = liveProducts().slice().sort((a,b)=>String(a.name).localeCompare(String(b.name))).slice(0,3000);
+    const products = liveProducts().slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
     const html = products.map(p => {
       const bits = [];
       if(p.price_gbp) bits.push(pGBP(p.price_gbp));
@@ -7000,7 +7013,7 @@ function applyStaffMode(){
         <button class="btn btn-sec btn-xs" onclick="saveProductFromRow('${pAttr(p.id)}')">Save</button>
         <button class="btn btn-sec btn-xs" onclick="toggleProductActive('${pAttr(p.id)}')">${p.active!==false?'Deactivate':'Activate'}</button>
       </div></td>
-    </tr>`).join('') + (rows.length > 600 ? `<tr><td colspan="7"><div class="text-sm text-muted" style="padding:10px">Showing first 600 results. Use search to narrow the list.</div></td></tr>` : '');
+    </tr>`).join('') + (rows.length > 600 ? `<tr><td colspan="7"><div class="text-sm text-muted" style="padding:10px">Showing first 600 of ${rows.length} loaded products. Use the Product Database search box above to search the full catalogue; browser Ctrl+F only searches the rows currently rendered.</div></td></tr>` : '');
   }
 
   function rowPayloadFromProductRow(id){
