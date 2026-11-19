@@ -13889,5 +13889,300 @@ window.SAFinanceVoucherPatch={reloadCredits:fvReloadCredits,loadVouchers:fvLoadV
 /* ===== END FINANCE + CREDITS/VOUCHERS + SPLIT PAYMENTS PATCH ===== */
 </script>
 
+
+<script>
+/* ===== VOUCHER VOID + TOUCHSCREEN POS UX PATCH 2026-11-20 ===== */
+(function(){
+'use strict';
+
+const SA_TODAY = ()=> (typeof today === 'function' ? today() : new Date().toISOString().slice(0,10));
+const SA_N = v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0;};
+const SA_CUR = v=>String(v||'GBP').toUpperCase()==='EUR'?'EUR':'GBP';
+const SA_SAFE = v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
+const SA_MONEY = (v,c)=>`${SA_CUR(c)==='EUR'?'€':'£'}${SA_N(v).toFixed(2)}`;
+const SA_DATE = v=>String(v||'').slice(0,10);
+const SA_DATE_LABEL = v=>{const s=SA_DATE(v);if(!/^\d{4}-\d{2}-\d{2}$/.test(s))return s||'—';const [y,m,d]=s.split('-');return `${d}/${m}/${y}`;};
+const SA_IS_ADMIN = ()=>String(window._session?.role||'').toLowerCase()==='admin';
+
+async function saRpc(name,args={}){
+  const r=await fetch(`${SB_URL}/rest/v1/rpc/${name}`,{method:'POST',headers:H,body:JSON.stringify(args)});
+  const txt=await r.text();
+  if(!r.ok) throw new Error(txt||`${name} failed`);
+  return txt?JSON.parse(txt):null;
+}
+
+/* ---------- Voucher status + admin void ---------- */
+function saVoucherDisplayStatus(v){
+  const raw=String(v?.status||'active').toLowerCase();
+  if(v?.voided_at || raw==='void' || raw==='cancelled') return 'Void';
+  if(SA_N(v?.remaining_amount)<=0.009 || raw==='redeemed') return 'Redeemed';
+  if(SA_DATE(v?.expiry_date) && SA_DATE(v.expiry_date)<SA_TODAY()) return 'Expired';
+  if(SA_N(v?.remaining_amount)<SA_N(v?.original_amount)-0.009 || raw==='partially_used') return 'Partially Used';
+  return 'Active';
+}
+
+async function saRenderVoucherPanel(){
+  const target=document.getElementById('fv-voucher-list');
+  if(!target)return;
+  try{ await saRpc('sa_refresh_expired_vouchers',{}); }catch(e){ /* Older DB until incremental SQL is run. */ }
+  let rows=[];
+  try{ rows=await sbGet('vouchers','order=purchase_date.desc,created_at.desc'); }
+  catch(e){ target.innerHTML='<div class="empty"><p>Voucher database is not available.</p></div>'; return; }
+  target.innerHTML=rows.length?rows.slice(0,150).map(v=>{
+    const st=saVoucherDisplayStatus(v);
+    const cls=(st==='Active'||st==='Partially Used')?'b-green':st==='Redeemed'?'b-grey':st==='Expired'?'b-amber':'b-red';
+    const canVoid=SA_IS_ADMIN() && (st==='Active'||st==='Partially Used');
+    const reason=v.void_reason?` · ${SA_SAFE(v.void_reason)}`:'';
+    const voidInfo=st==='Void'?`<div class="text-xs text-red mt-8">Voided${v.voided_by?' by '+SA_SAFE(v.voided_by):''}${v.voided_at?' · '+SA_DATE_LABEL(v.voided_at):''}${reason}</div>`:'';
+    return `<div class="sa-voucher-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div class="flex items-c gap-8" style="flex-wrap:wrap">
+        <strong style="font-family:monospace;font-size:16px">${SA_SAFE(v.code)}</strong>
+        <span class="badge ${cls}">${st}</span>
+        <span class="ml-auto font-bold">${SA_MONEY(v.remaining_amount,v.currency)}</span>
+        ${canVoid?`<button type="button" class="btn btn-danger btn-xs fv-credit-admin" onclick="saVoidVoucher('${SA_SAFE(v.code)}')">Void</button>`:''}
+      </div>
+      <div class="text-xs text-muted mt-8">${SA_SAFE(v.purchaser_name||'No purchaser')} · bought ${SA_DATE_LABEL(v.purchase_date)} · expires ${SA_DATE_LABEL(v.expiry_date)} · original ${SA_MONEY(v.original_amount,v.currency)}</div>
+      ${voidInfo}
+    </div>`;
+  }).join(''):'<div class="empty"><p>No vouchers created yet.</p></div>';
+}
+
+window.saVoidVoucher=async function(code){
+  if(!SA_IS_ADMIN()){alert('Only an admin user can void a voucher.');return;}
+  if(!confirm(`Void voucher ${code}?\n\nThe voucher will remain in the system for audit purposes but can no longer be redeemed.`))return;
+  const reason=prompt('Reason for voiding this voucher (optional):','Spoilt / training / entered by mistake');
+  if(reason===null)return;
+  try{
+    await saRpc('sa_void_voucher',{p_code:String(code),p_reason:String(reason||'').trim(),p_voided_by:window._session?.displayName||window._session?.username||'Admin'});
+    if(typeof window.SAFinanceVoucherPatch?.loadVouchers==='function')await window.SAFinanceVoucherPatch.loadVouchers();
+    await saRenderVoucherPanel();
+    if(typeof toast==='function')toast(`Voucher ${code} voided ✓`);
+  }catch(e){alert('Voucher could not be voided:\n\n'+(e.message||e));}
+};
+
+const saBaseRenderCredits=window.renderCredits;
+if(saBaseRenderCredits){
+  window.renderCredits=function(){
+    const r=saBaseRenderCredits.apply(this,arguments);
+    setTimeout(saRenderVoucherPanel,0);
+    return r;
+  };
+  try{renderCredits=window.renderCredits;}catch(e){}
+}
+
+/* ---------- Touchscreen POS controls ---------- */
+const PAYMENT_METHODS=[
+  ['Cash','💷','Cash'],
+  ['Revolut','↗','Revolut'],
+  ['Card','💳','Card'],
+  ['Bank Transfer','🏦','Bank Transfer'],
+  ['PayPal','P','PayPal'],
+  ['Customer Credit','👤','Customer Credit'],
+  ['Invoice / Pay Later','🧾','Invoice / Pay Later'],
+  ['Voucher','🎟','Voucher']
+];
+const SPLIT_METHODS=PAYMENT_METHODS.filter(x=>x[0]!=='Invoice / Pay Later');
+const CURRENCIES=[['GBP','£','GBP'],['EUR','€','EUR']];
+
+function saSetSelectValue(select,value,userTouch=true){
+  if(!select)return;
+  if(![...select.options].some(o=>o.value===value)){
+    const o=document.createElement('option');o.value=value;o.textContent=value;select.appendChild(o);
+  }
+  select.value=value;
+  if(select.id==='pos-paid-currency'&&userTouch)select.dataset.fxTouched='1';
+  select.dispatchEvent(new Event('change',{bubbles:true}));
+  setTimeout(saRefreshTouchStates,0);
+}
+
+function saBuildButtonGroup(select,choices,key,compact=false){
+  if(!select)return null;
+  const host=select.parentElement;
+  if(!host)return null;
+  let group=host.querySelector(`.sa-touch-group[data-key="${key}"]`);
+  if(!group){
+    group=document.createElement('div');
+    group.className='sa-touch-group'+(compact?' sa-touch-group-compact':'');
+    group.dataset.key=key;
+    select.insertAdjacentElement('afterend',group);
+  }
+  group.innerHTML=choices.map(([value,icon,label])=>`<button type="button" class="sa-touch-btn" data-value="${SA_SAFE(value)}"><span class="sa-touch-icon">${SA_SAFE(icon)}</span><span>${SA_SAFE(label)}</span></button>`).join('');
+  group.querySelectorAll('.sa-touch-btn').forEach(btn=>btn.addEventListener('click',()=>saSetSelectValue(select,btn.dataset.value,true)));
+  select.dataset.saTouchKey=key;
+  select.classList.add('sa-pos-hidden-select');
+  return group;
+}
+
+function saRefreshGroup(select){
+  if(!select)return;
+  const host=select.parentElement,key=select.dataset.saTouchKey;
+  const group=key?host?.querySelector(`.sa-touch-group[data-key="${key}"]`):null;
+  group?.querySelectorAll('.sa-touch-btn').forEach(btn=>btn.classList.toggle('selected',btn.dataset.value===select.value));
+}
+
+function saUpdateCreditPanel(){
+  const panel=document.getElementById('sa-pos-credit-panel');
+  if(!panel)return;
+  const split=!!document.getElementById('pos-split-toggle')?.checked;
+  const method=document.getElementById('pos-payment')?.value||'';
+  if(split||method!=='Customer Credit'){panel.style.display='none';return;}
+  const client=(document.getElementById('pos-client')?.value||'').trim();
+  const cur=SA_CUR(document.getElementById('pos-paid-currency')?.value||document.getElementById('pos-sale-currency')?.value||'GBP');
+  if(!client){panel.style.display='block';panel.innerHTML='<strong>Customer Credit</strong><div class="text-sm text-muted mt-8">Enter/select the client name to see their available balance.</div>';return;}
+  const gb=typeof window.getCustomerCreditBalance==='function'?SA_N(window.getCustomerCreditBalance(client,'GBP')):0;
+  const eu=typeof window.getCustomerCreditBalance==='function'?SA_N(window.getCustomerCreditBalance(client,'EUR')):0;
+  panel.style.display='block';
+  panel.innerHTML=`<strong>Customer Credit · ${SA_SAFE(client)}</strong><div class="flex gap-8 mt-8" style="flex-wrap:wrap"><span class="badge b-blue">GBP ${SA_MONEY(gb,'GBP')}</span><span class="badge b-amber">EUR ${SA_MONEY(eu,'EUR')}</span><span class="badge b-grey">Using ${cur}</span></div>`;
+}
+
+function saDecorateMainPOSControls(){
+  const page=document.getElementById('page-pos-sale');if(!page)return;
+  const payment=document.getElementById('pos-payment');
+  const paid=document.getElementById('pos-paid-currency');
+  const sale=document.getElementById('pos-sale-currency');
+  const cost=document.getElementById('pos-cost-currency');
+  if(!payment||!paid||!sale||!cost)return;
+
+  // Card is the only card terminal method going forward. Historical SumUp records remain readable in reports.
+  [...payment.options].filter(o=>String(o.value).toLowerCase()==='sumup').forEach(o=>o.remove());
+  if(payment.value==='SumUp'||!payment.value)payment.value='Cash';
+  if(![...payment.options].some(o=>o.value==='Voucher'))payment.insertAdjacentHTML('beforeend','<option value="Voucher">Voucher</option>');
+
+  payment.closest('.fg')?.classList.add('fg-full','sa-pos-payment-field');
+  saBuildButtonGroup(payment,PAYMENT_METHODS,'payment');
+  saBuildButtonGroup(sale,CURRENCIES,'sale-currency',true);
+  saBuildButtonGroup(paid,CURRENCIES,'paid-currency',true);
+  saBuildButtonGroup(cost,CURRENCIES,'cost-currency',true);
+
+  let creditPanel=document.getElementById('sa-pos-credit-panel');
+  if(!creditPanel){
+    creditPanel=document.createElement('div');creditPanel.id='sa-pos-credit-panel';creditPanel.className='sa-pos-context-panel';creditPanel.style.display='none';
+    payment.closest('.fg')?.insertAdjacentElement('afterend',creditPanel);
+  }
+  const client=document.getElementById('pos-client');
+  if(client&&!client.dataset.saCreditHook){client.dataset.saCreditHook='1';client.addEventListener('input',()=>setTimeout(saUpdateCreditPanel,0));client.addEventListener('change',()=>setTimeout(saUpdateCreditPanel,0));}
+
+  const voucher=document.getElementById('pos-single-voucher');
+  if(voucher){
+    voucher.classList.add('sa-pos-context-panel');
+    const input=voucher.querySelector('#pos-voucher-code');if(input){input.style.width='220px';input.style.minHeight='48px';input.style.fontSize='17px';}
+    const btn=voucher.querySelector('button');if(btn){btn.classList.add('sa-touch-action');btn.textContent='Validate Voucher';}
+  }
+
+  const summary=document.getElementById('pos-sum-card-sumup');
+  if(summary){const lbl=summary.closest('.metric')?.querySelector('.metric-lbl');if(lbl)lbl.textContent='Card';}
+
+  saDecorateModeToggle();
+  saDecorateSplitRows();
+  saRefreshTouchStates();
+  saUpdateCreditPanel();
+}
+
+function saDecorateModeToggle(){
+  const wrap=document.getElementById('pos-split-wrap'),toggle=document.getElementById('pos-split-toggle');if(!wrap||!toggle)return;
+  const oldLabel=toggle.closest('label');if(oldLabel)oldLabel.classList.add('sa-hide-original-split-label');
+  let group=document.getElementById('sa-pos-mode-toggle');
+  if(!group){
+    group=document.createElement('div');group.id='sa-pos-mode-toggle';group.className='sa-touch-group sa-mode-group';
+    group.innerHTML='<button type="button" class="sa-touch-btn" data-mode="single"><span class="sa-touch-icon">1</span><span>Single Payment</span></button><button type="button" class="sa-touch-btn" data-mode="split"><span class="sa-touch-icon">2</span><span>Split Payment</span></button>';
+    wrap.insertAdjacentElement('afterbegin',group);
+    group.querySelector('[data-mode="single"]').addEventListener('click',()=>{toggle.checked=false;window.fvToggleSplitPayment?.();setTimeout(saRefreshTouchStates,0);});
+    group.querySelector('[data-mode="split"]').addEventListener('click',()=>{toggle.checked=true;window.fvToggleSplitPayment?.();setTimeout(()=>{saDecorateSplitRows();saRefreshTouchStates();},0);});
+  }
+}
+
+function saSplitSelect(select,choices,key){
+  if(!select)return;
+  [...select.options].filter(o=>String(o.value).toLowerCase()==='sumup').forEach(o=>o.remove());
+  if(select.value==='SumUp'||!select.value)select.value=key.includes('2')?'Card':'Cash';
+  const row=select.closest('.fv-split-row');if(!row)return;
+  let group=row.querySelector(`.sa-touch-group[data-key="${key}"]`);
+  if(!group){group=document.createElement('div');group.className='sa-touch-group';group.dataset.key=key;row.appendChild(group);}
+  group.innerHTML=choices.map(([value,icon,label])=>`<button type="button" class="sa-touch-btn" data-value="${SA_SAFE(value)}"><span class="sa-touch-icon">${SA_SAFE(icon)}</span><span>${SA_SAFE(label)}</span></button>`).join('');
+  group.querySelectorAll('.sa-touch-btn').forEach(btn=>btn.addEventListener('click',()=>saSetSelectValue(select,btn.dataset.value,true)));
+  select.dataset.saTouchKey=key;
+  select.classList.add('sa-pos-hidden-select');
+}
+
+function saDecorateSplitRows(){
+  const rows=[...document.querySelectorAll('#pos-split-rows .fv-split-row')];
+  rows.forEach((row,idx)=>{
+    row.classList.add('sa-split-card');
+    let title=row.querySelector('.sa-split-title');
+    if(!title){title=document.createElement('div');title.className='sa-split-title';title.textContent=`Payment ${idx+1}`;row.insertAdjacentElement('afterbegin',title);}
+    const method=row.querySelector('.fv-split-method'),currency=row.querySelector('.fv-split-currency'),amount=row.querySelector('.fv-split-amount'),voucher=row.querySelector('.fv-split-voucher');
+    saSplitSelect(method,SPLIT_METHODS,`split-method-${idx+1}`);
+    saSplitSelect(currency,CURRENCIES,`split-currency-${idx+1}`);
+    if(amount&&!amount.closest('.sa-split-amount-wrap')){
+      const aw=document.createElement('div');aw.className='sa-split-amount-wrap';aw.innerHTML='<label>Amount paid</label>';amount.insertAdjacentElement('beforebegin',aw);aw.appendChild(amount);amount.classList.add('sa-split-amount-input');
+    }
+    if(voucher){voucher.classList.add('sa-split-voucher-touch');const vi=voucher.querySelector('.fv-split-code');if(vi){vi.style.minHeight='46px';vi.style.fontSize='16px';vi.style.width='170px';}const vb=voucher.querySelector('button');if(vb){vb.classList.add('sa-touch-action');vb.textContent='Validate';}}
+  });
+}
+
+function saRefreshTouchStates(){
+  ['pos-payment','pos-paid-currency','pos-sale-currency','pos-cost-currency'].forEach(id=>saRefreshGroup(document.getElementById(id)));
+  document.querySelectorAll('#pos-split-rows .fv-split-row').forEach(row=>{saRefreshGroup(row.querySelector('.fv-split-method'));saRefreshGroup(row.querySelector('.fv-split-currency'));});
+  const on=!!document.getElementById('pos-split-toggle')?.checked;
+  document.querySelectorAll('#sa-pos-mode-toggle [data-mode]').forEach(b=>b.classList.toggle('selected',(b.dataset.mode==='split')===on));
+  saUpdateCreditPanel();
+}
+
+const saBaseToggleSplit=window.fvToggleSplitPayment;
+if(saBaseToggleSplit){window.fvToggleSplitPayment=function(){const r=saBaseToggleSplit.apply(this,arguments);setTimeout(()=>{saDecorateSplitRows();saRefreshTouchStates();},0);return r;};}
+const saBasePosExtras=window.fvUpdatePosPaymentExtras;
+if(saBasePosExtras){window.fvUpdatePosPaymentExtras=function(){const r=saBasePosExtras.apply(this,arguments);setTimeout(()=>{saRefreshTouchStates();saUpdateCreditPanel();},0);return r;};}
+const saBaseCurrencyUI=window.updatePOSCurrencyUI;
+if(saBaseCurrencyUI){window.updatePOSCurrencyUI=function(){const r=saBaseCurrencyUI.apply(this,arguments);setTimeout(saRefreshTouchStates,0);return r;};try{updatePOSCurrencyUI=window.updatePOSCurrencyUI;}catch(e){}}
+const saBaseResetPOS=window.resetPOSForm;
+if(saBaseResetPOS){window.resetPOSForm=function(){const r=saBaseResetPOS.apply(this,arguments);setTimeout(()=>{saDecorateMainPOSControls();saRefreshTouchStates();},20);return r;};try{resetPOSForm=window.resetPOSForm;}catch(e){}}
+const saBaseEnsurePOS=window.ensurePOSPage;
+if(saBaseEnsurePOS){window.ensurePOSPage=function(){const r=saBaseEnsurePOS.apply(this,arguments);setTimeout(saDecorateMainPOSControls,0);return r;};try{ensurePOSPage=window.ensurePOSPage;}catch(e){}}
+const saBaseNav=window.nav;
+if(saBaseNav){window.nav=function(id,btn){const r=saBaseNav.apply(this,arguments);if(id==='pos-sale')setTimeout(saDecorateMainPOSControls,30);if(id==='credits')setTimeout(saRenderVoucherPanel,30);return r;};try{nav=window.nav;}catch(e){}}
+
+function saInstallTouchStyles(){
+  if(document.getElementById('sa-pos-touch-style'))return;
+  const s=document.createElement('style');s.id='sa-pos-touch-style';s.textContent=`
+  #page-pos-sale .sa-pos-hidden-select{display:none!important}
+  #page-pos-sale .sa-pos-payment-field{grid-column:1/-1}
+  #page-pos-sale .sa-touch-group{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:9px;width:100%;margin-top:5px}
+  #page-pos-sale .sa-touch-group-compact{grid-template-columns:repeat(2,minmax(130px,220px));max-width:455px}
+  #page-pos-sale .sa-touch-btn{min-height:58px;padding:10px 12px;border:2px solid #c8dbe5;border-radius:13px;background:#fff;color:var(--text);font-size:13px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 3px 10px rgba(5,43,63,.05);transition:.12s ease}
+  #page-pos-sale .sa-touch-btn:hover{border-color:var(--reef);background:#f3fcfe;transform:translateY(-1px)}
+  #page-pos-sale .sa-touch-btn.selected{background:linear-gradient(135deg,#063c55,#05718d);border-color:#05718d;color:#fff;box-shadow:0 7px 18px rgba(5,43,63,.16)}
+  #page-pos-sale .sa-touch-icon{font-size:18px;line-height:1}
+  #page-pos-sale .sa-mode-group{grid-template-columns:repeat(2,minmax(160px,260px));max-width:540px;margin-bottom:10px}
+  #page-pos-sale .sa-hide-original-split-label{display:none!important}
+  #page-pos-sale #pos-split-wrap{grid-column:1/-1;margin-top:4px}
+  #page-pos-sale #pos-split-fields{padding:14px!important;background:#fff!important}
+  #page-pos-sale .sa-split-card{display:block!important;padding:14px;border:1px solid var(--border);border-radius:14px;background:#f8fcfd;margin-bottom:12px}
+  #page-pos-sale .sa-split-title{font-size:14px;font-weight:850;color:var(--ocean);margin-bottom:8px}
+  #page-pos-sale .sa-split-amount-wrap{margin-top:10px;max-width:280px}
+  #page-pos-sale .sa-split-amount-wrap label{display:block;margin-bottom:5px}
+  #page-pos-sale .sa-split-amount-input{width:100%!important;min-height:48px;font-size:18px;font-weight:800}
+  #page-pos-sale .sa-split-voucher-touch{margin-top:10px!important;flex-wrap:wrap}
+  #page-pos-sale .sa-touch-action{min-height:46px!important;padding:9px 15px!important}
+  #page-pos-sale .sa-pos-context-panel{grid-column:1/-1;padding:12px 14px;border:1px solid var(--border);border-radius:12px;background:#f8fcfd;margin-top:4px}
+  #page-pos-sale #pos-single-voucher .flex{flex-wrap:wrap}
+  #page-pos-sale #pos-submit-btn{min-height:48px;padding:10px 22px;font-size:14px}
+  #page-pos-sale form>.form-grid{gap:14px}
+  @media(max-width:900px){#page-pos-sale .sa-touch-group{grid-template-columns:repeat(2,minmax(120px,1fr))}#page-pos-sale .sa-touch-group-compact,#page-pos-sale .sa-mode-group{grid-template-columns:repeat(2,1fr);max-width:none}}
+  @media(max-width:520px){#page-pos-sale .sa-touch-btn{min-height:54px;font-size:12px;padding:8px}#page-pos-sale .sa-touch-group{gap:7px}}
+  `;document.head.appendChild(s);
+}
+
+async function saBootTouch(){
+  saInstallTouchStyles();
+  setTimeout(()=>{try{window.fvEnsureSplitUI?.();}catch(e){}saDecorateMainPOSControls();},0);
+  setTimeout(saRenderVoucherPanel,0);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(saBootTouch,350));else setTimeout(saBootTouch,100);
+setTimeout(saBootTouch,1800);
+window.SAPOSTouchUX={install:saDecorateMainPOSControls,refreshVouchers:saRenderVoucherPanel};
+})();
+/* ===== END VOUCHER VOID + TOUCHSCREEN POS UX PATCH ===== */
+
+</script>
 </body>
 </html>
