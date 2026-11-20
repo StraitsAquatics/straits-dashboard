@@ -4086,402 +4086,296 @@ window.addEventListener('DOMContentLoaded', function(){
 /* ===== END STRAITS AQUATICS STOCK ORDER PATCH ===== */
 
 
-/* ===== STRAITS AQUATICS MAINTENANCE LOGS PATCH 2026-07-10 =====
-   Reads Google Form submissions from Supabase maintenance_logs and displays them
-   in the dashboard with separate Coral Tank and Fish / Invertebrate QT tables.
-   Added: issue resolution override and delete log controls. */
+/* ===== STRAITS AQUATICS TANK MAINTENANCE REVAMP 2026-11-20 =====
+   Direct dashboard entry for Coral Frag, QT, Display Left and Display Right.
+   Flexible test selection, latest-reading cards, 5-entry history, consumable schedules,
+   backdating audit trail, and admin edit/delete controls. */
 (function(){
-  const MAINT_PAGE_ID = 'maintenance';
+  const MAINT_PAGE_ID='maintenance';
+  const TEST_TABLE='tank_test_entries';
+  const EVENT_TABLE='tank_maintenance_events';
+  const TANKS={
+    coral:{label:'Coral Frag Tank',icon:'🪸',profile:'coral',params:['no3','po4','kh','mg','ca','salinity','ph','temperature'],carbonDays:14,flossDays:7},
+    qt:{label:'QT Tank',icon:'🧪',profile:'fish',params:['no3','po4','salinity','ph','temperature','copper'],carbonDays:null,flossDays:7},
+    display_left:{label:'Display Left',icon:'🐠',profile:'fish',params:['no3','po4','salinity','ph','temperature','orp'],carbonDays:14,flossDays:7},
+    display_right:{label:'Display Right',icon:'🐟',profile:'fish',params:['no3','po4','salinity','ph','temperature','orp'],carbonDays:14,flossDays:7}
+  };
+  const PARAMS={
+    no3:{label:'NO3',unit:'ppm',step:'0.01'},
+    po4:{label:'PO4',unit:'ppm',step:'0.001'},
+    kh:{label:'KH',unit:'dKH',step:'0.1'},
+    mg:{label:'Mg',unit:'mg/L',step:'1'},
+    ca:{label:'Ca',unit:'mg/L',step:'1'},
+    salinity:{label:'Salinity',unit:'SG',step:'0.001'},
+    ph:{label:'pH',unit:'',step:'0.01'},
+    temperature:{label:'Temperature',unit:'°C',step:'0.1'},
+    copper:{label:'Copper',unit:'mg/L',step:'0.01'},
+    orp:{label:'ORP',unit:'mV',step:'1'}
+  };
+  const EVENT_TYPES={carbon_changed:'Carbon changed',filter_floss_changed:'Filter floss changed'};
+  const ALL_PARAM_KEYS=Object.keys(PARAMS);
+  const maintState={tests:[],events:[],loaded:false,historyOpen:{},historyFilter:{},editGroup:null,selectedTank:'coral',selectedParams:new Set(),selectedEvents:new Set()};
 
-  function maintEsc(v){
-    return String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
+  function num(v){const n=parseFloat(v);return Number.isFinite(n)?n:null;}
+  function isAdmin(){return window._session?.role==='admin';}
+  function canEnter(){return window._session?.role==='admin'||window._session?.role==='staff';}
+  function userName(){return window._session?.displayName||window._session?.username||'Unknown';}
+  function tankDef(k){return TANKS[k]||TANKS.coral;}
+  function toLocalInputValue(d=new Date()){
+    const pad=n=>String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
-  function maintNum(v){
-    if(v === null || v === undefined || v === '') return '—';
-    const n = Number(v);
-    return Number.isFinite(n) ? String(v) : maintEsc(v);
-  }
-  function maintNumericValue(v){
-    if(v === null || v === undefined || v === '') return null;
-    const cleaned = String(v).trim().replace(',', '.');
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-  }
-  function maintNormaliseSalinity(v){
-    const n = maintNumericValue(v);
-    if(n === null) return null;
-    if(n >= 1000 && n <= 1100) return n / 1000;   // 1026 -> 1.026
-    if(n > 30 && n < 40) return n;                 // ppt, kept as ppt
-    return n;                                      // 1.026 style
-  }
-  function maintDisplayValue(v, parameter){
-    if(v === null || v === undefined || v === '') return '—';
-    const n = maintNumericValue(v);
-    if(n === null) return maintEsc(v);
-    if(parameter === 'salinity'){
-      if(n >= 1000 && n <= 1100) return (n / 1000).toFixed(3);
-      if(n > 1 && n < 2) return n.toFixed(3);
-      return String(v);
-    }
-    return String(v);
-  }
-  function maintParamStatus(tank, parameter, value){
-    const raw = maintNumericValue(value);
-    if(raw === null) return {cls:'b-grey', label:'No result'};
-    let n = raw;
-    if(parameter === 'salinity') n = maintNormaliseSalinity(value);
-
-    const isCoral = tank === 'coral';
-    const p = String(parameter).toLowerCase();
-
-    function statusGreen(){return {cls:'b-green', label:'OK'};}
-    function statusAmber(){return {cls:'b-amber', label:'Caution'};}
-    function statusRed(){return {cls:'b-red', label:'Out of range'};}
-
-    if(isCoral){
-      if(p === 'no3') return (n >= 2 && n <= 20) ? statusGreen() : ((n >= 0 && n < 2) || (n > 20 && n <= 35)) ? statusAmber() : statusRed();
-      if(p === 'po4') return (n >= 0.02 && n <= 0.10) ? statusGreen() : ((n >= 0 && n < 0.02) || (n > 0.10 && n <= 0.20)) ? statusAmber() : statusRed();
-      if(p === 'kh') return (n >= 7 && n <= 11) ? statusGreen() : ((n >= 6.5 && n < 7) || (n > 11 && n <= 12)) ? statusAmber() : statusRed();
-      if(p === 'mg') return (n >= 1250 && n <= 1350) ? statusGreen() : ((n >= 1200 && n < 1250) || (n > 1350 && n <= 1450)) ? statusAmber() : statusRed();
-      if(p === 'ca') return (n >= 380 && n <= 450) ? statusGreen() : ((n >= 350 && n < 380) || (n > 450 && n <= 480)) ? statusAmber() : statusRed();
-      if(p === 'salinity'){
-        if(raw > 30 && raw < 40) return (raw >= 34 && raw <= 36) ? statusGreen() : ((raw >= 33 && raw < 34) || (raw > 36 && raw <= 37)) ? statusAmber() : statusRed();
-        return (n >= 1.025 && n <= 1.027) ? statusGreen() : ((n >= 1.023 && n < 1.025) || (n > 1.027 && n <= 1.029)) ? statusAmber() : statusRed();
-      }
-      if(p === 'ph') return (n >= 7.8 && n <= 8.5) ? statusGreen() : ((n >= 7.6 && n < 7.8) || (n > 8.5 && n <= 8.6)) ? statusAmber() : statusRed();
-      if(p === 'temperature') return (n >= 24.5 && n <= 27.5) ? statusGreen() : ((n >= 23.5 && n < 24.5) || (n > 27.5 && n <= 28.3)) ? statusAmber() : statusRed();
+  function isoDate(v){if(!v)return null;const d=new Date(v);return isNaN(d)?null:d.toISOString();}
+  function fmtDateTime(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?esc(v):d.toLocaleString('en-GB',{dateStyle:'short',timeStyle:'short'});}
+  function fmtDate(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?esc(v):d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});}
+  function localDateKey(v){const d=v instanceof Date?v:new Date(v);if(isNaN(d))return '';const pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;}
+  function normalizeSalinity(v){const n=num(v);if(n===null)return null;if(n>=1000&&n<=1100)return n/1000;return n;}
+  function normalizeParam(p,v){const n=num(v);if(n===null)return null;return p==='salinity'?normalizeSalinity(v):n;}
+  function status(cls,label){return {cls,label};}
+  function paramStatus(tank,param,value){
+    let n=num(value);if(n===null)return status('b-grey','No result');
+    if(param==='salinity')n=normalizeSalinity(value);
+    if(param==='copper')return status('b-grey','Recorded');
+    const profile=tankDef(tank).profile;
+    if(profile==='coral'){
+      if(param==='no3')return n>=2&&n<=15?status('b-green','OK'):(n>=0&&n<2)||(n>15&&n<=30)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='po4')return n>=0.02&&n<=0.10?status('b-green','OK'):(n>=0&&n<0.02)||(n>0.10&&n<=0.20)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='kh')return n>=7&&n<=11?status('b-green','OK'):(n>=6.5&&n<7)||(n>11&&n<=12)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='mg')return n>=1250&&n<=1350?status('b-green','OK'):(n>=1200&&n<1250)||(n>1350&&n<=1450)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='ca')return n>=380&&n<=450?status('b-green','OK'):(n>=350&&n<380)||(n>450&&n<=480)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='salinity')return n>=1.025&&n<=1.027?status('b-green','OK'):(n>=1.023&&n<1.025)||(n>1.027&&n<=1.029)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='ph')return n>=7.8&&n<=8.5?status('b-green','OK'):(n>=7.6&&n<7.8)||(n>8.5&&n<=8.6)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='temperature')return n>=24.5&&n<=27.5?status('b-green','OK'):(n>=23.5&&n<24.5)||(n>27.5&&n<=28.3)?status('b-amber','Caution'):status('b-red','Out of range');
     }else{
-      if(p === 'no3') return (n >= 0 && n <= 25) ? statusGreen() : (n > 25 && n <= 50) ? statusAmber() : statusRed();
-      if(p === 'po4') return (n >= 0 && n <= 0.30) ? statusGreen() : (n > 0.30 && n <= 1.00) ? statusAmber() : statusRed();
-      if(p === 'salinity'){
-        if(raw > 30 && raw < 40) return (raw >= 31 && raw <= 33) ? statusGreen() : ((raw >= 30 && raw < 31) || (raw > 33 && raw <= 35)) ? statusAmber() : statusRed();
-        return (n >= 1.022 && n <= 1.024) ? statusGreen() : ((n >= 1.020 && n < 1.022) || (n > 1.024 && n <= 1.026)) ? statusAmber() : statusRed();
-      }
-      if(p === 'ph') return (n >= 7.8 && n <= 8.4) ? statusGreen() : ((n >= 7.6 && n < 7.8) || (n > 8.4 && n <= 8.5)) ? statusAmber() : statusRed();
-      if(p === 'temperature') return (n >= 24 && n <= 27) ? statusGreen() : ((n >= 23 && n < 24) || (n > 27 && n <= 28)) ? statusAmber() : statusRed();
+      if(param==='no3')return n>=0&&n<=20?status('b-green','OK'):n>20&&n<=30?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='po4')return n>=0&&n<=0.10?status('b-green','OK'):n>0.10&&n<=0.18?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='salinity')return n>=1.024&&n<=1.026?status('b-green','OK'):(n>=1.022&&n<1.024)||(n>1.026&&n<=1.027)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='ph')return n>=7.8&&n<=8.4?status('b-green','OK'):(n>=7.6&&n<7.8)||(n>8.4&&n<=8.5)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='temperature')return n>=24&&n<=27?status('b-green','OK'):(n>=23&&n<24)||(n>27&&n<=28)?status('b-amber','Caution'):status('b-red','Out of range');
+      if(param==='orp')return n>=300&&n<=350?status('b-green','OK'):n>350&&n<390?status('b-amber','Caution'):status('b-red','Out of range');
     }
-    return {cls:'b-grey', label:'Not assessed'};
+    return status('b-grey','Recorded');
   }
-  function maintParamBadge(tank, parameter, value){
-    if(value === null || value === undefined || value === '') return '<span class="badge b-grey">—</span>';
-    const status = maintParamStatus(tank, parameter, value);
-    return `<span class="badge ${status.cls}" title="${maintEsc(status.label)}">${maintDisplayValue(value, parameter)}</span>`;
+  function displayParam(p,v){
+    const n=num(v);if(n===null)return '—';
+    if(p==='salinity'){const s=normalizeSalinity(v);return s===null?'—':s.toFixed(3);}
+    if(p==='po4')return n.toFixed(3).replace(/0+$/,'').replace(/\.$/,'');
+    if(p==='ph')return n.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
+    if(['kh','temperature','copper'].includes(p))return n.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
+    return String(n);
   }
-  function maintDate(v){
-    if(!v) return '—';
-    const d = new Date(v);
-    if(!isNaN(d.getTime())) return d.toLocaleDateString('en-GB');
-    return maintEsc(v);
-  }
-  function maintDateTime(v){
-    if(!v) return '—';
-    const d = new Date(v);
-    if(!isNaN(d.getTime())) return d.toLocaleString('en-GB', {dateStyle:'short', timeStyle:'short'});
-    return maintEsc(v);
-  }
-  function maintBool(v){
-    return v === true || v === 'true' || v === 1 || v === '1';
-  }
-  function maintBoolBadge(v){
-    return maintBool(v) ? '<span class="badge b-green">Done</span>' : '<span class="badge b-grey">—</span>';
-  }
-  function maintHasText(v){
-    return String(v || '').trim().length > 0;
-  }
-  function maintRawIssue(log){
-    return maintBool(log?.urgent_issue) || maintHasText(log?.urgent_issue_details) || maintHasText(log?.livestock_concerns) || maintHasText(log?.equipment_issues) || maintHasText(log?.dead_livestock_losses);
-  }
-  function maintIssueResolved(log){
-    return maintBool(log?.issue_resolved);
-  }
-  function maintOpenIssue(log){
-    return maintRawIssue(log) && !maintIssueResolved(log);
-  }
-  function maintIssueBadge(log){
-    if(!maintRawIssue(log)) return '<span class="badge b-green">OK</span>';
-    if(maintIssueResolved(log)) return '<span class="badge b-blue">Resolved</span>';
-    return '<span class="badge b-red">Check</span>';
-  }
-  function maintIssueSummary(log){
-    if(!log) return 'No submissions yet';
-    const parts=[];
-    if(maintBool(log.urgent_issue)) parts.push('Urgent issue marked');
-    if(maintHasText(log.urgent_issue_details)) parts.push(log.urgent_issue_details);
-    if(maintHasText(log.livestock_concerns)) parts.push('Livestock: ' + log.livestock_concerns);
-    if(maintHasText(log.equipment_issues)) parts.push('Equipment: ' + log.equipment_issues);
-    if(maintHasText(log.dead_livestock_losses)) parts.push('Losses: ' + log.dead_livestock_losses);
-    if(parts.length && maintIssueResolved(log)){
-      parts.push('Resolved' + (log.issue_resolution_notes ? ': ' + log.issue_resolution_notes : ''));
-    }
-    return parts.length ? maintEsc(parts.join(' · ')) : 'No issues noted';
-  }
-  function maintCompletionCount(log){
-    if(!log) return '0/8';
-    const keys=['coral_glass_scraped','coral_inside_cleaned','qt_glass_scraped','qt_inside_cleaned','coral_skimmer_cleaned','spillages_cleaned','livestock_fed','shelves_tidied'];
-    const done=keys.filter(k=>maintBool(log[k])).length;
-    return done + '/' + keys.length;
-  }
-  function maintActions(log){
-    if(!log || !log.id) return '—';
-    const id = maintEsc(log.id);
-    const resolveBtn = maintRawIssue(log)
-      ? (maintIssueResolved(log)
-        ? `<button class="btn btn-sec btn-xs maint-action" onclick="toggleMaintenanceIssueResolved('${id}',false)">↩ Reopen</button>`
-        : `<button class="btn btn-sec btn-xs maint-action" onclick="toggleMaintenanceIssueResolved('${id}',true)">✓ Mark resolved</button>`)
-      : '';
-    return `<div class="flex gap-6" style="flex-wrap:wrap">${resolveBtn}<button class="btn btn-danger btn-xs maint-action" onclick="deleteMaintenanceLog('${id}')">Delete</button></div>`;
+  function paramBadge(tank,p,v){const s=paramStatus(tank,p,v);const meta=PARAMS[p];return `<span class="badge ${s.cls}" title="${esc(s.label)}">${esc(displayParam(p,v))}${meta.unit?` ${esc(meta.unit)}`:''}</span>`;}
+  function uuid(){return (crypto&&crypto.randomUUID)?crypto.randomUUID():`${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;}
+
+  function ensureStyles(){
+    if(document.getElementById('tank-maint-revamp-style'))return;
+    const st=document.createElement('style');st.id='tank-maint-revamp-style';st.textContent=`
+      #page-maintenance .tm-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+      #page-maintenance .tm-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+      #page-maintenance .tm-tank-card{background:#fff;border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-sm);overflow:hidden}
+      #page-maintenance .tm-tank-head{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px}
+      #page-maintenance .tm-tank-title{font-size:15px;font-weight:850;color:var(--ocean);display:flex;align-items:center;gap:8px}
+      #page-maintenance .tm-latest{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:9px;padding:14px}
+      #page-maintenance .tm-param{border:1px solid var(--border);border-radius:12px;padding:10px;background:#fbfdfe;min-height:75px}
+      #page-maintenance .tm-param-name{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text3);font-weight:800}
+      #page-maintenance .tm-param-value{font-size:16px;font-weight:850;margin-top:5px;color:var(--text)}
+      #page-maintenance .tm-param-meta{font-size:9.5px;color:var(--text3);margin-top:4px}
+      #page-maintenance .tm-consumables{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:0 14px 14px}
+      #page-maintenance .tm-consumable{border:1px solid var(--border);border-radius:12px;padding:10px;background:#fff}
+      #page-maintenance .tm-history{border-top:1px solid var(--border);padding:12px 14px 14px}
+      #page-maintenance .tm-history-row{padding:9px 0;border-bottom:1px solid #edf2f7;display:flex;gap:10px;align-items:flex-start}
+      #page-maintenance .tm-history-row:last-child{border-bottom:none}
+      #page-maintenance .tm-history-main{flex:1;min-width:0}
+      #page-maintenance .tm-entry-line{font-size:11.5px;color:var(--text2);margin-top:3px;line-height:1.55}
+      #page-maintenance .tm-filter-row{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}
+      .tm-choice-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:9px}
+      .tm-choice{min-height:52px;padding:10px 12px;border:2px solid var(--border2);background:#fff;border-radius:12px;cursor:pointer;font-weight:800;font-size:12px;color:var(--text2);display:flex;align-items:center;justify-content:center;text-align:center;transition:.12s}
+      .tm-choice:hover{border-color:#8acfe0;background:#f4fcfe}
+      .tm-choice.active{border-color:var(--reef);background:#e8fbff;color:var(--ocean);box-shadow:0 0 0 3px rgba(0,200,232,.10)}
+      .tm-param-input-wrap{display:none;border:1px solid var(--border);border-radius:12px;padding:10px;background:#fbfdfe}
+      .tm-param-input-wrap.active{display:block}
+      .tm-param-input-wrap.good{border-color:#86efac;background:#f0fdf4}.tm-param-input-wrap.warn{border-color:#fcd34d;background:#fffbeb}.tm-param-input-wrap.bad{border-color:#fca5a5;background:#fff5f5}
+      .tm-status-text{font-size:10px;font-weight:800;margin-top:5px}.tm-status-text.good{color:var(--green)}.tm-status-text.warn{color:var(--amber)}.tm-status-text.bad{color:var(--red)}
+      .tm-datetime-box{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.tm-datetime-box .fg{flex:1;min-width:230px}
+      .tm-backdated{font-size:10px;color:var(--amber);font-weight:800}
+      .tm-due-green{color:var(--green)}.tm-due-amber{color:var(--amber)}.tm-due-red{color:var(--red)}
+      @media(max-width:1000px){#page-maintenance .tm-grid{grid-template-columns:1fr}}
+      @media(max-width:620px){#page-maintenance .tm-consumables{grid-template-columns:1fr}.tm-choice-grid{grid-template-columns:1fr 1fr}.tm-choice{min-height:58px;font-size:13px}}
+    `;document.head.appendChild(st);
   }
 
-  function ensureMaintenanceSidebar(){
-    if(document.getElementById('maintenance-sidebar-btn')) return;
-    const financeLabel = [...document.querySelectorAll('.sb-label')].find(el => el.textContent.trim() === 'Finance');
-    const adminLabel = document.getElementById('admin-sidebar-label');
-    const anchor = financeLabel || adminLabel;
-    const html = `
-      <div class="sb-label" id="maintenance-sidebar-label">Operations</div>
-      <button class="sb-btn" id="maintenance-sidebar-btn" onclick="nav('maintenance',this)"><span class="ic">🧪</span><span>Tank Maintenance</span></button>
-    `;
-    if(anchor) anchor.insertAdjacentHTML('beforebegin', html);
-    else document.querySelector('.sidebar > div[style]')?.insertAdjacentHTML('beforeend', html);
+  function ensureSidebar(){
+    if(document.getElementById('maintenance-sidebar-btn'))return;
+    const financeLabel=[...document.querySelectorAll('.sb-label')].find(el=>el.textContent.trim()==='Finance');
+    const adminLabel=document.getElementById('admin-sidebar-label');
+    const anchor=financeLabel||adminLabel;
+    const html=`<div class="sb-label" id="maintenance-sidebar-label">Operations</div><button class="sb-btn" id="maintenance-sidebar-btn" onclick="nav('maintenance',this)"><span class="ic">🧪</span><span>Tank Maintenance</span></button>`;
+    if(anchor)anchor.insertAdjacentHTML('beforebegin',html);else document.querySelector('.sidebar > div[style]')?.insertAdjacentHTML('beforeend',html);
   }
 
-  function ensureMaintenancePage(){
-    if(document.getElementById('page-maintenance')) return;
-    const content = document.querySelector('.content');
-    if(!content) return;
-    content.insertAdjacentHTML('beforeend', `
-      <div id="page-maintenance" class="page">
-        <div class="section-hd">
-          <div>
-            <div class="section-title">Tank Maintenance</div>
-            <div class="text-sm text-muted">Google Form submissions stored in Supabase maintenance_logs</div>
-          </div>
-          <button class="btn btn-sec viewer-ok" onclick="loadMaintenanceLogs(true)">↻ Refresh</button>
-        </div>
-
-        <div class="metrics">
-          <div class="metric"><div class="metric-lbl">Last Checklist</div><div class="metric-val mv-blue" id="maint-last">—</div><div class="metric-sub" id="maint-last-sub">No submissions</div></div>
-          <div class="metric"><div class="metric-lbl">Total Logs</div><div class="metric-val" id="maint-total">0</div><div class="metric-sub">From Supabase</div></div>
-          <div class="metric"><div class="metric-lbl">Open Issues</div><div class="metric-val mv-red" id="maint-open-issues">0</div><div class="metric-sub">Unresolved maintenance concerns</div></div>
-          <div class="metric"><div class="metric-lbl">Latest Status</div><div class="metric-val" id="maint-status">—</div><div class="metric-sub" id="maint-status-sub">Awaiting data</div></div>
-          <div class="metric"><div class="metric-lbl">Cleaning Tasks</div><div class="metric-val mv-green" id="maint-tasks">0/8</div><div class="metric-sub">Latest checklist</div></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><div class="card-title">Latest Observations / Issues</div></div>
-          <div class="card-body" id="maint-latest-issues"><div class="empty"><div class="ei">🧪</div><p>No maintenance logs loaded yet</p></div></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><div class="card-title">Water Parameter Colour Key</div><span class="text-sm text-muted">Green = OK · Yellow = caution · Red = out of range</span></div>
-          <div class="card-body text-sm text-muted">
-            Coral: NO3 2–20, PO4 0.02–0.10, KH 7–11, MG 1250–1350, CA 380–450, salinity 1.025–1.027, pH 7.8–8.5, temp 24.5–27.5°C.<br>
-            Fish / Invertebrate QT: NO3 0–25, PO4 0–0.30, salinity 1.022–1.024, pH 7.8–8.4, temp 24–27°C.
-          </div>
-        </div>
-
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><div class="card-title">Coral Tank — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
-            <div class="tbl-wrap">
-              <table>
-                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>KH</th><th>MG</th><th>CA</th><th>Salinity</th><th>pH</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
-                <tbody id="maint-coral-body"><tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr></tbody>
-              </table>
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-head"><div class="card-title">Fish / Invertebrate QT — Water Parameters</div><span class="text-sm text-muted">Latest entries</span></div>
-            <div class="tbl-wrap">
-              <table>
-                <thead><tr><th>Date</th><th>Time</th><th>NO3</th><th>PO4</th><th>Salinity</th><th>pH</th><th>Temp</th><th>Notes</th><th>Actions</th></tr></thead>
-                <tbody id="maint-qt-body"><tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><div class="card-title">Cleaning / Maintenance History</div><span class="text-sm text-muted">Glass, skimmer, feeding and observations</span></div>
-          <div class="tbl-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Coral Glass</th><th>Coral Inside</th><th>QT Glass</th><th>QT Inside</th><th>Skimmer</th><th>Spillages</th><th>Fed</th><th>Shelves</th><th>Issues</th><th>Comments</th><th>Actions</th></tr></thead>
-              <tbody id="maint-cleaning-body"><tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr></tbody>
-            </table>
-          </div>
-        </div>
+  function ensurePage(){
+    if(document.getElementById('page-maintenance'))return;
+    const content=document.querySelector('.content');if(!content)return;
+    content.insertAdjacentHTML('beforeend',`<div id="page-maintenance" class="page">
+      <div class="section-hd">
+        <div><div class="section-title">Tank Maintenance</div><div class="text-sm text-muted">Direct water-test and consumable records · no Google Forms</div></div>
+        <div class="tm-toolbar">${canEnter()?'<button class="btn btn-primary" onclick="openTankMaintenanceEntry()">+ New Entry</button>':''}<button class="btn btn-sec viewer-ok" onclick="loadTankMaintenance(true)">↻ Refresh</button></div>
       </div>
-    `);
+      <div class="metrics" id="tm-metrics"></div>
+      <div class="card" id="tm-due-card"><div class="card-head"><div class="card-title">Consumables Due</div><span class="text-xs text-muted">Filter floss every 7 days · carbon every 14 days (QT carbon as required)</span></div><div class="card-body" id="tm-due-body"></div></div>
+      <div class="tm-grid" id="tm-tank-grid"></div>
+      <div class="card mt-14"><div class="card-head"><div class="card-title">Water Parameter Colour Key</div><button class="btn btn-sec btn-xs" onclick="toggleTankThresholds()">Show / Hide</button></div><div class="card-body" id="tm-thresholds" style="display:none"></div></div>
+    </div>`);
   }
 
-  async function loadMaintenanceLogs(showToast){
-    if(!window.db) window.db = {};
+  function ensureModal(){
+    if(document.getElementById('modal-tank-entry'))return;
+    document.body.insertAdjacentHTML('beforeend',`<div class="modal-ov" id="modal-tank-entry"><div class="modal" style="width:820px;max-width:98vw">
+      <div class="modal-head"><div class="modal-title" id="tm-modal-title">New Tank Entry</div><button class="modal-close" onclick="closeTankEntryModal()">✕</button></div>
+      <div class="modal-body">
+        <div class="font-bold text-sm mb-8">1. Choose tank</div><div class="tm-choice-grid mb-14" id="tm-tank-choices"></div>
+        <div class="tm-datetime-box mb-14"><div class="fg"><label>Performed date & time</label><input type="datetime-local" id="tm-performed-at"></div><div><div class="text-xs text-muted">Defaults to now. Past entries allowed; future entries are blocked.</div><div id="tm-backdate-note" class="tm-backdated" style="display:none">Backdated entry</div></div></div>
+        <div class="font-bold text-sm mb-8">2. Select tests performed</div><div class="tm-choice-grid mb-12" id="tm-param-choices"></div><div class="form-grid mb-14" id="tm-param-inputs"></div>
+        <div class="font-bold text-sm mb-8">3. Maintenance performed</div><div class="tm-choice-grid mb-14" id="tm-event-choices"><button type="button" class="tm-choice" data-event="carbon_changed" onclick="toggleTankEvent('carbon_changed')">Carbon changed</button><button type="button" class="tm-choice" data-event="filter_floss_changed" onclick="toggleTankEvent('filter_floss_changed')">Filter floss changed</button></div>
+        <div class="fg"><label>Notes / observations (optional)</label><textarea id="tm-notes" rows="3" placeholder="Anything useful about the readings, livestock, treatment or maintenance..."></textarea></div>
+        <div id="tm-form-warning" class="text-sm text-red font-bold mt-12" style="display:none"></div>
+      </div>
+      <div class="modal-foot"><button class="btn btn-sec" onclick="closeTankEntryModal()">Cancel</button><button class="btn btn-primary" id="tm-save-btn" onclick="saveTankMaintenanceEntry()">Save Entry</button></div>
+    </div></div>`);
+    document.getElementById('tm-performed-at')?.addEventListener('change',updateBackdateNote);
+  }
+
+  function thresholdsHtml(){return `<div class="two-col"><div><div class="font-bold mb-8">Coral Frag Tank</div><table class="itbl"><thead><tr><th>Parameter</th><th>Green</th><th>Amber</th><th>Red</th></tr></thead><tbody>
+    <tr><td>NO3</td><td>2–15 ppm</td><td>0–&lt;2 or &gt;15–30</td><td>&gt;30</td></tr><tr><td>PO4</td><td>0.02–0.10</td><td>&lt;0.02 or &gt;0.10–0.20</td><td>&gt;0.20</td></tr><tr><td>KH</td><td>7–11</td><td>6.5–&lt;7 or &gt;11–12</td><td>&lt;6.5 or &gt;12</td></tr><tr><td>Mg</td><td>1250–1350</td><td>1200–&lt;1250 or &gt;1350–1450</td><td>&lt;1200 or &gt;1450</td></tr><tr><td>Ca</td><td>380–450</td><td>350–&lt;380 or &gt;450–480</td><td>&lt;350 or &gt;480</td></tr><tr><td>Salinity</td><td>1.025–1.027</td><td>1.023–&lt;1.025 or &gt;1.027–1.029</td><td>&lt;1.023 or &gt;1.029</td></tr><tr><td>pH</td><td>7.8–8.5</td><td>7.6–&lt;7.8 or &gt;8.5–8.6</td><td>&lt;7.6 or &gt;8.6</td></tr><tr><td>Temperature</td><td>24.5–27.5°C</td><td>23.5–&lt;24.5 or &gt;27.5–28.3</td><td>&lt;23.5 or &gt;28.3</td></tr></tbody></table></div>
+    <div><div class="font-bold mb-8">QT + Display Fish Systems</div><table class="itbl"><thead><tr><th>Parameter</th><th>Green</th><th>Amber</th><th>Red</th></tr></thead><tbody>
+    <tr><td>NO3</td><td>0–20 ppm</td><td>&gt;20–30</td><td>&gt;30</td></tr><tr><td>PO4</td><td>0–0.10</td><td>&gt;0.10–0.18</td><td>&gt;0.18</td></tr><tr><td>Salinity</td><td>1.024–1.026</td><td>1.022–&lt;1.024 or &gt;1.026–1.027</td><td>&lt;1.022 or &gt;1.027</td></tr><tr><td>pH</td><td>7.8–8.4</td><td>7.6–&lt;7.8 or &gt;8.4–8.5</td><td>&lt;7.6 or &gt;8.5</td></tr><tr><td>Temperature</td><td>24–27°C</td><td>23–&lt;24 or &gt;27–28</td><td>&lt;23 or &gt;28</td></tr><tr><td>Display ORP</td><td>300–350 mV</td><td>&gt;350–&lt;390</td><td>&lt;300 or ≥390</td></tr><tr><td>QT Copper</td><td colspan="3">Neutral / Recorded — target depends on treatment and livestock</td></tr></tbody></table></div></div>`;}
+  window.toggleTankThresholds=function(){const el=document.getElementById('tm-thresholds');if(!el)return;el.innerHTML=thresholdsHtml();el.style.display=el.style.display==='none'?'block':'none';};
+
+  async function loadData(showToast=false){
+    if(!window.db)window.db={};
     try{
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','⏳ Loading maintenance...');
-      const rows = await sbGet('maintenance_logs','select=*&order=submitted_at.desc&limit=100');
-      db.maintenance = Array.isArray(rows) ? rows : [];
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
-      renderMaintenance();
-      if(showToast && typeof toast === 'function') toast('Maintenance logs refreshed ✓');
+      if(typeof setSyncStatus==='function')setSyncStatus('sync-busy','⏳ Loading tank maintenance...');
+      const [tests,events]=await Promise.all([sbGet(TEST_TABLE,'select=*&order=performed_at.desc&limit=1000'),sbGet(EVENT_TABLE,'select=*&order=performed_at.desc&limit=1000')]);
+      maintState.tests=Array.isArray(tests)?tests:[];maintState.events=Array.isArray(events)?events:[];maintState.loaded=true;db.tankTests=maintState.tests;db.tankEvents=maintState.events;
+      if(typeof setSyncStatus==='function')setSyncStatus('sync-ok','✓ Synced');render();if(showToast&&typeof toast==='function')toast('Tank maintenance refreshed ✓');
     }catch(e){
-      console.error('Maintenance log load failed', e);
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Maintenance error');
-      const errHtml = '<div class="empty"><div class="ei">⚠️</div><p>Could not load maintenance logs from Supabase.</p></div>';
-      ['maint-coral-body','maint-qt-body','maint-cleaning-body'].forEach(id=>{
-        const el=document.getElementById(id); if(el) el.innerHTML = '<tr><td colspan="12">'+errHtml+'</td></tr>';
-      });
-      if(showToast && typeof toast === 'function') toast('Could not load maintenance logs', false);
+      console.error('Tank maintenance load failed',e);maintState.loaded=false;
+      if(typeof setSyncStatus==='function')setSyncStatus('sync-err','✗ Maintenance setup needed');
+      const grid=document.getElementById('tm-tank-grid');if(grid)grid.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="card-body"><div class="empty"><div class="ei">⚠️</div><p>Tank maintenance tables are not available yet. Run the supplied Supabase migration, then refresh.</p></div></div></div>`;
+      if(showToast&&typeof toast==='function')toast('Tank maintenance database setup is missing',false);
     }
   }
 
-  async function toggleMaintenanceIssueResolved(id, resolved){
-    const action = resolved ? 'mark this issue as resolved' : 'reopen this issue';
-    if(!confirm('Are you sure you want to ' + action + '?')) return;
-    const payload = resolved
-      ? {issue_resolved:true, issue_resolved_at:new Date().toISOString(), issue_resolution_notes:(prompt('Resolution note, optional:', 'Resolved') || '')}
-      : {issue_resolved:false, issue_resolved_at:null, issue_resolution_notes:''};
+  function latestParam(tank,p){return maintState.tests.find(r=>r.tank===tank&&r[p]!==null&&r[p]!==undefined&&r[p]!=='')||null;}
+  function lastEvent(tank,type){return maintState.events.find(r=>r.tank===tank&&r.event_type===type)||null;}
+  function dueInfo(tank,type){
+    const t=tankDef(tank),days=type==='carbon_changed'?t.carbonDays:t.flossDays,last=lastEvent(tank,type);
+    if(days===null)return {cls:'tm-due-green',label:last?`Last changed ${fmtDate(last.performed_at)} · As required`:'As required · no change recorded',due:false};
+    if(!last)return {cls:'tm-due-amber',label:'No change recorded',due:true};
+    const due=new Date(new Date(last.performed_at).getTime()+days*86400000);const diff=Math.ceil((due.getTime()-Date.now())/86400000);
+    if(diff<0)return {cls:'tm-due-red',label:`Overdue by ${Math.abs(diff)} day${Math.abs(diff)===1?'':'s'} · due ${fmtDate(due)}`,due:true};
+    if(diff<=2)return {cls:'tm-due-amber',label:diff===0?`Due today · last changed ${fmtDate(last.performed_at)}`:`Due in ${diff} day${diff===1?'':'s'} · ${fmtDate(due)}`,due:true};
+    return {cls:'tm-due-green',label:`Due in ${diff} days · ${fmtDate(due)}`,due:false};
+  }
+
+  function groupEntries(tank){
+    const m=new Map();
+    const ensure=(gid,seed)=>{if(!m.has(gid))m.set(gid,{groupId:gid,tank,test:null,events:[],performed_at:seed.performed_at,created_at:seed.created_at,created_by:seed.created_by,backdated:!!seed.backdated,updated_at:seed.updated_at,updated_by:seed.updated_by});return m.get(gid);};
+    maintState.tests.filter(r=>r.tank===tank).forEach(r=>{const g=ensure(r.entry_group_id||`test-${r.id}`,r);g.test=r;g.performed_at=r.performed_at;g.created_at=r.created_at;g.created_by=r.created_by;g.backdated=!!r.backdated;g.updated_at=r.updated_at;g.updated_by=r.updated_by;});
+    maintState.events.filter(r=>r.tank===tank).forEach(r=>{const g=ensure(r.entry_group_id||`event-${r.id}`,r);g.events.push(r);if(!g.test){g.performed_at=r.performed_at;g.created_at=r.created_at;g.created_by=r.created_by;g.backdated=!!r.backdated;g.updated_at=r.updated_at;g.updated_by=r.updated_by;}});
+    return [...m.values()].sort((a,b)=>new Date(b.performed_at)-new Date(a.performed_at));
+  }
+  function groupKind(g){const hasTest=!!g.test,hasCarbon=g.events.some(e=>e.event_type==='carbon_changed'),hasFloss=g.events.some(e=>e.event_type==='filter_floss_changed');if(hasTest&&!hasCarbon&&!hasFloss)return 'tests';if(!hasTest&&hasCarbon&&!hasFloss)return 'carbon';if(!hasTest&&!hasCarbon&&hasFloss)return 'floss';return 'mixed';}
+  function groupSummary(g){
+    const parts=[];
+    if(g.test)ALL_PARAM_KEYS.forEach(p=>{if(g.test[p]!==null&&g.test[p]!==undefined&&g.test[p]!=='')parts.push(`${PARAMS[p].label} ${paramBadge(g.tank,p,g.test[p])}`);});
+    g.events.forEach(e=>parts.push(`<span class="badge b-blue">${esc(EVENT_TYPES[e.event_type]||e.event_type)}</span>`));
+    const notes=g.test?.notes||g.events[0]?.notes||'';if(notes)parts.push(`<span class="text-muted">📝 ${esc(notes)}</span>`);
+    return parts.join(' · ')||'Entry';
+  }
+  function historyHtml(tank){
+    const groups=groupEntries(tank),open=!!maintState.historyOpen[tank],filter=maintState.historyFilter[tank]||'all';
+    const filtered=groups.filter(g=>filter==='all'||(filter==='tests'&&!!g.test)||(filter==='carbon'&&g.events.some(e=>e.event_type==='carbon_changed'))||(filter==='floss'&&g.events.some(e=>e.event_type==='filter_floss_changed')));
+    const shown=open?filtered:filtered.slice(0,5);
+    const rows=shown.length?shown.map(g=>`<div class="tm-history-row"><div class="tm-history-main"><div class="flex items-c gap-6" style="flex-wrap:wrap"><span class="font-bold text-sm">${fmtDateTime(g.performed_at)}</span><span class="text-xs text-muted">${esc(g.created_by||'Unknown')}</span>${g.backdated?'<span class="badge b-amber">Backdated</span>':''}${g.updated_at?'<span class="badge b-grey">Edited</span>':''}</div><div class="tm-entry-line">${groupSummary(g)}</div>${g.backdated?`<div class="text-xs text-muted mt-8">Entered ${fmtDateTime(g.created_at)}</div>`:''}${g.updated_at?`<div class="text-xs text-muted">Last edited ${fmtDateTime(g.updated_at)}${g.updated_by?' by '+esc(g.updated_by):''}</div>`:''}</div>${isAdmin()?`<div class="flex gap-6"><button class="btn btn-sec btn-xs" onclick="editTankMaintenanceGroup('${esc(g.groupId)}','${tank}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteTankMaintenanceGroup('${esc(g.groupId)}','${tank}')">Delete</button></div>`:''}</div>`).join(''):'<div class="text-sm text-muted" style="padding:10px 0">No entries yet.</div>';
+    return `<div class="tm-filter-row"><button class="btn btn-xs ${filter==='all'?'btn-primary':'btn-sec'}" onclick="setTankHistoryFilter('${tank}','all')">All</button><button class="btn btn-xs ${filter==='tests'?'btn-primary':'btn-sec'}" onclick="setTankHistoryFilter('${tank}','tests')">Water tests</button><button class="btn btn-xs ${filter==='carbon'?'btn-primary':'btn-sec'}" onclick="setTankHistoryFilter('${tank}','carbon')">Carbon</button><button class="btn btn-xs ${filter==='floss'?'btn-primary':'btn-sec'}" onclick="setTankHistoryFilter('${tank}','floss')">Filter floss</button></div>${rows}${filtered.length>5?`<button class="btn btn-sec btn-sm mt-8" onclick="toggleTankHistory('${tank}')">${open?'Show latest 5':`View full history (${filtered.length})`}</button>`:''}`;
+  }
+  window.setTankHistoryFilter=function(tank,f){maintState.historyFilter[tank]=f;render();};
+  window.toggleTankHistory=function(tank){maintState.historyOpen[tank]=!maintState.historyOpen[tank];render();};
+
+  function tankCard(tank){
+    const t=tankDef(tank);const latest=t.params.map(p=>{const r=latestParam(tank,p);return `<div class="tm-param"><div class="tm-param-name">${esc(PARAMS[p].label)}</div><div class="tm-param-value">${r?paramBadge(tank,p,r[p]):'<span class="text-muted">—</span>'}</div><div class="tm-param-meta">${r?`${fmtDate(r.performed_at)} · ${esc(r.created_by||'Unknown')}`:'No result recorded'}</div></div>`;}).join('');
+    const carbon=dueInfo(tank,'carbon_changed'),floss=dueInfo(tank,'filter_floss_changed'),lastC=lastEvent(tank,'carbon_changed'),lastF=lastEvent(tank,'filter_floss_changed');
+    return `<div class="tm-tank-card"><div class="tm-tank-head"><div class="tm-tank-title"><span>${t.icon}</span>${esc(t.label)}</div>${canEnter()?`<button class="btn btn-reef btn-sm" onclick="openTankMaintenanceEntry('${tank}')">+ Entry</button>`:''}</div><div class="tm-latest">${latest}</div><div class="tm-consumables"><div class="tm-consumable"><div class="font-bold text-sm">Carbon</div><div class="text-xs text-muted mt-8">Last changed: ${lastC?fmtDate(lastC.performed_at):'Never recorded'}</div><div class="text-sm font-bold mt-8 ${carbon.cls}">${esc(carbon.label)}</div></div><div class="tm-consumable"><div class="font-bold text-sm">Filter floss</div><div class="text-xs text-muted mt-8">Last changed: ${lastF?fmtDate(lastF.performed_at):'Never recorded'}</div><div class="text-sm font-bold mt-8 ${floss.cls}">${esc(floss.label)}</div></div></div><div class="tm-history"><div class="flex items-c"><div class="font-bold text-sm">Recent Entries</div><span class="text-xs text-muted ml-auto">Latest 5 by default</span></div>${historyHtml(tank)}</div></div>`;
+  }
+
+  function renderMetrics(){
+    const now=new Date(),today=localDateKey(now);const groups=Object.keys(TANKS).flatMap(t=>groupEntries(t));const todayCount=groups.filter(g=>localDateKey(g.performed_at)===today).length;const last=groups.sort((a,b)=>new Date(b.performed_at)-new Date(a.performed_at))[0];let due=0;Object.keys(TANKS).forEach(t=>{if(dueInfo(t,'carbon_changed').due)due++;if(dueInfo(t,'filter_floss_changed').due)due++;});
+    const el=document.getElementById('tm-metrics');if(el)el.innerHTML=`<div class="metric"><div class="metric-lbl">Systems</div><div class="metric-val mv-blue">4</div><div class="metric-sub">Coral · QT · Left · Right</div></div><div class="metric"><div class="metric-lbl">Entries Today</div><div class="metric-val">${todayCount}</div><div class="metric-sub">Performed today</div></div><div class="metric"><div class="metric-lbl">Consumables Due</div><div class="metric-val ${due?'mv-amber':'mv-green'}">${due}</div><div class="metric-sub">Due soon / overdue / no baseline</div></div><div class="metric"><div class="metric-lbl">Last Entry</div><div class="metric-val" style="font-size:17px">${last?fmtDate(last.performed_at):'—'}</div><div class="metric-sub">${last?esc(tankDef(last.tank).label)+' · '+esc(last.created_by||'Unknown'):'No entries yet'}</div></div>`;
+  }
+  function renderDue(){
+    const items=[];Object.keys(TANKS).forEach(t=>{[['carbon_changed','Carbon'],['filter_floss_changed','Filter floss']].forEach(([type,label])=>{const d=dueInfo(t,type);if(d.due)items.push(`<div class="flex items-c gap-8" style="padding:7px 0;border-bottom:1px solid var(--border)"><span class="font-bold" style="min-width:130px">${esc(tankDef(t).label)}</span><span class="badge ${d.cls==='tm-due-red'?'b-red':'b-amber'}">${label}</span><span class="text-sm ${d.cls}">${esc(d.label)}</span></div>`);});});
+    const el=document.getElementById('tm-due-body');if(el)el.innerHTML=items.length?items.join(''):'<div class="text-sm text-green font-bold">✓ No scheduled consumables are due within the next 2 days.</div>';
+  }
+  function render(){ensurePage();ensureStyles();renderMetrics();renderDue();const grid=document.getElementById('tm-tank-grid');if(grid)grid.innerHTML=Object.keys(TANKS).map(tankCard).join('');}
+
+  function renderTankChoices(){const el=document.getElementById('tm-tank-choices');if(!el)return;el.innerHTML=Object.entries(TANKS).map(([k,t])=>`<button type="button" class="tm-choice ${maintState.selectedTank===k?'active':''}" onclick="selectTankForEntry('${k}')">${t.icon} ${esc(t.label)}</button>`).join('');}
+  function renderParamChoices(){
+    const t=tankDef(maintState.selectedTank),choices=document.getElementById('tm-param-choices'),inputs=document.getElementById('tm-param-inputs');if(!choices||!inputs)return;
+    choices.innerHTML=t.params.map(p=>`<button type="button" class="tm-choice ${maintState.selectedParams.has(p)?'active':''}" data-param="${p}" onclick="toggleTankParam('${p}')">${esc(PARAMS[p].label)}${PARAMS[p].unit?` <span style="font-size:10px;opacity:.65">${esc(PARAMS[p].unit)}</span>`:''}</button>`).join('');
+    inputs.innerHTML=t.params.map(p=>`<div class="tm-param-input-wrap ${maintState.selectedParams.has(p)?'active':''}" id="tm-input-wrap-${p}"><label>${esc(PARAMS[p].label)}${PARAMS[p].unit?` (${esc(PARAMS[p].unit)})`:''}</label><input type="number" inputmode="decimal" step="${PARAMS[p].step}" id="tm-val-${p}" placeholder="${p==='salinity'?'e.g. 1.025 or 1025':''}" oninput="updateTankParamPreview('${p}')"><div class="tm-status-text" id="tm-status-${p}"></div></div>`).join('');
+  }
+  function renderEventChoices(){document.querySelectorAll('#tm-event-choices .tm-choice').forEach(b=>b.classList.toggle('active',maintState.selectedEvents.has(b.dataset.event)));}
+  window.selectTankForEntry=function(tank){if(!TANKS[tank])return;maintState.selectedTank=tank;maintState.selectedParams.clear();renderTankChoices();renderParamChoices();};
+  window.toggleTankParam=function(p){if(!tankDef(maintState.selectedTank).params.includes(p))return;const active=maintState.selectedParams.has(p);if(active)maintState.selectedParams.delete(p);else maintState.selectedParams.add(p);const btn=document.querySelector(`#tm-param-choices [data-param="${p}"]`);if(btn)btn.classList.toggle('active',!active);const wrap=document.getElementById(`tm-input-wrap-${p}`);if(wrap)wrap.classList.toggle('active',!active);};
+  window.toggleTankEvent=function(e){if(maintState.selectedEvents.has(e))maintState.selectedEvents.delete(e);else maintState.selectedEvents.add(e);renderEventChoices();};
+  window.updateTankParamPreview=function(p){
+    const inp=document.getElementById(`tm-val-${p}`),wrap=document.getElementById(`tm-input-wrap-${p}`),txt=document.getElementById(`tm-status-${p}`);if(!inp||!wrap||!txt)return;wrap.classList.remove('good','warn','bad');txt.className='tm-status-text';if(inp.value===''){txt.textContent='';return;}let v=normalizeParam(p,inp.value);if(p==='salinity'&&(v===null||v<1||v>2)){wrap.classList.add('bad');txt.classList.add('bad');txt.textContent='Enter SG, e.g. 1.025 or 1025';return;}const s=paramStatus(maintState.selectedTank,p,v);const mode=s.cls==='b-green'?'good':s.cls==='b-amber'?'warn':s.cls==='b-red'?'bad':'';if(mode){wrap.classList.add(mode);txt.classList.add(mode);}txt.textContent=s.label;
+  };
+  function updateBackdateNote(){const el=document.getElementById('tm-performed-at'),note=document.getElementById('tm-backdate-note');if(!el||!note)return;const d=new Date(el.value),back=Number.isFinite(d.getTime())&&(Date.now()-d.getTime()>10*60*1000);note.style.display=back?'block':'none';}
+
+  window.openTankMaintenanceEntry=function(tank='coral'){
+    if(!canEnter()){toast?.('Staff or admin access required',false);return;}ensureModal();maintState.editGroup=null;maintState.selectedTank=TANKS[tank]?tank:'coral';maintState.selectedParams.clear();maintState.selectedEvents.clear();document.getElementById('tm-modal-title').textContent='New Tank Entry';document.getElementById('tm-save-btn').textContent='Save Entry';document.getElementById('tm-notes').value='';const dt=document.getElementById('tm-performed-at');dt.value=toLocalInputValue();dt.max=toLocalInputValue();renderTankChoices();renderParamChoices();renderEventChoices();updateBackdateNote();document.getElementById('tm-form-warning').style.display='none';document.getElementById('modal-tank-entry').classList.add('open');
+  };
+  window.closeTankEntryModal=function(){document.getElementById('modal-tank-entry')?.classList.remove('open');};
+
+  function findGroup(groupId,tank){return groupEntries(tank).find(g=>String(g.groupId)===String(groupId));}
+  window.editTankMaintenanceGroup=function(groupId,tank){
+    if(!isAdmin()){toast?.('Admin access only',false);return;}const g=findGroup(groupId,tank);if(!g)return;ensureModal();maintState.editGroup={groupId,tank};maintState.selectedTank=tank;maintState.selectedParams.clear();maintState.selectedEvents.clear();if(g.test)ALL_PARAM_KEYS.forEach(p=>{if(g.test[p]!==null&&g.test[p]!==undefined&&g.test[p]!=='')maintState.selectedParams.add(p);});g.events.forEach(e=>maintState.selectedEvents.add(e.event_type));document.getElementById('tm-modal-title').textContent='Edit Tank Entry';document.getElementById('tm-save-btn').textContent='Save Changes';const dt=document.getElementById('tm-performed-at');dt.value=toLocalInputValue(new Date(g.performed_at));dt.max=toLocalInputValue();document.getElementById('tm-notes').value=g.test?.notes||g.events[0]?.notes||'';renderTankChoices();renderParamChoices();renderEventChoices();if(g.test)maintState.selectedParams.forEach(p=>{const inp=document.getElementById(`tm-val-${p}`);if(inp){inp.value=p==='salinity'?displayParam(p,g.test[p]):g.test[p];updateTankParamPreview(p);}});updateBackdateNote();document.getElementById('tm-form-warning').style.display='none';document.getElementById('modal-tank-entry').classList.add('open');
+  };
+
+  async function saveGroup(){
+    const warn=document.getElementById('tm-form-warning');warn.style.display='none';const tank=maintState.selectedTank,t=tankDef(tank),performedLocal=document.getElementById('tm-performed-at').value,performed=new Date(performedLocal);if(!performedLocal||isNaN(performed)){warn.textContent='Enter a valid performed date/time.';warn.style.display='block';return;}if(performed.getTime()>Date.now()+1000){warn.textContent='The performed date/time cannot be in the future.';warn.style.display='block';return;}if(!maintState.selectedParams.size&&!maintState.selectedEvents.size){warn.textContent='Select at least one water test or maintenance action.';warn.style.display='block';return;}
+    const values={};for(const p of maintState.selectedParams){const inp=document.getElementById(`tm-val-${p}`),v=normalizeParam(p,inp?.value);if(v===null){warn.textContent=`Enter a result for ${PARAMS[p].label}.`;warn.style.display='block';return;}if(p==='salinity'&&(v<1||v>2)){warn.textContent='Salinity must be entered as SG, e.g. 1.025 or 1025.';warn.style.display='block';return;}values[p]=v;}
+    const notes=document.getElementById('tm-notes').value.trim(),now=new Date(),who=userName(),iso=performed.toISOString();const groupId=maintState.editGroup?.groupId||uuid(),existing=maintState.editGroup?findGroup(groupId,maintState.editGroup.tank):null;const originalCreated=existing?.created_at?new Date(existing.created_at):now;const backdated=maintState.editGroup?((existing?.backdated===true)||(!isNaN(originalCreated)&&originalCreated.getTime()-performed.getTime()>10*60*1000)):(now.getTime()-performed.getTime()>10*60*1000);
     try{
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Saving maintenance update...');
-      await sbUpdate('maintenance_logs', id, payload);
-      if(db.maintenance){
-        const idx = db.maintenance.findIndex(l => String(l.id) === String(id));
-        if(idx > -1) db.maintenance[idx] = {...db.maintenance[idx], ...payload};
+      if(typeof setSyncStatus==='function')setSyncStatus('sync-busy','Saving tank entry...');
+      const testPayload={tank,entry_group_id:groupId,performed_at:iso,notes,backdated,updated_by:maintState.editGroup?who:null};ALL_PARAM_KEYS.forEach(p=>testPayload[p]=maintState.selectedParams.has(p)?values[p]:null);
+      if(maintState.selectedParams.size){if(existing?.test)await sbUpdate(TEST_TABLE,existing.test.id,testPayload);else await sbInsert(TEST_TABLE,{...testPayload,created_by:who});}else if(existing?.test)await sbDelete(TEST_TABLE,existing.test.id);
+      for(const type of Object.keys(EVENT_TYPES)){
+        const ex=existing?.events?.find(e=>e.event_type===type),selected=maintState.selectedEvents.has(type);const payload={tank,entry_group_id:groupId,event_type:type,performed_at:iso,notes,backdated,updated_by:maintState.editGroup?who:null};
+        if(selected){if(ex)await sbUpdate(EVENT_TABLE,ex.id,payload);else await sbInsert(EVENT_TABLE,{...payload,created_by:who});}else if(ex)await sbDelete(EVENT_TABLE,ex.id);
       }
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
-      renderMaintenance();
-      if(typeof toast === 'function') toast(resolved ? 'Issue marked resolved ✓' : 'Issue reopened');
-    }catch(e){
-      console.error('Could not update maintenance issue', e);
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Maintenance update failed');
-      if(typeof toast === 'function') toast('Could not update issue. Check that the maintenance_logs columns/policies were added.', false);
-      alert('Could not update the issue. You may need to run the Supabase SQL migration for issue_resolved columns and update/delete policies. Error: ' + e.message);
-    }
+      if(typeof setSyncStatus==='function')setSyncStatus('sync-ok','✓ Synced');closeTankEntryModal();await loadData(false);toast?.(maintState.editGroup?'Tank entry updated ✓':'Tank entry saved ✓');maintState.editGroup=null;
+    }catch(e){console.error('Tank entry save failed',e);if(typeof setSyncStatus==='function')setSyncStatus('sync-err','✗ Save failed');warn.textContent='Could not save entry: '+e.message;warn.style.display='block';}
   }
+  window.saveTankMaintenanceEntry=saveGroup;
 
-  async function deleteMaintenanceLog(id){
-    if(!confirm('Delete this maintenance log? This is useful for removing test form submissions. This cannot be undone.')) return;
-    try{
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-busy','Deleting maintenance log...');
-      await sbDelete('maintenance_logs', id);
-      db.maintenance = (db.maintenance || []).filter(l => String(l.id) !== String(id));
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-ok','✓ Synced');
-      renderMaintenance();
-      if(typeof toast === 'function') toast('Maintenance log deleted ✓');
-    }catch(e){
-      console.error('Could not delete maintenance log', e);
-      if(typeof setSyncStatus === 'function') setSyncStatus('sync-err','✗ Delete failed');
-      if(typeof toast === 'function') toast('Could not delete maintenance log. Check update/delete policies.', false);
-      alert('Could not delete this log. You may need to run the Supabase SQL migration for delete policy. Error: ' + e.message);
-    }
+  window.deleteTankMaintenanceGroup=async function(groupId,tank){
+    if(!isAdmin()){toast?.('Admin access only',false);return;}const g=findGroup(groupId,tank);if(!g||!confirm('Delete this tank maintenance entry? This cannot be undone.'))return;try{if(typeof setSyncStatus==='function')setSyncStatus('sync-busy','Deleting tank entry...');if(g.test)await sbDelete(TEST_TABLE,g.test.id);for(const e of g.events)await sbDelete(EVENT_TABLE,e.id);if(typeof setSyncStatus==='function')setSyncStatus('sync-ok','✓ Synced');await loadData(false);toast?.('Tank entry deleted');}catch(e){console.error(e);toast?.('Could not delete entry',false);}
+  };
+
+  function installNav(){
+    ensureStyles();ensureSidebar();ensurePage();ensureModal();try{if(typeof TITLES!=='undefined')TITLES.maintenance='Tank Maintenance';}catch(e){}
+    if(window.__tankMaintenanceRevampNav)return;const baseNav=window.nav;window.nav=function(id,btn){if(id===MAINT_PAGE_ID){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));document.getElementById('page-maintenance')?.classList.add('active');const title=document.getElementById('page-title');if(title)title.textContent='Tank Maintenance';(btn||document.getElementById('maintenance-sidebar-btn'))?.classList.add('active');if(!maintState.loaded)loadData(false);else render();return;}return baseNav?baseNav(id,btn):undefined;};window.__tankMaintenanceRevampNav=true;
   }
-
-  function renderMaintenance(){
-    ensureMaintenancePage();
-    const logs = db.maintenance || [];
-    const latest = logs[0];
-    const set=(id,val)=>{const el=document.getElementById(id); if(el) el.innerHTML=val;};
-
-    if(!logs.length){
-      set('maint-last','—'); set('maint-last-sub','No submissions'); set('maint-total','0'); set('maint-open-issues','0'); set('maint-status','—'); set('maint-status-sub','Awaiting data'); set('maint-tasks','0/8');
-      set('maint-latest-issues','<div class="empty"><div class="ei">🧪</div><p>No maintenance logs found yet. Submit a Google Form response first.</p></div>');
-      set('maint-coral-body','<tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
-      set('maint-qt-body','<tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr>');
-      set('maint-cleaning-body','<tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr>');
-      return;
-    }
-
-    const openIssues = logs.filter(maintOpenIssue).length;
-    set('maint-last', maintDate(latest.work_date || latest.submitted_at));
-    set('maint-last-sub', 'Submitted ' + maintDateTime(latest.submitted_at));
-    set('maint-total', String(logs.length));
-    set('maint-open-issues', String(openIssues));
-    set('maint-status', maintOpenIssue(latest) ? '<span class="mv-red">Issue</span>' : (maintRawIssue(latest) ? '<span class="mv-blue">Resolved</span>' : '<span class="mv-green">OK</span>'));
-    set('maint-status-sub', maintOpenIssue(latest) ? 'Check observations below' : (maintRawIssue(latest) ? 'Issue resolved / overridden' : 'No issues on latest checklist'));
-    set('maint-tasks', maintCompletionCount(latest));
-
-    set('maint-latest-issues', `
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>Date</th><th>Status</th><th>Summary</th><th>Coral Notes</th><th>QT Notes</th><th>Final Comments</th><th>Resolution</th><th>Actions</th></tr></thead>
-        <tbody><tr>
-          <td>${maintDate(latest.work_date || latest.submitted_at)} ${maintEsc(latest.time_completed || '')}</td>
-          <td>${maintIssueBadge(latest)}</td>
-          <td>${maintIssueSummary(latest)}</td>
-          <td>${maintEsc(latest.coral_notes || '—')}</td>
-          <td>${maintEsc(latest.qt_notes || '—')}</td>
-          <td>${maintEsc(latest.final_comments || '—')}</td>
-          <td>${maintIssueResolved(latest) ? maintEsc((latest.issue_resolution_notes || 'Resolved') + (latest.issue_resolved_at ? ' · ' + maintDateTime(latest.issue_resolved_at) : '')) : '—'}</td>
-          <td>${maintActions(latest)}</td>
-        </tr></tbody>
-      </table></div>
-    `);
-
-    const rows = logs.slice(0, 30);
-    const coralRows = rows.map(l => `<tr>
-      <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintParamBadge('coral','no3',l.coral_no3)}</td><td>${maintParamBadge('coral','po4',l.coral_po4)}</td><td>${maintParamBadge('coral','kh',l.coral_kh)}</td><td>${maintParamBadge('coral','mg',l.coral_mg)}</td><td>${maintParamBadge('coral','ca',l.coral_ca)}</td><td>${maintParamBadge('coral','salinity',l.coral_salinity)}</td><td>${maintParamBadge('coral','ph',l.coral_ph)}</td><td>${maintParamBadge('coral','temperature',l.coral_temperature)}</td><td>${maintEsc(l.coral_notes || '—')}</td><td>${maintActions(l)}</td>
-    </tr>`).join('');
-    const qtRows = rows.map(l => `<tr>
-      <td>${maintDate(l.work_date || l.submitted_at)}</td><td>${maintEsc(l.time_completed || '—')}</td>
-      <td>${maintParamBadge('qt','no3',l.qt_no3)}</td><td>${maintParamBadge('qt','po4',l.qt_po4)}</td><td>${maintParamBadge('qt','salinity',l.qt_salinity)}</td><td>${maintParamBadge('qt','ph',l.qt_ph)}</td><td>${maintParamBadge('qt','temperature',l.qt_temperature)}</td><td>${maintEsc(l.qt_notes || '—')}</td><td>${maintActions(l)}</td>
-    </tr>`).join('');
-    set('maint-coral-body', coralRows || '<tr><td colspan="12"><div class="empty"><p>No coral tank results yet</p></div></td></tr>');
-    set('maint-qt-body', qtRows || '<tr><td colspan="9"><div class="empty"><p>No QT results yet</p></div></td></tr>');
-
-    const cleaningRows = rows.map(l => `<tr>
-      <td>${maintDate(l.work_date || l.submitted_at)}</td>
-      <td>${maintBoolBadge(l.coral_glass_scraped)}</td>
-      <td>${maintBoolBadge(l.coral_inside_cleaned)}</td>
-      <td>${maintBoolBadge(l.qt_glass_scraped)}</td>
-      <td>${maintBoolBadge(l.qt_inside_cleaned)}</td>
-      <td>${maintBoolBadge(l.coral_skimmer_cleaned)}</td>
-      <td>${maintBoolBadge(l.spillages_cleaned)}</td>
-      <td>${maintBoolBadge(l.livestock_fed)}</td>
-      <td>${maintBoolBadge(l.shelves_tidied)}</td>
-      <td>${maintIssueBadge(l)}</td>
-      <td>${maintEsc(l.cleaning_notes || l.final_comments || '—')}</td>
-      <td>${maintActions(l)}</td>
-    </tr>`).join('');
-    set('maint-cleaning-body', cleaningRows || '<tr><td colspan="12"><div class="empty"><p>No maintenance history yet</p></div></td></tr>');
-  }
-
-  function installMaintenanceNav(){
-    ensureMaintenanceSidebar();
-    ensureMaintenancePage();
-    try{ if(typeof TITLES !== 'undefined') TITLES.maintenance = 'Tank Maintenance'; }catch(e){}
-    if(window.__maintenanceNavInstalled) return;
-    const baseNav = window.nav;
-    window.nav = function(id, btn){
-      if(id === MAINT_PAGE_ID){
-        document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
-        document.querySelectorAll('.sb-btn').forEach(b=>b.classList.remove('active'));
-        const page = document.getElementById('page-maintenance');
-        if(page) page.classList.add('active');
-        const title = document.getElementById('page-title');
-        if(title) title.textContent = 'Tank Maintenance';
-        if(btn) btn.classList.add('active');
-        else document.getElementById('maintenance-sidebar-btn')?.classList.add('active');
-        renderMaintenance();
-        return;
-      }
-      return baseNav ? baseNav(id, btn) : undefined;
-    };
-    window.__maintenanceNavInstalled = true;
-  }
-
-  function initMaintenanceDashboard(){
-    installMaintenanceNav();
-    loadMaintenanceLogs(false);
-  }
-
-  window.renderMaintenance = renderMaintenance;
-  window.loadMaintenanceLogs = loadMaintenanceLogs;
-  window.toggleMaintenanceIssueResolved = toggleMaintenanceIssueResolved;
-  window.deleteMaintenanceLog = deleteMaintenanceLog;
-
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initMaintenanceDashboard);
-  else initMaintenanceDashboard();
+  function init(){installNav();loadData(false);}
+  window.loadTankMaintenance=loadData;window.renderTankMaintenance=render;
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
-/* ===== END STRAITS AQUATICS MAINTENANCE LOGS PATCH ===== */
+/* ===== END STRAITS AQUATICS TANK MAINTENANCE REVAMP ===== */
+
 
 
 /* ===== STRAITS AQUATICS MULTI-WORKER STAFF HOURS / PAY PATCH 2026-08-02 =====
