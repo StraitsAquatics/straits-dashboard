@@ -8621,8 +8621,11 @@ function applyStaffMode(){
   function calendarGridRange(){
     const first=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth(),1);
     const last=new Date(calendarCurrent.getFullYear(),calendarCurrent.getMonth()+1,0);
-    const gridStart=calAddDays(first,-first.getDay());
-    const gridEnd=calAddDays(last,6-last.getDay());
+    // Monday-first calendar: convert JS Sunday=0..Saturday=6 to Monday=0..Sunday=6.
+    const firstMondayIndex=(first.getDay()+6)%7;
+    const lastMondayIndex=(last.getDay()+6)%7;
+    const gridStart=calAddDays(first,-firstMondayIndex);
+    const gridEnd=calAddDays(last,6-lastMondayIndex);
     return {start:calISO(gridStart),end:calISO(gridEnd),gridStart,gridEnd};
   }
 
@@ -8665,7 +8668,7 @@ function applyStaffMode(){
     while(d<=rg.gridEnd){days.push(new Date(d)); d=calAddDays(d,1);}
     const today=calTodayISO();
     wrap.innerHTML=`<div class="cal-grid">
-      ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(x=>`<div class="cal-dow">${x}</div>`).join('')}
+      ${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(x=>`<div class="cal-dow">${x}</div>`).join('')}
       ${days.map(day=>{
         const iso=calISO(day), inMonth=day.getMonth()===calendarCurrent.getMonth();
         const list=(byDay[iso]||[]).slice(0,5);
